@@ -2,9 +2,15 @@
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+WORKFLOW_NAME="vm-cbt-verify"
 
-printf '[vm-cbt-verify] Checking VM CBT status, backup completion, and tracker checkpoint.\n' >&2
+workflow_step "1/3 Read VM CBT state"
+workflow_action "oc get vm $VM_NAME -n $NAMESPACE -o jsonpath=.status.changedBlockTracking.state"
 vm_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
+workflow_success "VM $VM_NAME CBT state: ${vm_state:-unknown}"
+
+workflow_step "2/3 Read backup completion, types, and checkpoints"
+workflow_action "Query $FULL_BACKUP_NAME, $INCREMENTAL_BACKUP_NAME, and tracker $TRACKER_NAME in namespace $NAMESPACE"
 full_type="$(get_backup_type "$FULL_BACKUP_NAME")"
 full_done="$(get_backup_done_status "$FULL_BACKUP_NAME")"
 full_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
@@ -12,7 +18,11 @@ incremental_type="$(get_backup_type "$INCREMENTAL_BACKUP_NAME")"
 incremental_done="$(get_backup_done_status "$INCREMENTAL_BACKUP_NAME")"
 incremental_checkpoint="$(get_backup_checkpoint "$INCREMENTAL_BACKUP_NAME")"
 latest_checkpoint="$(get_tracker_checkpoint)"
+workflow_action "Full: type=$full_type done=$full_done checkpoint=$full_checkpoint"
+workflow_action "Incremental: type=$incremental_type done=$incremental_done checkpoint=$incremental_checkpoint"
+workflow_action "Tracker $TRACKER_NAME latest checkpoint=$latest_checkpoint"
 
+workflow_step "3/3 Validate CBT and checkpoint relationships"
 vm_cbt_is_enabled() {
   [[ "$vm_state" == Enabled ]]
 }
@@ -45,5 +55,6 @@ if ! vm_cbt_is_enabled ||
   exit 1
 fi
 
-printf 'CBT verification passed.\nFull checkpoint:        %s\nIncremental checkpoint: %s\n' \
+workflow_success "CBT verification passed; full and incremental checkpoints are distinct and tracker matches incremental"
+printf 'Full checkpoint:        %s\nIncremental checkpoint: %s\n' \
   "$full_checkpoint" "$incremental_checkpoint"

@@ -60,7 +60,7 @@ make vm-cbt-backup
 make vm-cbt-verify
 ```
 
-The scripts print stage logs to stderr; guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
+The scripts emit concise structured progress messages to stderr: numbered workflow steps, `→` action descriptions, `✓` success messages, and an active-step failure message before the original command diagnostic. Make-level headers show the four demo stages; raw shell tracing is intentionally not enabled.
 
 ## Step-by-step behavior
 

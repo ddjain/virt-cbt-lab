@@ -108,7 +108,7 @@ make vm-cbt-backup
 make vm-cbt-verify
 ```
 
-The scripts write progress messages to stderr. Setup and incremental stages print guest `sha256sum` output. Successful verification prints `CBT verification passed` and the two checkpoint names.
+The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
 
 The fixed names allow one run per namespace. Start over with:
 

@@ -26,6 +26,30 @@ oc_cmd() {
   oc "$@"
 }
 
+set -E
+CURRENT_STEP="workflow startup"
+
+workflow_step() {
+  CURRENT_STEP="$1"
+  printf '\n[%s] %s\n' "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
+}
+
+workflow_action() {
+  printf '  → %s\n' "$1" >&2
+}
+
+workflow_success() {
+  printf '  ✓ %s\n' "$1" >&2
+}
+
+workflow_failed() {
+  local status=$?
+  printf '  ✗ Failed: %s (exit %d)\n' "$CURRENT_STEP" "$status" >&2
+  return "$status"
+}
+
+trap workflow_failed ERR
+
 require_command() {
   local command_name="$1"
   if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -105,7 +129,8 @@ guest_ssh() {
   trap cleanup EXIT INT TERM
 
   for ((attempt = 1; attempt <= 30; attempt++)); do
-    printf '[guest-ssh] Starting port-forward attempt %d/30.\n' "$attempt" >&2
+    printf '[guest-ssh] → oc port-forward -n %s service/%s :22 (attempt %d/30).\n' \
+      "$NAMESPACE" "$SSH_SERVICE" "$attempt" >&2
     : > "$forward_log"
     oc_cmd port-forward -n "$NAMESPACE" "service/$SSH_SERVICE" :22 >"$forward_log" 2>&1 &
     forward_pid=$!
@@ -123,6 +148,8 @@ guest_ssh() {
     done
 
     if [[ -n "$port" ]]; then
+      printf '[guest-ssh] → ssh %s@127.0.0.1:%s (probe, then guest command).\n' \
+        "$GUEST_USER" "$port" >&2
       if probe_guest_ssh "$port" "$probe_log"; then
         if ssh_guest_command "$port" "$guest_command"; then
           cleanup
