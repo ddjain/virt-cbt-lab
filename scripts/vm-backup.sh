@@ -5,13 +5,13 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 printf '[vm-backup] Creating the backup PVC, tracker, and full backup request.\n' >&2
 oc_cmd apply -f - < "$ROOT_DIR/manifests/full-backup.yaml"
-printf '[vm-backup] Waiting for the full backup to complete.\n' >&2
-oc_cmd wait "vmbackup/$FULL_BACKUP_NAME" -n "$NAMESPACE" --for=condition=Done --timeout=20m
+wait_for_backup_done "$FULL_BACKUP_NAME"
 
-backup_type="$(oc_cmd get vmbackup "$FULL_BACKUP_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.type}')"
-if [[ "$backup_type" != Full ]]; then
-  printf 'Expected a Full backup; got %s.\n' "$backup_type" >&2
+full_backup_type="$(get_backup_type "$FULL_BACKUP_NAME")"
+if [[ "$full_backup_type" != Full ]]; then
+  printf 'Expected a Full backup; got %s.\n' "$full_backup_type" >&2
   exit 1
 fi
-checkpoint="$(oc_cmd get vmbackup "$FULL_BACKUP_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.checkpointName}')"
-printf 'Full backup complete: %s (checkpoint %s)\n' "$FULL_BACKUP_NAME" "$checkpoint"
+
+full_backup_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
+printf 'Full backup complete: %s (checkpoint %s)\n' "$FULL_BACKUP_NAME" "$full_backup_checkpoint"

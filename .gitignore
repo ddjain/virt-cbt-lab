@@ -24,3 +24,4 @@ tmp-*/
 .DS_Store
 .idea/
 .vscode/
+.serena/

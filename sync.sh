@@ -2,26 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-load_dotenv_defaults() {
-  local file="$ROOT_DIR/.env" line key value
-  [[ -r "$file" ]] || return 0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*(REMOTE_HOST|REMOTE_DIR)[[:space:]]*= ]] || continue
-    key="${BASH_REMATCH[1]}"
-    value="${line#*=}"
-    value="${value##[[:space:]]}"
-    value="${value%%[[:space:]]}"
-    if [[ "$value" == \"*\" && "$value" == *\" ]]; then value="${value:1:${#value}-2}"; fi
-    if [[ "$value" == \'*\' && "$value" == *\' ]]; then value="${value:1:${#value}-2}"; fi
-    if [[ "$key" == REMOTE_HOST && -z "${REMOTE_HOST:-}" ]]; then REMOTE_HOST="$value"; fi
-    if [[ "$key" == REMOTE_DIR && -z "${REMOTE_DIR:-}" ]]; then REMOTE_DIR="$value"; fi
-  done < "$file"
-}
+# shellcheck source=scripts/dotenv.sh
+source "$ROOT_DIR/scripts/dotenv.sh"
 
 REMOTE_HOST="${REMOTE_HOST:-}"
 REMOTE_DIR="${REMOTE_DIR:-}"
-load_dotenv_defaults
+load_dotenv_defaults "$ROOT_DIR/.env"
 
 if [[ -z "$REMOTE_HOST" || -z "$REMOTE_DIR" ]]; then
   printf 'Set REMOTE_HOST and REMOTE_DIR before running sync.sh.\n' >&2

@@ -54,6 +54,28 @@ ensure_guest_key() {
   cat "$GUEST_KEY.pub"
 }
 
+ssh_guest_command() {
+  local port="$1" remote_command="$2"
+  # Host-key checking is disabled only for this randomized localhost forward.
+  ssh -i "$GUEST_KEY" -p "$port" \
+    -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "$GUEST_USER@127.0.0.1" "$remote_command"
+}
+
+probe_guest_ssh() {
+  local port="$1" probe_log="$2"
+  if ssh_guest_command "$port" true >/dev/null 2>"$probe_log"; then
+    return 0
+  fi
+  return 1
+}
+
+extract_forwarded_port() {
+  local forward_log="$1"
+  sed -n 's/^Forwarding from 127[.]0[.]0[.]1:\([0-9][0-9]*\) -> 22$/\1/p' "$forward_log" | sed -n '1p'
+}
+
 guest_ssh() {
   local guest_command
   if (($# != 1)); then
@@ -89,7 +111,7 @@ guest_ssh() {
     forward_pid=$!
     port=
     for ((wait_attempt = 1; wait_attempt <= 30; wait_attempt++)); do
-      port="$(sed -n 's/^Forwarding from 127[.]0[.]0[.]1:\([0-9][0-9]*\) -> 22$/\1/p' "$forward_log" | sed -n '1p')"
+      port="$(extract_forwarded_port "$forward_log")"
       if [[ -n "$port" ]]; then
         printf '[guest-ssh] Port-forward ready on 127.0.0.1:%s.\n' "$port" >&2
         break
@@ -101,21 +123,16 @@ guest_ssh() {
     done
 
     if [[ -n "$port" ]]; then
-      ssh -i "$GUEST_KEY" -p "$port" \
-        -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "$GUEST_USER@127.0.0.1" true >/dev/null 2>"$probe_log" && {
-          if ssh -i "$GUEST_KEY" -p "$port" \
-            -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            "$GUEST_USER@127.0.0.1" "$guest_command"; then
-            cleanup
-            return 0
-          fi
+      if probe_guest_ssh "$port" "$probe_log"; then
+        if ssh_guest_command "$port" "$guest_command"; then
           cleanup
-          return 1
-        }
+          return 0
+        fi
+        cleanup
+        return 1
+      fi
       printf '[guest-ssh] SSH probe failed; retrying.\n' >&2
+      # Authentication failures are terminal; startup failures can recover.
       if grep -q 'Permission denied' "$probe_log"; then
         cat "$probe_log" >&2
         cleanup
@@ -134,4 +151,39 @@ guest_ssh() {
   printf 'Could not connect to the VM guest over SSH.\n' >&2
   cleanup
   return 1
+}
+
+wait_for_backup_done() {
+  local backup_name="$1"
+  oc_cmd wait "vmbackup/$backup_name" \
+    -n "$NAMESPACE" \
+    --for=condition=Done \
+    --timeout=20m
+}
+
+get_backup_type() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.type}'
+}
+
+get_backup_checkpoint() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.checkpointName}'
+}
+
+get_backup_done_status() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.conditions[?(@.type=="Done")].status}'
+}
+
+get_tracker_checkpoint() {
+  oc_cmd get vmbackuptracker "$TRACKER_NAME" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.latestCheckpoint.name}'
 }

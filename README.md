@@ -9,7 +9,8 @@ The workflow is a demonstration, not a production backup policy. It uses fixed r
 ```text
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
-- `common.sh` centralizes names, environment handling, prerequisite checks, guest-key creation, and port-forward cleanup.
+- `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
+- `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
 - `vm-setup.sh` creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
@@ -83,7 +84,7 @@ PASS  an OpenShift context is selected
 PASS  oc authentication succeeded
 PASS  cluster API is reachable
 
-Summary: 54 checks; 54 passed; 0 warnings; 0 failures
+Summary: 56 checks; 56 passed; 0 warnings; 0 failures
 READY: environment is prepared for the repository workflow.
 ```
 
@@ -159,11 +160,11 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 .
 ├── .env.example          # Sanitized local configuration template
 ├── .gitignore            # Secret and generated-artifact exclusions
-├── Makefile              # Workflow entry points
 ├── AGENTS.md             # Repository-specific contributor/agent guidance
 ├── docs/                 # Detailed workflow documentation
 ├── manifests/            # VM, full-backup, and incremental-backup resources
 ├── scripts/              # Workflow implementation and shared helpers
+│   └── dotenv.sh         # Safe parser for supported .env values
 └── sync.sh               # Optional remote synchronization helper
 ```
 

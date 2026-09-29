@@ -9,6 +9,7 @@ printf '[vm-setup] Checking the Fedora source and preparing guest access.\n' >&2
 oc_cmd get datasource fedora -n openshift-virtualization-os-images >/dev/null
 public_key="$(ensure_guest_key)"
 printf '[vm-setup] Applying the VM and SSH service manifests.\n' >&2
+# Inject only the public key; the private key stays outside the manifest.
 sed "s|__SSH_PUBLIC_KEY__|$public_key|g" "$ROOT_DIR/manifests/vm.yaml" | oc_cmd apply -f -
 printf '[vm-setup] Waiting for the VM and disk import to become ready.\n' >&2
 oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=20m
