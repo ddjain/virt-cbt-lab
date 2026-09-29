@@ -63,5 +63,6 @@ help:
 	  'make e2e NAME=foo        Use a fixed, deterministic run name instead of a random one.' \
 	  'make clean-all           Delete all virt-cbt-lab managed resources (every run) from the namespace, and its generated guest key.' \
 	  'sync.sh                  Copy the repository to REMOTE_HOST:REMOTE_DIR.' \
+	  'sync.sh --pull-reports   Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
 	  'Prerequisites: OpenShift Virtualization and cbt-demo-hpp (the Debian golden image is imported automatically on first run).'
