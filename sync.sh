@@ -31,11 +31,10 @@ ssh "$REMOTE_HOST" "mkdir -p -- $quoted_remote_dir"
 printf '  ✓ Remote destination is ready.\n' >&2
 
 SYNC_STEP="repository synchronization"
-printf '[sync 2/2] Copy repository files while excluding local state and secrets.\n' >&2
-printf '  → rsync repository to %s:%s (excluding .git, .env, dotenv variants, and logs)\n' \
+printf '[sync 2/2] Copy repository files and Git metadata while excluding local secrets.\n' >&2
+printf '  → rsync repository and .git to %s:%s (excluding .env, dotenv variants, and logs)\n' \
   "$REMOTE_HOST" "$REMOTE_DIR" >&2
 rsync -a --human-readable --itemize-changes \
-  --exclude '/.git/' \
   --exclude '/.env' \
   --exclude '/.env.*' \
   --exclude '*.log' \

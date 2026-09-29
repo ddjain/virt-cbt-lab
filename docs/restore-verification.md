@@ -8,7 +8,7 @@ the claim behind `make vm-cbt-restore-test`:
 
 It gives the full chain of commands and the YAML applied at each stage so you
 can reproduce every step by hand with `oc` and cross-check the automated
-result independently, the same way `validation/cloud05-validation-summary-2026-09-29.md`
+result independently, the same way `validation/e2e-validation-summary-2026-09-29.md`
 independently re-checked the earlier (pre-restore) verification steps.
 
 ## Why this needs a custom approach (read this first)
@@ -85,7 +85,7 @@ PVC status alone.
 ## Step-by-step: reproduce by hand
 
 Everything below assumes `KUBECONFIG` is exported and you are in the
-repository root on the machine with cluster access (e.g. `cloud05`).
+repository root on the machine with cluster access.
 
 ### 1. Run the backup workflow (or use an existing one)
 
@@ -283,7 +283,7 @@ is no less-privileged way to read a btrfs image without a kernel driver.
 
 ### 5. Read and independently interpret the output
 
-Actual output from a cloud05 run (`hello-full-2026-09-29_19-43-58` /
+Actual output from a demo run (`hello-full-2026-09-29_19-43-58` /
 `hello-incremental-2026-09-29_19-44-21` checkpoints):
 
 ```text
