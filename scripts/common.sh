@@ -9,7 +9,13 @@ GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 GUEST_USER="cbt-demo"
 # shellcheck disable=SC2034
-STATE_DIR="$ROOT_DIR/state"
+STATE_ROOT_DIR="$ROOT_DIR/state"
+# Scoped by RUN_ID (when the orchestrator pre-exports it for a concurrent
+# `make e2e N=...` run) so parallel runs never share run-id/report-id/hash
+# files. Ad-hoc single-run usage (RUN_ID unset until new_run_id/load_run_id
+# runs) falls back to a stable "_local" bucket, matching prior behavior.
+# shellcheck disable=SC2034
+STATE_DIR="$STATE_ROOT_DIR/${RUN_ID:-_local}"
 # shellcheck disable=SC2034
 RUN_ID_FILE="$STATE_DIR/run-id"
 # shellcheck disable=SC2034
@@ -120,18 +126,25 @@ set_resource_names() {
 # hex tag since the 100 adjective/noun combinations alone collide too often
 # across repeated runs) and persist it so every later script invocation in
 # the same E2E run reuses it.
+# If RUN_ID is already exported (the `make e2e N=...` orchestrator assigns
+# one per concurrent run before invoking this script), keep it instead of
+# generating a random one, so orchestrated run IDs stay deterministic.
 new_run_id() {
   mkdir -p "$STATE_DIR"
-  local adjective noun tag
-  adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
-  noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
-  # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
-  # reader and trip `set -o pipefail` under the ERR trap.
-  tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-  RUN_ID="${adjective}-${noun}-${tag}"
+  if [[ -z "${RUN_ID:-}" ]]; then
+    local adjective noun tag
+    adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
+    noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
+    # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
+    # reader and trip `set -o pipefail` under the ERR trap.
+    tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+    RUN_ID="${adjective}-${noun}-${tag}"
+    printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
+  else
+    printf '[vm-cbt] Using assigned run ID: %s\n' "$RUN_ID" >&2
+  fi
   printf '%s' "$RUN_ID" > "$RUN_ID_FILE"
   set_resource_names
-  printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
 }
 
 # Load the run ID persisted by new_run_id (or an explicitly exported RUN_ID)
@@ -153,7 +166,9 @@ load_run_id() {
 # Kubernetes resource-naming contract never changes.
 new_report_id() {
   mkdir -p "$STATE_DIR"
-  REPORT_ID="run_$(date -u +%Y%m%dT%H%M%SZ)"
+  # Suffixed with RUN_ID (already unique) so concurrent runs starting within
+  # the same second never share a report directory.
+  REPORT_ID="run_$(date -u +%Y%m%dT%H%M%SZ)_${RUN_ID}"
   printf '%s' "$REPORT_ID" > "$REPORT_ID_FILE"
   REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
   mkdir -p "$REPORT_DIR/fragments"

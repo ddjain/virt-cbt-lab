@@ -105,6 +105,14 @@ Run the complete workflow:
 make e2e
 ```
 
+Run `N` complete workflows concurrently (default `N=1`):
+
+```sh
+make e2e N=5
+```
+
+Each concurrent run gets its own run ID and is fully isolated: its own VM, DataVolume, backups, tracker, local state, and report directory (see below), so one run's failure, resources, or cleanup never affects another's. `make e2e N=5` prints a `START`/`PASS`/`FAIL` line per run plus a final PASS/FAIL summary, and exits non-zero if any run failed.
+
 Run individual stages:
 
 ```sh

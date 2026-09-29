@@ -59,8 +59,8 @@ if [[ -f "$marker" ]]; then
 else
   workflow_success "No workflow-managed key found; existing key files preserved"
 fi
-workflow_action "Removing local run state (recorded run ID and guest hashes) in $STATE_DIR"
-rm -rf "$STATE_DIR"
+workflow_action "Removing local run state (recorded run IDs and guest hashes for every run) in $STATE_ROOT_DIR"
+rm -rf "$STATE_ROOT_DIR"
 # report/ is intentionally left in place: it holds each run's JSON report and
 # restore-test log for post-run debugging, and survives cleanup on purpose.
 printf '[clean-all] Demo cleanup complete; namespace %s and shared KubeVirt/storage resources were left intact.\n' "$NAMESPACE" >&2

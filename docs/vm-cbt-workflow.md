@@ -48,12 +48,14 @@ The configured HPP class is local/RWO demo storage. This VM is not live-migratab
 make e2e
 ```
 
-`e2e` runs the read-only `preflight` target first. It stops before `vm-cbt-demo` if any mandatory prerequisite fails. Run `make preflight` separately to inspect readiness.
+`e2e` runs the read-only `preflight` target first. It stops before starting any run if any mandatory prerequisite fails. Run `make preflight` separately to inspect readiness.
 
-`e2e` delegates to the same sequence as `vm-cbt-demo`:
+Each run follows the same sequence as `vm-cbt-demo`:
 ```text
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
+
+`make e2e N=5` runs 5 such pipelines concurrently, each with its own run ID (and therefore its own VM, backups, tracker, local state, and report directory — see [Resources and names](#resources-and-names)). It prints a `START`/`PASS`/`FAIL` line per run plus a final summary, and exits non-zero if any run failed; other runs are unaffected by one run's failure. `make e2e NAME=foo` uses `foo` (or `foo-1..foo-N` when `N>1`) as the run ID instead of a random one, for a deterministic, repeatable run name; omit `NAME` to keep the default random `<adjective>-<noun>-<hex tag>` scheme.
 
 Each step can also be run separately:
 
@@ -74,12 +76,12 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 
 1. Applies `manifests/debian-image.yaml` and waits for `DataVolume debian-golden` (namespace `vm-cbt-images`) to reach `Succeeded`. The first run imports the ~2 GiB Debian genericcloud qcow2 from `cloud.debian.org`; later runs see it already `Succeeded` and return immediately, since `vm-cbt-images` lives outside `clean-all`'s scope.
 2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
-3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/run-id`, then applies `manifests/vm.yaml`, which creates namespace `$NAMESPACE` (if missing) and the run's VM (`vm-<run-id>`) and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
+3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/<run-id>/run-id`, then applies `manifests/vm.yaml`, which creates namespace `$NAMESPACE` (if missing) and the run's VM (`vm-<run-id>`) and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
 4. Creates a 5 GiB root `DataVolume` from the `debian` `DataSource`, using `cbt-demo-hpp`. This must stay larger than the golden image's size; a target smaller than the source fails the clone. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` followed by a `GUEST_DATA_SIZE_MB` (default 64) MiB random payload to `/home/cbt-demo/hello.txt`, prints its SHA-256 hash, and records that hash to `state/full-backup.sha256` (this is the content the full backup will contain, since no guest mutation happens before `make vm-backup` runs). The larger payload gives CBT a realistic block delta to track rather than a single text line.
+6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` followed by a `GUEST_DATA_SIZE_MB` (default 64) MiB random payload to `/home/cbt-demo/hello.txt`, prints its SHA-256 hash, and records that hash to `state/<run-id>/full-backup.sha256` (this is the content the full backup will contain, since no guest mutation happens before `make vm-backup` runs). The larger payload gives CBT a realistic block delta to track rather than a single text line.
 
-All later steps (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`) read the run ID back from `state/run-id` rather than generating a new one, so they operate on the same run's resources. Deleting or overwriting `state/run-id` between steps of one E2E run breaks the chain; `make clean-all` removes it along with the rest of the local run state.
+All later steps (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`) read the run ID back from `state/<run-id>/run-id` rather than generating a new one, so they operate on the same run's resources. Deleting or overwriting `state/<run-id>/run-id` between steps of one E2E run breaks the chain; `make clean-all` removes it along with the rest of the local run state.
 
 `guest_ssh` uses a temporary randomized local port-forward, retries VM startup,
 and cleans up the port-forward when the command finishes.
@@ -99,7 +101,7 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 1. Confirms the full backup completed as `Full`.
 2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
-3. Appends a `GUEST_INCREMENTAL_DATA_SIZE_MB` (default 32) MiB random payload followed by `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, prints the new SHA-256 hash, and records it to `state/incremental-backup.sha256` (the content the full+incremental restore must reproduce).
+3. Appends a `GUEST_INCREMENTAL_DATA_SIZE_MB` (default 32) MiB random payload followed by `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, prints the new SHA-256 hash, and records it to `state/<run-id>/incremental-backup.sha256` (the content the full+incremental restore must reproduce).
 4. Applies `manifests/incremental-backup.yaml`, creating the `vm-incremental-pvc-<run-id>` PVC (3 GiB, sized for the delta only) and `vm-incremental-<run-id>` backup, both labeled with the run's ownership labels. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
 
@@ -121,20 +123,20 @@ It prints `CBT verification passed` only when every condition holds. The hashes 
 
 This is the step that actually proves the backups contain correct, restorable data, rather than only checking backup/PVC status:
 
-1. Reads the expected hashes recorded in `state/full-backup.sha256` and `state/incremental-backup.sha256`.
+1. Reads the expected hashes recorded in `state/<run-id>/full-backup.sha256` and `state/<run-id>/incremental-backup.sha256`.
 2. Confirms both backup PVCs (`vm-backup-pvc-<run-id>`, `vm-incremental-pvc-<run-id>`) are `Bound`.
 3. Applies `manifests/restore-verify-pod.yaml` (with placeholders substituted, the same pattern `vm-setup.sh` uses for the SSH public key) as a short-lived pod that mounts both backup PVCs read-only, then:
    - `qemu-img convert` the full backup's qcow2 straight to raw (full-only restore).
    - `qemu-img rebase` the incremental qcow2 onto the full qcow2, then `qemu-img convert` the result to raw (full+incremental restore).
    - Extracts `/home/cbt-demo/hello.txt` from each raw disk with `losetup` + a direct `mount -o ro` of its ext4 root filesystem (see `images/restore-helper/Dockerfile`).
 4. Deletes the pod (via a trap, on success or failure) and reads its logs for the two hashes and whether the incremental marker line is present in each.
-5. Asserts: the full-only restore matches `state/full-backup.sha256` and does **not** contain the incremental marker line; the full+incremental restore matches `state/incremental-backup.sha256` and **does** contain the marker line.
+5. Asserts: the full-only restore matches `state/<run-id>/full-backup.sha256` and does **not** contain the incremental marker line; the full+incremental restore matches `state/<run-id>/incremental-backup.sha256` and **does** contain the marker line.
 
 Any mismatch fails the step (exit 1) — a missing incremental delta, a stale/corrupt/empty restored disk, or a backup that silently drops data will all produce a hash or marker-line mismatch here rather than passing on PVC status alone. All checks in this step and in `vm-cbt-verify.sh`'s step 3/4 run to completion (they do not stop at the first failure), so a failing run's report shows every check's outcome, not just the first one.
 
 ## Run report
 
-`vm-setup.sh` also generates a `REPORT_ID` (`run_<UTC timestamp>`, kept separate from the resource-naming run ID) and persists it to `state/report-id`. Every later stage appends a JSON fragment to `report/<REPORT_ID>/fragments/`:
+`vm-setup.sh` also generates a `REPORT_ID` (`run_<UTC timestamp>`, kept separate from the resource-naming run ID) and persists it to `state/<run-id>/report-id`. Every later stage appends a JSON fragment to `report/<REPORT_ID>/fragments/`:
 
 - `vm-setup.sh` → `setup.json`: namespace, VM name, guest file path, and the full-backup guest hash/size (`size_bytes` and `size_mb`)/capture time.
 - `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint, its PVC name/requested size/capacity, and the VM's recorded backup start/end timestamps and completion status (captured immediately after `Done=True`, since `status.changedBlockTracking.backupStatus` is overwritten by the next backup).
@@ -146,7 +148,7 @@ Any mismatch fails the step (exit 1) — a missing incremental delta, a stale/co
 
 ## Resources and names
 
-All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). Every `make e2e` invocation generates one run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`, persisted to `state/run-id`) and derives every resource name from it, so repeat runs coexist in the same namespace without collisions:
+All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). Every `make e2e` invocation generates one run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`, persisted to `state/<run-id>/run-id`) and derives every resource name from it, so repeat runs coexist in the same namespace without collisions:
 
 | Resource | Name | Purpose |
 |---|---|---|
@@ -160,7 +162,7 @@ All workflow objects live in the shared, globally configured `$NAMESPACE` (defau
 | PVC | `vm-incremental-pvc-<run-id>` | Incremental backup output |
 | Pod (short-lived) | `vm-restore-verify-<run-id>` | Reconstructs and reads the guest disk during `vm-cbt-restore-test` |
 
-Every resource above is labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`; those labels, not the namespace, are the ownership mechanism `clean-all` uses. `vm-setup.sh` generates a new run ID at the start of every run; `vm-backup.sh`, `vm-cbt-backup.sh`, `vm-cbt-verify.sh`, and `vm-cbt-restore-test.sh` read the current one back from `state/run-id`.
+Every resource above is labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`; those labels, not the namespace, are the ownership mechanism `clean-all` uses. `vm-setup.sh` generates a new run ID at the start of every run; `vm-backup.sh`, `vm-cbt-backup.sh`, `vm-cbt-verify.sh`, and `vm-cbt-restore-test.sh` read the current one back from `state/<run-id>/run-id`.
 
 The Debian golden image (`DataVolume`/`DataSource` `debian-golden`/`debian`) lives in namespace `vm-cbt-images`, deliberately outside `$NAMESPACE`, so it survives `make clean-all` and is only downloaded once.
 
