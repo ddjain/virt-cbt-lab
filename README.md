@@ -1,6 +1,6 @@
 # KubeVirt CBT VM backup demo
 
-This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Fedora VM, changes a guest file, takes a full backup, changes the file again, takes an incremental backup, and verifies the API state.
+This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Debian VM, changes a guest file, takes a full backup, changes the file again, takes an incremental backup, and verifies the API state.
 
 The workflow is a demonstration, not a production backup policy. It uses fixed resource names and a local/RWO storage class.
 
@@ -11,7 +11,7 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
-- `vm-setup.sh` creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
+- `vm-setup.sh` imports the cached Debian golden image (once), then creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`.
@@ -30,8 +30,8 @@ Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
 - The `IncrementalBackup` feature gate.
-- A `cbt-demo-hpp` storage class that can provision the demo's RWO volumes: a 35 GiB root disk, a 35 GiB full-backup PVC, and a 5 GiB incremental-backup PVC (75 GiB total per run). The root disk and full-backup PVC must stay larger than the cluster's current Fedora `DataSource` image size (verify with `oc get datasource fedora -n openshift-virtualization-os-images`), since CDI refreshes that image periodically and rejects a clone target smaller than the source.
-- The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
+- A `cbt-demo-hpp` storage class that can provision the demo's RWO volumes: a 5 GiB root disk, a 5 GiB full-backup PVC, and a 3 GiB incremental-backup PVC (13 GiB total per run, plus a one-time 3 GiB cached image). The root disk and full-backup PVC must stay larger than the Debian golden image's size, since CDI rejects a clone target smaller than the source.
+- Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org`, used once to populate the `vm-cbt-images` namespace's `debian` golden `DataSource` (see [`manifests/debian-image.yaml`](manifests/debian-image.yaml)); `vm-setup.sh` creates and waits for it automatically, and later runs reuse it without re-downloading.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
 
@@ -62,7 +62,7 @@ Supported variables:
 | `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
 | `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
-| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `btrfs-progs`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `util-linux`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `GUEST_DATA_SIZE_MB` | No | Size (MiB) of the random payload written to `hello.txt` at setup. Default: `64`. |
 | `GUEST_INCREMENTAL_DATA_SIZE_MB` | No | Size (MiB) of the random payload appended to `hello.txt` before the incremental backup. Default: `32`. |
 
@@ -78,7 +78,7 @@ Run the read-only readiness check directly, or let `make e2e` run it automatical
 `make e2e` stops before creating resources when preflight reports a failure. Use `make preflight` to invoke the same check explicitly.
 
 
-`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup CRDs, the Fedora DataSource, `cbt-demo-hpp`, the `IncrementalBackup` gate, required create/delete permissions, the guest SSH key when present, and temporary-directory access. A missing guest key is a warning because `vm-setup.sh` generates it. The literal CBT selector is not a preflight gate because KubeVirt versions expose that configuration differently; setup and verification validate actual CBT state. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
+`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup and CDI CRDs, `cbt-demo-hpp`, the `IncrementalBackup` gate, required create/delete permissions, the guest SSH key when present, and temporary-directory access. It does not pre-check the Debian golden image itself, since `vm-setup.sh` creates and imports it on demand. A missing guest key is a warning because `vm-setup.sh` generates it. The literal CBT selector is not a preflight gate because KubeVirt versions expose that configuration differently; setup and verification validate actual CBT state. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
 
 Each result is marked `PASS`, `WARN`, or `FAIL`. Warnings do not fail the check; any failure produces exit code `1` and `NOT READY`. Exit code `0` produces `READY`. Use `./preflight --verbose` for the same safe summary with an explicit note that command diagnostics are suppressed to avoid leaking credentials or kubeconfig data. Example:
 
@@ -151,7 +151,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ## Troubleshooting
 
 - **Kubeconfig is not readable:** set `KUBECONFIG_PATH` to a readable file or unset it and configure `KUBECONFIG`/the standard `oc` context.
-- **Fedora `DataSource` not found:** verify CDI's `fedora` source in `openshift-virtualization-os-images`.
+- **Debian golden image import stuck or failing:** check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
 - **CBT is not enabled:** verify the `IncrementalBackup` feature gate, the VM's `cbt-demo=enabled` label, and the cluster's CBT selector configuration for the installed KubeVirt version.
 - **PVC remains pending:** verify that `cbt-demo-hpp` exists and can provision local demo volumes.
 - **Guest SSH retries or times out:** inspect VM readiness, the service, and the port-forward messages. Ensure the generated private key is readable only by its owner.
@@ -168,7 +168,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── docs/                 # Detailed workflow and restore-verification documentation
 ├── images/
 │   └── restore-helper/   # Dockerfile for the restore-verification pod image
-├── manifests/            # VM, full-backup, incremental-backup, and restore-verify pod resources
+├── manifests/            # Debian golden image, VM, full-backup, incremental-backup, and restore-verify pod resources
 ├── scripts/              # Workflow implementation and shared helpers
 │   ├── dotenv.sh         # Safe parser for supported .env values
 │   └── restore-lib.sh    # Restore-verification pod orchestration
@@ -180,7 +180,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 - Resource names and namespace are fixed; concurrent runs require separate copies with deliberate manifest/script changes.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- The demo uses local/RWO disks (35 GiB root, 35 GiB full-backup PVC, 5 GiB incremental-backup PVC) and is not production storage or disaster-recovery guidance. The root/full-backup sizes must track the cluster's Fedora `DataSource` image size, which CDI refreshes periodically.
+- The demo uses local/RWO disks (5 GiB root, 5 GiB full-backup PVC, 3 GiB incremental-backup PVC) and is not production storage or disaster-recovery guidance. The root/full-backup sizes must track the Debian golden image's size, cached once in `vm-cbt-images` and outside `clean-all`'s scope.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
-- `make vm-cbt-restore-test` runs a privileged pod to reconstruct the guest disk (`qemu-img`) and read its files with `btrfs restore` (needed because the demo's Fedora guest uses a btrfs root filesystem, and RHEL/CentOS-family kernels don't ship a btrfs kernel module for mounting). Build `images/restore-helper/Dockerfile`, push it, and set `RESTORE_HELPER_IMAGE`; the cluster must permit pulling that image and running the privileged pod.
+- `make vm-cbt-restore-test` runs a privileged pod to reconstruct the guest disk (`qemu-img`) and read its files by loop-mounting the demo's ext4 root filesystem directly. Build `images/restore-helper/Dockerfile`, push it, and set `RESTORE_HELPER_IMAGE`; the cluster must permit pulling that image and running the privileged pod.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

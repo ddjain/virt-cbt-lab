@@ -1,0 +1,63 @@
+# Golden Debian image, cached outside the vm-cbt-demo namespace so
+# clean-all.sh (which only deletes $NAMESPACE) never removes it and repeat
+# `make e2e` runs clone from an already-imported image instead of
+# re-downloading it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vm-cbt-images
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: debian-golden
+  namespace: vm-cbt-images
+  annotations:
+    # cbt-demo-hpp uses volumeBindingMode: WaitForFirstConsumer, and this
+    # DataVolume has no VM/pod consumer of its own (it exists only to be
+    # cloned from later) — without this, CDI leaves it in
+    # PendingPopulation forever instead of starting the import.
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    http:
+      url: https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 3Gi
+    storageClassName: cbt-demo-hpp
+    volumeMode: Filesystem
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataSource
+metadata:
+  name: debian
+  namespace: vm-cbt-images
+spec:
+  source:
+    pvc:
+      name: debian-golden
+      namespace: vm-cbt-images
+---
+# Grants vm-cbt-demo's default service account permission to clone from this
+# namespace, via CDI's own cdi.kubevirt.io:clone-sourcer ClusterRole. Without
+# this, VirtualMachine.spec.dataVolumeTemplates' cross-namespace sourceRef
+# clone fails with "insufficient permissions in clone source namespace".
+# openshift-virtualization-os-images ships an equivalent (broader) grant for
+# the cluster-managed fedora DataSource; this namespace needs its own.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-cbt-demo-clone-source
+  namespace: vm-cbt-images
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: vm-cbt-demo
+roleRef:
+  kind: ClusterRole
+  name: cdi.kubevirt.io:clone-sourcer
+  apiGroup: rbac.authorization.k8s.io

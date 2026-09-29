@@ -9,7 +9,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 35Gi
+      storage: 5Gi
 ---
 apiVersion: backup.kubevirt.io/v1alpha1
 kind: VirtualMachineBackupTracker

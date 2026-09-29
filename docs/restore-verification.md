@@ -30,20 +30,18 @@ repo's restore test performs exactly that reconstruction and then reads the
 actual guest file out of the result, so we assert on real data instead of
 trusting `VirtualMachineBackup`/PVC status alone.
 
-The demo guest (`manifests/vm.yaml`, CDI `fedora` DataSource) uses a **btrfs**
-root filesystem. Neither the OpenShift worker node's kernel nor any
-RHEL/CentOS-family `libguestfs-tools` appliance kernel ships a btrfs kernel
-module (Red Hat does not support btrfs), so the reconstructed raw disk cannot
-be `mount`-ed or opened with `guestfish -i` on this cluster. Instead we use
-`btrfs restore` (from `btrfs-progs`), which parses the btrfs on-disk format
-directly in userspace via a loop device — no kernel filesystem driver
-required. That is why the restore-verification pod runs a small custom image
-(`images/restore-helper/Dockerfile`) instead of an existing libguestfs image.
+The demo guest (`manifests/vm.yaml`, Debian golden `DataSource` in
+`vm-cbt-images`) uses an **ext4** root filesystem, which every helper image
+can mount directly via a loop device — no userspace filesystem parser
+required. The restore-verification pod still runs a small custom image
+(`images/restore-helper/Dockerfile`) to keep `qemu-img` and mount tooling
+together, and still needs `privileged: true` to attach loop devices, but the
+extraction step itself is a plain `mount -o ro`.
 
 ## Architecture
 
 ```text
-VM (btrfs root disk)
+VM (ext4 root disk)
   -> Full VirtualMachineBackup (hello-full)      -> PVC hello-full-output        (qcow2)
   -> Incremental VirtualMachineBackup (hello-incremental)
                                                    -> PVC hello-incremental-output (qcow2 overlay)
@@ -59,8 +57,8 @@ scripts/vm-cbt-restore-test.sh:
        qemu-img rebase    incremental.qcow2 onto full.qcow2 (fixes backing file)
        qemu-img convert   incremental.qcow2 (rebased)   -> combined.raw
        losetup -fP        full.raw / combined.raw       -> loop device + partitions
-       btrfs restore -i   <root partition>              -> extracted files
-       sha256sum + grep   extracted hello.txt
+       mount -o ro        <root partition>               -> mounted ext4 filesystem
+       sha256sum + grep   mounted hello.txt
   4. Assert: full.raw content == full-backup.sha256, marker line ABSENT
   5. Assert: combined.raw content == incremental-backup.sha256, marker line PRESENT
 ```
@@ -120,8 +118,8 @@ hello-full            Full          True   hello-full-2026-09-29_19-43-58       
 hello-incremental      Incremental   True   hello-incremental-2026-09-29_19-44-21   hello-incremental-output
 
 NAME                       STATUS   CAPACITY
-hello-full-output          Bound    30Gi
-hello-incremental-output   Bound    30Gi
+hello-full-output          Bound    5Gi
+hello-incremental-output   Bound    3Gi
 ```
 
 ### 3. Build and push the restore-helper image (one-time per registry)
@@ -138,7 +136,6 @@ FROM registry.fedoraproject.org/fedora:41
 
 RUN dnf install -y --setopt=install_weak_deps=False \
       qemu-img \
-      btrfs-progs \
       util-linux \
       findutils \
       coreutils \
@@ -233,6 +230,14 @@ spec:
 
           full_qcow2="$(find /backups/full -name '*.qcow2' | head -n1)"
           incremental_qcow2="$(find /backups/incremental -name '*.qcow2' | head -n1)"
+          if [[ -z "$full_qcow2" ]]; then
+            echo "ERROR: no qcow2 file found under /backups/full" >&2
+            exit 1
+          fi
+          if [[ -z "$incremental_qcow2" ]]; then
+            echo "ERROR: no qcow2 file found under /backups/incremental" >&2
+            exit 1
+          fi
           echo "FULL_QCOW2=$full_qcow2"
           echo "INCREMENTAL_QCOW2=$incremental_qcow2"
 
@@ -245,21 +250,39 @@ spec:
           qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2
           qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw
 
+          # Extract the guest file by mounting the raw disk's ext4 root
+          # filesystem directly via a loop device (Debian's genericcloud
+          # image uses ext4, which every helper image can mount natively).
           extract_hello_file() {
             local raw_image="$1" out_dir="$2"
-            local loop_dev part found
+            local loop_dev part mount_dir found
             loop_dev="$(losetup -fP --show "$raw_image")"
             udevadm settle --timeout=5 2>/dev/null || sleep 1
             part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
-            mkdir -p "$out_dir"
-            btrfs restore -i "$part" "$out_dir" >&2 || true
+            mount_dir="$out_dir/mnt"
+            mkdir -p "$mount_dir"
+            mount -o ro "$part" "$mount_dir"
+            found="$(find "$mount_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
+            if [[ -n "$found" ]]; then
+              mkdir -p "$out_dir/extract"
+              cp "$found" "$out_dir/extract/"
+              found="$out_dir/extract/$(basename "$hello_file")"
+            fi
+            umount "$mount_dir"
             losetup -d "$loop_dev"
-            found="$(find "$out_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
             printf '%s' "$found"
           }
 
           full_hello_path="$(extract_hello_file /work/full.raw /work/full-extract)"
           combined_hello_path="$(extract_hello_file /work/combined.raw /work/combined-extract)"
+          if [[ -z "$full_hello_path" ]]; then
+            echo "ERROR: could not locate $hello_file in the full-only restore" >&2
+            exit 1
+          fi
+          if [[ -z "$combined_hello_path" ]]; then
+            echo "ERROR: could not locate $hello_file in the full+incremental restore" >&2
+            exit 1
+          fi
 
           full_hash="$(sha256sum "$full_hello_path" | awk '{print $1}')"
           combined_hash="$(sha256sum "$combined_hello_path" | awk '{print $1}')"
@@ -278,8 +301,7 @@ spec:
 A `PodSecurity "restricted:latest"` admission **warning** (not an error) is
 expected on clusters enforcing the default restricted profile — the pod does
 still get created and run. It needs `privileged: true` and the node's `/dev`
-mounted in order to attach loop devices for `losetup`/`btrfs restore`; there
-is no less-privileged way to read a btrfs image without a kernel driver.
+mounted in order to attach loop devices for `losetup`/`mount`.
 
 ### 5. Read and independently interpret the output
 
@@ -349,7 +371,7 @@ deterministic, non-flaky file-level check.
 |---|---|---|
 | `ImagePullBackOff` on `hello-restore-verify` | `RESTORE_HELPER_IMAGE` unset, mistyped, or not pushed | Confirm `podman push` succeeded and the tag in `.env` matches exactly |
 | `qemu-img: Could not change the backing file ...: backing format must be specified` | Older `qemu-img` requires an explicit `-F qcow2` on `rebase` | Already fixed in the current manifest; if you see this, your copy predates that fix |
-| `libguestfs: error: cannot find any suitable libguestfs supermin ...` | Only relevant if reverting to a guestfish-based approach; the appliance path env var isn't inherited when the container command is overridden | N/A for the current `btrfs restore`-based approach, which does not use libguestfs |
-| `mount: unknown filesystem type 'btrfs'` | Any attempt to `mount -t btrfs` directly (host or libguestfs appliance) | Expected — this is exactly why the pod uses `btrfs restore` instead of mounting |
+| `libguestfs: error: cannot find any suitable libguestfs supermin ...` | Only relevant if reverting to a libguestfs-based approach; the appliance path env var isn't inherited when the container command is overridden | N/A for the current mount-based approach, which does not use libguestfs |
+| `mount: unknown filesystem type 'ext4'` | Helper image's kernel/mount tooling doesn't support ext4 (very unlikely on any modern Linux) | Use a helper base image with standard kernel/mount support; Fedora (the current base) always does |
 | `losetup: ...: failed to set up loop device: No such file or directory` | Pod's own minimal `/dev` lacks real loop device nodes | Already fixed by mounting the node's `/dev` (`host-dev` volume); if you see this, your copy predates that fix |
 | `ERROR: could not locate ... in the full-only restore` (intermittent) | Rare loop-device/udev race when multiple ad-hoc privileged pods share a node's loop devices | Already mitigated with `udevadm settle` + selecting the partition by size rather than position; re-run `make vm-cbt-restore-test` if it recurs |

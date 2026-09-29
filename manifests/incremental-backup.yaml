@@ -9,7 +9,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 5Gi
+      storage: 3Gi
 ---
 apiVersion: backup.kubevirt.io/v1alpha1
 kind: VirtualMachineBackup
