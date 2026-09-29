@@ -27,3 +27,7 @@ tmp-*/
 .idea/
 .vscode/
 .serena/
+.agents/
+.claude/
+.pi/
+skills-lock.json
