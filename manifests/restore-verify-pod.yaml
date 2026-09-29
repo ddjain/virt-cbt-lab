@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    cbt-demo-restore-verify: "true"
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: full-backup
+      persistentVolumeClaim:
+        claimName: __FULL_PVC__
+        readOnly: true
+    - name: incremental-backup
+      persistentVolumeClaim:
+        claimName: __INCREMENTAL_PVC__
+        readOnly: true
+    - name: work
+      emptyDir: {}
+    - name: host-dev
+      hostPath:
+        path: /dev
+        type: Directory
+  containers:
+    - name: restore-verify
+      image: __HELPER_IMAGE__
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: full-backup
+          mountPath: /backups/full
+          readOnly: true
+        - name: incremental-backup
+          mountPath: /backups/incremental
+          readOnly: true
+        - name: work
+          mountPath: /work
+        - name: host-dev
+          mountPath: /dev
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          hello_file="__HELLO_FILE__"
+          marker_line="__MARKER_LINE__"
+
+          full_qcow2="$(find /backups/full -name '*.qcow2' | head -n1)"
+          incremental_qcow2="$(find /backups/incremental -name '*.qcow2' | head -n1)"
+          if [[ -z "$full_qcow2" ]]; then
+            echo "ERROR: no qcow2 file found under /backups/full" >&2
+            exit 1
+          fi
+          if [[ -z "$incremental_qcow2" ]]; then
+            echo "ERROR: no qcow2 file found under /backups/incremental" >&2
+            exit 1
+          fi
+          echo "FULL_QCOW2=$full_qcow2"
+          echo "INCREMENTAL_QCOW2=$incremental_qcow2"
+
+          # Full backup alone: convert straight to raw.
+          qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw
+
+          # Full + incremental: rebase the overlay onto the full image, then
+          # convert the reconstructed chain to raw.
+          cp "$incremental_qcow2" /work/incremental.qcow2
+          qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2
+          qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw
+
+          # Extract the guest file straight from the raw disk's btrfs
+          # filesystem using `btrfs restore`, which parses the on-disk format
+          # in userspace via a loop device. This avoids requiring a btrfs
+          # kernel module, which RHEL/CentOS-family kernels (host or
+          # libguestfs appliance) do not ship.
+          extract_hello_file() {
+            local raw_image="$1" out_dir="$2"
+            local loop_dev part found
+            loop_dev="$(losetup -fP --show "$raw_image")"
+            udevadm settle --timeout=5 2>/dev/null || sleep 1
+            # Skip the first line (the whole loop device itself), then pick
+            # the largest remaining partition (the root filesystem) rather
+            # than just the last one, since partition count/order can vary.
+            part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
+            mkdir -p "$out_dir"
+            btrfs restore -i "$part" "$out_dir" >&2 || true
+            losetup -d "$loop_dev"
+            found="$(find "$out_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
+            printf '%s' "$found"
+          }
+
+          full_hello_path="$(extract_hello_file /work/full.raw /work/full-extract)"
+          combined_hello_path="$(extract_hello_file /work/combined.raw /work/combined-extract)"
+          if [[ -z "$full_hello_path" ]]; then
+            echo "ERROR: could not locate $hello_file in the full-only restore" >&2
+            exit 1
+          fi
+          if [[ -z "$combined_hello_path" ]]; then
+            echo "ERROR: could not locate $hello_file in the full+incremental restore" >&2
+            exit 1
+          fi
+
+          full_hash="$(sha256sum "$full_hello_path" | awk '{print $1}')"
+          combined_hash="$(sha256sum "$combined_hello_path" | awk '{print $1}')"
+
+          full_has_marker=no
+          if grep -Fqx "$marker_line" "$full_hello_path"; then full_has_marker=yes; fi
+          combined_has_marker=no
+          if grep -Fqx "$marker_line" "$combined_hello_path"; then combined_has_marker=yes; fi
+
+          echo "FULL_HASH=$full_hash"
+          echo "COMBINED_HASH=$combined_hash"
+          echo "FULL_HAS_MARKER=$full_has_marker"
+          echo "COMBINED_HAS_MARKER=$combined_has_marker"

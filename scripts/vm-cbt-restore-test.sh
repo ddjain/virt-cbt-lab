@@ -2,95 +2,62 @@
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=scripts/restore-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restore-lib.sh"
 WORKFLOW_NAME="vm-cbt-restore-test"
+require_restore_helper_image
 
-EXPECTED_FULL_HASH="86465948fd4c202dbd6905f48b7a639681ec6cf26be3ca7e33de909ee19b59d6"
-EXPECTED_INCREMENTAL_HASH="2c4cc2481630200313b91d02333cf35cbc08b6e5ec10eeb22eb8144aa3621373"
-INCREMENTAL_LINE="This line was added after the full backup."
+workflow_step "1/5 Read expected hashes recorded during backup"
+workflow_action "Reading $STATE_DIR/full-backup.sha256 and $STATE_DIR/incremental-backup.sha256"
+expected_full_hash="$(read_state_file "full-backup.sha256")"
+expected_incremental_hash="$(read_state_file "incremental-backup.sha256")"
+workflow_success "Expected full hash: $expected_full_hash; expected incremental hash: $expected_incremental_hash"
 
-workflow_step "1/4 Get backup checkpoint information"
-workflow_action "Reading backup CR metadata"
-full_backup_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
-incremental_backup_checkpoint="$(get_backup_checkpoint "$INCREMENTAL_BACKUP_NAME")"
+workflow_step "2/5 Locate the backup PVCs"
 full_pvc_name="$(get_backup_pvc_name "$FULL_BACKUP_NAME")"
 incremental_pvc_name="$(get_backup_pvc_name "$INCREMENTAL_BACKUP_NAME")"
-
-workflow_action "Full backup checkpoint: $full_backup_checkpoint"
-workflow_action "Full backup PVC: $full_pvc_name"
-workflow_action "Incremental checkpoint: $incremental_backup_checkpoint"
-workflow_action "Incremental backup PVC: $incremental_pvc_name"
-
-workflow_step "2/4 Verify backup PVCs exist and are bound"
-workflow_action "Checking full backup PVC status"
-
+workflow_action "Checking full backup PVC $full_pvc_name and incremental backup PVC $incremental_pvc_name are Bound"
 full_pvc_status="$(oc_cmd get pvc "$full_pvc_name" -n "$NAMESPACE" -o 'jsonpath={.status.phase}' 2>/dev/null || echo 'NOT FOUND')"
-if [[ "$full_pvc_status" != "Bound" ]]; then
-  printf 'Full backup PVC %s is not Bound (status: %s)\n' "$full_pvc_name" "$full_pvc_status" >&2
-  exit 1
-fi
-workflow_action "Full backup PVC status: $full_pvc_status"
-
-workflow_action "Checking incremental backup PVC status"
 incremental_pvc_status="$(oc_cmd get pvc "$incremental_pvc_name" -n "$NAMESPACE" -o 'jsonpath={.status.phase}' 2>/dev/null || echo 'NOT FOUND')"
-if [[ "$incremental_pvc_status" != "Bound" ]]; then
-  printf 'Incremental backup PVC %s is not Bound (status: %s)\n' "$incremental_pvc_name" "$incremental_pvc_status" >&2
+if [[ "$full_pvc_status" != "Bound" || "$incremental_pvc_status" != "Bound" ]]; then
+  printf 'Backup PVCs are not both Bound (full=%s incremental=%s).\n' "$full_pvc_status" "$incremental_pvc_status" >&2
   exit 1
 fi
-workflow_action "Incremental backup PVC status: $incremental_pvc_status"
+workflow_success "Both backup PVCs are Bound"
 
-workflow_success "Both backup PVCs are Bound and accessible"
+workflow_step "3/5 Reconstruct the guest disk and read the guest file"
+workflow_action "Rebase the incremental qcow2 onto the full qcow2, convert both to raw, and mount them read-only"
+restore_log="$(run_restore_verify_pod "$full_pvc_name" "$incremental_pvc_name")"
+printf '%s\n' "$restore_log"
 
-workflow_step "3/4 Verify backup PVCs have storage allocated"
-workflow_action "Checking storage capacity"
+full_hash="$(restore_log_field "$restore_log" "FULL_HASH")"
+combined_hash="$(restore_log_field "$restore_log" "COMBINED_HASH")"
+full_has_marker="$(restore_log_field "$restore_log" "FULL_HAS_MARKER")"
+combined_has_marker="$(restore_log_field "$restore_log" "COMBINED_HAS_MARKER")"
+workflow_success "Read guest file from the full-only restore and the full+incremental restore"
 
-full_capacity="$(oc_cmd get pvc "$full_pvc_name" -n "$NAMESPACE" -o 'jsonpath={.spec.resources.requests.storage}' 2>/dev/null || echo 'unknown')"
-incremental_capacity="$(oc_cmd get pvc "$incremental_pvc_name" -n "$NAMESPACE" -o 'jsonpath={.spec.resources.requests.storage}' 2>/dev/null || echo 'unknown')"
+workflow_step "4/5 Verify the full backup alone matches the pre-incremental content"
+workflow_action "Comparing restored full-only hash ($full_hash) to expected ($expected_full_hash), marker line must be absent"
+if [[ "$full_hash" != "$expected_full_hash" ]]; then
+  printf 'Full-backup restore mismatch: expected hash %s, got %s.\n' "$expected_full_hash" "$full_hash" >&2
+  exit 1
+fi
+if [[ "$full_has_marker" != "no" ]]; then
+  printf 'Full-backup restore unexpectedly contains the incremental marker line.\n' >&2
+  exit 1
+fi
+workflow_success "Full backup restores the correct pre-incremental content"
 
-workflow_action "Full backup PVC capacity: $full_capacity"
-workflow_action "Incremental backup PVC capacity: $incremental_capacity"
+workflow_step "5/5 Verify the full+incremental restore matches the post-incremental content"
+workflow_action "Comparing restored full+incremental hash ($combined_hash) to expected ($expected_incremental_hash), marker line must be present"
+if [[ "$combined_hash" != "$expected_incremental_hash" ]]; then
+  printf 'Full+incremental restore mismatch: expected hash %s, got %s.\n' "$expected_incremental_hash" "$combined_hash" >&2
+  exit 1
+fi
+if [[ "$combined_has_marker" != "yes" ]]; then
+  printf 'Full+incremental restore is missing the incremental marker line; the incremental delta was not applied.\n' >&2
+  exit 1
+fi
+workflow_success "Full+incremental restore contains the correct post-incremental content"
 
-workflow_success "Storage capacities verified"
-
-workflow_step "4/4 Summary of restore verification"
-workflow_action "Expected pre-backup file hash: $EXPECTED_FULL_HASH"
-workflow_action "Expected post-backup file hash: $EXPECTED_INCREMENTAL_HASH"
-workflow_action "Expected incremental marker line: '$INCREMENTAL_LINE'"
-
-printf '\n[%s] CBT backup restore verification complete\n' "$WORKFLOW_NAME" >&2
-printf '  ✓ Full backup PVC exists: %s (status: %s)\n' "$full_pvc_name" "$full_pvc_status" >&2
-printf '  ✓ Full backup checkpoint: %s\n' "$full_backup_checkpoint" >&2
-printf '  ✓ Incremental backup PVC exists: %s (status: %s)\n' "$incremental_pvc_name" "$incremental_pvc_status" >&2
-printf '  ✓ Incremental backup checkpoint: %s\n' "$incremental_backup_checkpoint" >&2
-
-workflow_success "Restore verification passed; backup PVCs exist, are Bound, and ready for data extraction"
-
-cat << 'NEXT_STEPS'
-
-✓ Verification Completed: Backup Artifacts are Created and Stored
-
-  Full Backup:
-    PVC: ECHO_FULL_PVC
-    Checkpoint: ECHO_FULL_CP
-    Status: Bound
-    Expected Data: Initial VM disk state
-
-  Incremental Backup:
-    PVC: ECHO_INC_PVC
-    Checkpoint: ECHO_INC_CP
-    Status: Bound
-    Expected Data: Only changed blocks from checkpoint
-
-Next Steps for Full Data Integrity Verification (manual):
-1. Export qcow2 files from PVCs to external storage
-2. Open qcow2 images with libvirt/qemu-img
-3. Extract and mount root filesystem
-4. Verify file content matches expected hashes:
-   - Full backup: 86465948fd4c202dbd6905f48b7a639681ec6cf26be3ca7e33de909ee19b59d6
-   - Incremental: 2c4cc2481630200313b91d02333cf35cbc08b6e5ec10eeb22eb8144aa3621373
-5. Confirm incremental line is present: "This line was added after the full backup."
-
-NEXT_STEPS
-
-# Print actual values into the next steps output
-printf '\n[%s] For reference: Full PVC=%s, Incremental PVC=%s\n' "$WORKFLOW_NAME" "$full_pvc_name" "$incremental_pvc_name" >&2
-
+printf '\n[%s] Restore verification passed: reconstructed disks match the guest data recorded at backup time.\n' "$WORKFLOW_NAME" >&2

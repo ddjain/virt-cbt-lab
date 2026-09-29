@@ -4,12 +4,12 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="vm-cbt-verify"
 
-workflow_step "1/3 Read VM CBT state"
+workflow_step "1/4 Read VM CBT state"
 workflow_action "oc get vm $VM_NAME -n $NAMESPACE -o jsonpath=.status.changedBlockTracking.state"
 vm_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
 workflow_success "VM $VM_NAME CBT state: ${vm_state:-unknown}"
 
-workflow_step "2/3 Read backup completion, types, and checkpoints"
+workflow_step "2/4 Read backup completion, types, and checkpoints"
 workflow_action "Query $FULL_BACKUP_NAME, $INCREMENTAL_BACKUP_NAME, and tracker $TRACKER_NAME in namespace $NAMESPACE"
 full_type="$(get_backup_type "$FULL_BACKUP_NAME")"
 full_done="$(get_backup_done_status "$FULL_BACKUP_NAME")"
@@ -22,7 +22,7 @@ workflow_action "Full: type=$full_type done=$full_done checkpoint=$full_checkpoi
 workflow_action "Incremental: type=$incremental_type done=$incremental_done checkpoint=$incremental_checkpoint"
 workflow_action "Tracker $TRACKER_NAME latest checkpoint=$latest_checkpoint"
 
-workflow_step "3/3 Validate CBT and checkpoint relationships"
+workflow_step "3/4 Validate CBT and checkpoint relationships"
 vm_cbt_is_enabled() {
   [[ "$vm_state" == Enabled ]]
 }
@@ -59,11 +59,11 @@ workflow_success "CBT verification passed; full and incremental checkpoints are 
 printf 'Full checkpoint:        %s\nIncremental checkpoint: %s\n' \
   "$full_checkpoint" "$incremental_checkpoint"
 
-workflow_step "4/3 Verify backup restoration and artifact integrity (optional)"
-workflow_action "Running restore test to verify backup data accessibility"
-if "./scripts/vm-cbt-restore-test.sh"; then
-  workflow_success "Backup restore test completed; verify artifacts in vm-cbt-restore namespace"
+workflow_step "4/4 Verify the backups actually restore the correct guest data"
+workflow_action "Running scripts/vm-cbt-restore-test.sh to rebuild and read the guest disk"
+if "$ROOT_DIR/scripts/vm-cbt-restore-test.sh"; then
+  workflow_success "Restore test passed; full and full+incremental restores match the recorded guest data"
 else
-  workflow_failed "Restore test encountered an error (this is optional verification)"
+  workflow_failed "Restore test failed; the backup does not reconstruct the expected guest data"
   exit 1
 fi
