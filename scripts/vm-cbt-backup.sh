@@ -4,6 +4,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="vm-cbt-backup"
 require_command ssh
+load_run_id
+load_report_id
 
 wait_for_full_checkpoint_in_tracker() {
   local expected_checkpoint="$1" tracker_checkpoint=
@@ -49,15 +51,29 @@ if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
   printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
 sha256sum ~/hello.txt
+stat -c 'SIZE_BYTES=%s' ~/hello.txt
 "
-guest_hash_line="$(guest_ssh "$guest_mutation_command")"
-printf '%s\n' "$guest_hash_line"
-write_state_file "incremental-backup.sha256" "$(printf '%s' "$guest_hash_line" | extract_sha256)"
+guest_output="$(guest_ssh "$guest_mutation_command")"
+printf '%s\n' "$guest_output"
+guest_hash_line="$(printf '%s\n' "$guest_output" | grep -v '^SIZE_BYTES=')"
+guest_size_bytes="$(printf '%s\n' "$guest_output" | sed -n 's/^SIZE_BYTES=//p')"
+guest_hash="$(printf '%s' "$guest_hash_line" | extract_sha256)"
+write_state_file "incremental-backup.sha256" "$guest_hash"
+guest_captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 workflow_success "Guest data changed after checkpoint $full_checkpoint; expected incremental-backup hash recorded in $STATE_DIR"
 
 workflow_step "3/5 Create the incremental backup request"
-workflow_action "oc apply -f manifests/incremental-backup.yaml (PVC hello-incremental-output and backup $INCREMENTAL_BACKUP_NAME)"
-oc_cmd apply -f "$ROOT_DIR/manifests/incremental-backup.yaml"
+workflow_action "oc apply -f manifests/incremental-backup.yaml (PVC $INCREMENTAL_BACKUP_PVC_NAME and backup $INCREMENTAL_BACKUP_NAME)"
+sed \
+  -e "s|__NAMESPACE__|$NAMESPACE|g" \
+  -e "s|__TRACKER_NAME__|$TRACKER_NAME|g" \
+  -e "s|__INCREMENTAL_BACKUP_NAME__|$INCREMENTAL_BACKUP_NAME|g" \
+  -e "s|__INCREMENTAL_BACKUP_PVC__|$INCREMENTAL_BACKUP_PVC_NAME|g" \
+  -e "s|__RUN_ID__|$RUN_ID|g" \
+  -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
+  -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
+  -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
+  "$ROOT_DIR/manifests/incremental-backup.yaml" | oc_cmd apply -f -
 workflow_success "Incremental backup request $INCREMENTAL_BACKUP_NAME submitted from tracker $TRACKER_NAME"
 
 workflow_step "4/5 Wait for incremental backup completion"
@@ -73,3 +89,23 @@ if [[ "$incremental_backup_type" != Incremental ]]; then
 fi
 incremental_checkpoint="$(get_backup_checkpoint "$INCREMENTAL_BACKUP_NAME")"
 workflow_success "$INCREMENTAL_BACKUP_NAME is $incremental_backup_type (checkpoint $incremental_checkpoint)"
+
+workflow_action "Recording incremental backup PVC size and VM backup status for the run report"
+incremental_backup_status="$(get_vm_backup_status)"
+if [[ "$(jq -r '.backupName // empty' <<<"$incremental_backup_status")" != "$INCREMENTAL_BACKUP_NAME" ]]; then
+  incremental_backup_status='{}'
+fi
+write_report_fragment "incremental-backup" "$(jq -n \
+  --arg sha256 "$guest_hash" \
+  --argjson size_bytes "$guest_size_bytes" \
+  --arg captured_at "$guest_captured_at" \
+  --arg name "$INCREMENTAL_BACKUP_NAME" \
+  --arg type "$incremental_backup_type" \
+  --arg checkpoint_name "$incremental_checkpoint" \
+  --arg pvc_name "$INCREMENTAL_BACKUP_PVC_NAME" \
+  --arg pvc_requested "$(get_pvc_requested "$INCREMENTAL_BACKUP_PVC_NAME")" \
+  --arg pvc_capacity "$(get_pvc_capacity "$INCREMENTAL_BACKUP_PVC_NAME")" \
+  --argjson backup_status "$incremental_backup_status" \
+  '{guest: {incremental_backup: {size_bytes: $size_bytes, sha256: $sha256, captured_at: $captured_at}},
+    backups: {incremental: ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
+                              pvc_name: $pvc_name, pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)}}')"

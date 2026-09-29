@@ -5,7 +5,8 @@
 # booting a second VM.
 set -euo pipefail
 
-RESTORE_POD_NAME="hello-restore-verify"
+# RESTORE_POD_NAME is derived from the current run ID by common.sh's
+# set_resource_names (via load_run_id/new_run_id).
 # No default: this image must provide qemu-img and util-linux (see
 # images/restore-helper/Dockerfile). Build it and set RESTORE_HELPER_IMAGE in
 # .env to your pushed reference.
@@ -38,6 +39,10 @@ run_restore_verify_pod() {
     -e "s|__HELPER_IMAGE__|$RESTORE_HELPER_IMAGE|g" \
     -e "s|__HELLO_FILE__|$GUEST_HELLO_FILE|g" \
     -e "s|__MARKER_LINE__|$CBT_INCREMENTAL_MARKER_LINE|g" \
+    -e "s|__RUN_ID__|$RUN_ID|g" \
+    -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
+    -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
+    -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
     "$ROOT_DIR/manifests/restore-verify-pod.yaml" | oc_cmd apply -f -
 
   workflow_action "Waiting for pod/$RESTORE_POD_NAME to reach phase Succeeded or Failed (timeout 10m)"

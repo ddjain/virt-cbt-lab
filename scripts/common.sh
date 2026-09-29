@@ -6,19 +6,26 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
 GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
 # These constants are consumed by scripts that source this file.
 # shellcheck disable=SC2034
-NAMESPACE="vm-cbt-demo"
-# shellcheck disable=SC2034
-VM_NAME="vm-cbt-demo"
+NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 GUEST_USER="cbt-demo"
-SSH_SERVICE="vm-cbt-ssh"
-# shellcheck disable=SC2034
-TRACKER_NAME="hello-tracker"
-# shellcheck disable=SC2034
-FULL_BACKUP_NAME="hello-full"
-# shellcheck disable=SC2034
-INCREMENTAL_BACKUP_NAME="hello-incremental"
 # shellcheck disable=SC2034
 STATE_DIR="$ROOT_DIR/state"
+# shellcheck disable=SC2034
+RUN_ID_FILE="$STATE_DIR/run-id"
+# shellcheck disable=SC2034
+REPORT_ROOT_DIR="$ROOT_DIR/report"
+# shellcheck disable=SC2034
+REPORT_ID_FILE="$STATE_DIR/report-id"
+# Ownership label applied to every resource created by an E2E run, so
+# scripts/clean-all.sh can delete them without deleting the shared namespace.
+# shellcheck disable=SC2034
+RUN_LABEL_MANAGED_BY_KEY="app.kubernetes.io/managed-by"
+# shellcheck disable=SC2034
+RUN_LABEL_MANAGED_BY_VALUE="virt-cbt-lab"
+# shellcheck disable=SC2034
+RUN_LABEL_RUN_ID_KEY="virt-cbt-lab/run-id"
+# shellcheck disable=SC2034
+RUN_LABEL_SELECTOR="$RUN_LABEL_MANAGED_BY_KEY=$RUN_LABEL_MANAGED_BY_VALUE"
 # Guest mutation used to prove the incremental backup carries real changes.
 # shellcheck disable=SC2034
 CBT_INCREMENTAL_MARKER_LINE="This line was added after the full backup."
@@ -73,10 +80,108 @@ require_command() {
 }
 
 require_command oc
+require_command jq
 if [[ -n "$KUBECONFIG_PATH" && ! -r "$KUBECONFIG_PATH" ]]; then
   printf 'Kubeconfig is not readable: %s\n' "$KUBECONFIG_PATH" >&2
   exit 1
 fi
+
+# Word lists for human-readable run IDs (see new_run_id). Kept short and
+# unambiguous; DNS-1123-safe (lowercase letters only).
+RUN_ID_ADJECTIVES=(dark silent brave calm fuzzy happy wild gentle bright swift)
+RUN_ID_NOUNS=(forest river wolf meadow penguin mountain falcon ocean tiger valley)
+
+# Derive every per-run resource name from the current $RUN_ID, so a run's VM,
+# disk, backups, and tracker always reference each other and never collide
+# with another run's resources in the same namespace. Each resource type
+# keeps its own fixed prefix ahead of the shared run ID.
+set_resource_names() {
+  # shellcheck disable=SC2034
+  VM_NAME="vm-${RUN_ID}"
+  # shellcheck disable=SC2034
+  DV_NAME="vm-disk-${RUN_ID}"
+  # shellcheck disable=SC2034
+  SSH_SERVICE="vm-ssh-${RUN_ID}"
+  # shellcheck disable=SC2034
+  TRACKER_NAME="vm-tracker-${RUN_ID}"
+  # shellcheck disable=SC2034
+  FULL_BACKUP_NAME="vm-backup-${RUN_ID}"
+  # shellcheck disable=SC2034
+  FULL_BACKUP_PVC_NAME="vm-backup-pvc-${RUN_ID}"
+  # shellcheck disable=SC2034
+  INCREMENTAL_BACKUP_NAME="vm-incremental-${RUN_ID}"
+  # shellcheck disable=SC2034
+  INCREMENTAL_BACKUP_PVC_NAME="vm-incremental-pvc-${RUN_ID}"
+  # shellcheck disable=SC2034
+  RESTORE_POD_NAME="vm-restore-verify-${RUN_ID}"
+}
+
+# Generate one new run ID (random adjective-noun pair, plus a short random
+# hex tag since the 100 adjective/noun combinations alone collide too often
+# across repeated runs) and persist it so every later script invocation in
+# the same E2E run reuses it.
+new_run_id() {
+  mkdir -p "$STATE_DIR"
+  local adjective noun tag
+  adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
+  noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
+  # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
+  # reader and trip `set -o pipefail` under the ERR trap.
+  tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+  RUN_ID="${adjective}-${noun}-${tag}"
+  printf '%s' "$RUN_ID" > "$RUN_ID_FILE"
+  set_resource_names
+  printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
+}
+
+# Load the run ID persisted by new_run_id (or an explicitly exported RUN_ID)
+# for scripts that must operate on an already-created run's resources.
+load_run_id() {
+  if [[ -z "${RUN_ID:-}" ]]; then
+    if [[ ! -f "$RUN_ID_FILE" ]]; then
+      printf 'No active run ID found in %s. Run `make vm-setup` (or `make e2e`) first.\n' "$RUN_ID_FILE" >&2
+      return 1
+    fi
+    RUN_ID="$(cat "$RUN_ID_FILE")"
+  fi
+  set_resource_names
+}
+
+# Generate one new report ID (UTC timestamp, human-sortable) and persist it
+# so every later script invocation in the same E2E run appends to the same
+# report/<REPORT_ID>/ directory. Kept separate from RUN_ID so the fixed
+# Kubernetes resource-naming contract never changes.
+new_report_id() {
+  mkdir -p "$STATE_DIR"
+  REPORT_ID="run_$(date -u +%Y%m%dT%H%M%SZ)"
+  printf '%s' "$REPORT_ID" > "$REPORT_ID_FILE"
+  REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
+  mkdir -p "$REPORT_DIR/fragments"
+  printf '[vm-cbt] New report ID: %s\n' "$REPORT_ID" >&2
+}
+
+# Load the report ID persisted by new_report_id for scripts that must append
+# to an already-created run's report.
+load_report_id() {
+  if [[ -z "${REPORT_ID:-}" ]]; then
+    if [[ ! -f "$REPORT_ID_FILE" ]]; then
+      printf 'No active report ID found in %s. Run `make vm-setup` (or `make e2e`) first.\n' "$REPORT_ID_FILE" >&2
+      return 1
+    fi
+    REPORT_ID="$(cat "$REPORT_ID_FILE")"
+  fi
+  REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
+  mkdir -p "$REPORT_DIR/fragments"
+}
+
+# Write one named JSON fragment for the current report; scripts pass already
+# well-formed JSON text (usually built with `jq -n`). vm-cbt-verify.sh merges
+# every fragment into report/<REPORT_ID>/report.json once the run completes.
+write_report_fragment() {
+  local fragment_name="$1" json_content="$2"
+  mkdir -p "$REPORT_DIR/fragments"
+  printf '%s' "$json_content" | jq '.' > "$REPORT_DIR/fragments/$fragment_name.json"
+}
 
 ensure_guest_key() {
   printf '[vm-cbt] Ensuring the guest SSH key is available at %s.\n' "$GUEST_KEY" >&2
@@ -234,6 +339,29 @@ get_backup_pvc_name() {
   oc_cmd get vmbackup "$backup_name" \
     -n "$NAMESPACE" \
     -o 'jsonpath={.spec.pvcName}'
+}
+
+get_pvc_requested() {
+  local pvc_name="$1"
+  oc_cmd get pvc "$pvc_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.spec.resources.requests.storage}' 2>/dev/null
+}
+
+get_pvc_capacity() {
+  local pvc_name="$1"
+  oc_cmd get pvc "$pvc_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.capacity.storage}' 2>/dev/null
+}
+
+# Read the VM's changedBlockTracking.backupStatus as JSON. This field is
+# overwritten by every subsequent backup, so callers must read it
+# immediately after their own backup reports Done=True and confirm
+# .backupName matches before trusting its timestamps.
+get_vm_backup_status() {
+  oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json |
+    jq -c '.status.changedBlockTracking.backupStatus // {}'
 }
 
 # Record a guest-observed value (e.g. a hash captured at backup time) so a

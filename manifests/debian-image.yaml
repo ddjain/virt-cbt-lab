@@ -56,7 +56,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: default
-    namespace: vm-cbt-demo
+    namespace: __NAMESPACE__
 roleRef:
   kind: ClusterRole
   name: cdi.kubevirt.io:clone-sourcer

@@ -14,16 +14,18 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 - `vm-setup.sh` imports the cached Debian golden image (once), then creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
-- `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`.
+- `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`, then merges every stage's fragment into the run's `report.json`.
 - `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and incremental backup PVCs and verifies its actual data — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and how to independently cross-check it.
 - `clean-all.sh` removes the demo namespace and only the guest key marked as workflow-managed.
+
+Each run also writes a structured JSON report to `report/run_<UTC timestamp>/` — see [Run report](#run-report) below.
 
 The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The cluster's selector representation varies by KubeVirt version, so preflight does not gate on that literal configuration; setup and verification require the resulting VM CBT state to be `Enabled`.
 
 ## Prerequisites
 
 Local tools:
-- Bash 3.2 or newer, Make, `oc`, `ssh`, `ssh-keygen`, and `rsync` for `sync.sh`.
+- Bash 3.2 or newer, Make, `oc`, `ssh`, `ssh-keygen`, `jq` (builds and merges the per-run JSON report), and `rsync` for `sync.sh`.
 - A readable kubeconfig and permission to create/delete the demo resources.
 
 Cluster resources:
@@ -78,7 +80,7 @@ Run the read-only readiness check directly, or let `make e2e` run it automatical
 `make e2e` stops before creating resources when preflight reports a failure. Use `make preflight` to invoke the same check explicitly.
 
 
-`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup and CDI CRDs, `cbt-demo-hpp`, the `IncrementalBackup` gate, required create/delete permissions, the guest SSH key when present, and temporary-directory access. It does not pre-check the Debian golden image itself, since `vm-setup.sh` creates and imports it on demand. A missing guest key is a warning because `vm-setup.sh` generates it. The literal CBT selector is not a preflight gate because KubeVirt versions expose that configuration differently; setup and verification validate actual CBT state. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
+`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, `jq`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup and CDI CRDs, `cbt-demo-hpp`, the `IncrementalBackup` gate, required create/delete permissions, the guest SSH key when present, and temporary-directory access. It does not pre-check the Debian golden image itself, since `vm-setup.sh` creates and imports it on demand. A missing guest key is a warning because `vm-setup.sh` generates it. The literal CBT selector is not a preflight gate because KubeVirt versions expose that configuration differently; setup and verification validate actual CBT state. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
 
 Each result is marked `PASS`, `WARN`, or `FAIL`. Warnings do not fail the check; any failure produces exit code `1` and `NOT READY`. Exit code `0` produces `READY`. Use `./preflight --verbose` for the same safe summary with an explicit note that command diagnostics are suppressed to avoid leaking credentials or kubeconfig data. Example:
 
@@ -114,13 +116,13 @@ make vm-cbt-verify
 
 The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
 
-The fixed names allow one run per namespace. Start over with:
+Each `make e2e` run generates a unique run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and names every resource it creates from it, so repeat runs coexist in the same `NAMESPACE` without collisions; no cleanup is required between runs. To remove all runs' resources from the namespace:
 
 ```sh
 make clean-all
 ```
 
-Cleanup deletes only `vm-cbt-demo` resources and waits for its dynamically provisioned PVs to be reclaimed. It does not uninstall KubeVirt or delete the shared storage class.
+Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-lab` (every run this workflow created) and waits for their dynamically provisioned PVs to be reclaimed; it does not delete the namespace itself or any unrelated resources in it. It does not uninstall KubeVirt or delete the shared storage class. See `docs/vm-cbt-workflow.md` for the full resource-naming scheme.
 
 ## Synchronization helper
 
@@ -156,7 +158,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 - **PVC remains pending:** verify that `cbt-demo-hpp` exists and can provision local demo volumes.
 - **Guest SSH retries or times out:** inspect VM readiness, the service, and the port-forward messages. Ensure the generated private key is readable only by its owner.
 - **An incremental backup already exists:** run `make clean-all` before repeating the fixed-name workflow.
-- **Incremental type is wrong:** wait for the full checkpoint to appear in `hello-tracker` and inspect backup conditions and tracker status.
+- **Incremental type is wrong:** wait for the full checkpoint to appear in the run's `VirtualMachineBackupTracker` (`vm-tracker-<run-id>`) and inspect backup conditions and tracker status.
 
 ## Repository structure
 
@@ -173,8 +175,21 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 │   ├── dotenv.sh         # Safe parser for supported .env values
 │   └── restore-lib.sh    # Restore-verification pod orchestration
 ├── state/                # Guest hashes recorded at backup time (gitignored, created at runtime)
+├── report/               # Per-run JSON reports and restore logs (gitignored, created at runtime, survives clean-all)
 └── sync.sh               # Optional remote synchronization helper
 ```
+
+## Run report
+
+Each `vm-setup.sh` run generates a `REPORT_ID` (`run_<UTC timestamp>`, independent of the resource-naming `RUN_ID`) and every later stage in the same run appends a JSON fragment under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges all fragments into `report/<REPORT_ID>/report.json` once the restore test finishes, alongside the restore-verify pod's raw log at `report/<REPORT_ID>/restore-test.log`.
+
+`report.json` contains, per run:
+- `guest.full_backup` / `guest.incremental_backup`: the guest file's path, size in bytes, SHA-256, and capture time, for both backups.
+- `backups.full` / `backups.incremental`: backup name, type, checkpoint name, backup PVC name/requested size/actual capacity, and (when available) the VM's recorded backup start/end timestamps and completion status.
+- `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
+- `verification.checks`: every individual check from `vm-cbt-verify.sh` and `vm-cbt-restore-test.sh` (CBT state, checkpoint distinctness, PVC binding, restore hash/marker matches) with a `passed` boolean each, plus `overall_passed` and `restore_log_path`.
+
+Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to remain as a debugging record across runs. Inspect it with `jq . report/run_*/report.json` or diff two runs' `report.json` files to compare outcomes.
 
 ## Known limitations
 
