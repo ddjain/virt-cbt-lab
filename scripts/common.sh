@@ -24,6 +24,13 @@ STATE_DIR="$ROOT_DIR/state"
 CBT_INCREMENTAL_MARKER_LINE="This line was added after the full backup."
 # shellcheck disable=SC2034
 GUEST_HELLO_FILE="/home/$GUEST_USER/hello.txt"
+# Sizes (MiB) of the random payload written to the guest file at setup and
+# appended before the incremental backup, so CBT tracks a real block delta
+# instead of a single text line.
+# shellcheck disable=SC2034
+GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
+# shellcheck disable=SC2034
+GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
 
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   export KUBECONFIG="$KUBECONFIG_PATH"

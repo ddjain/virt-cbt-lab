@@ -40,10 +40,12 @@ wait_for_full_checkpoint_in_tracker "$full_checkpoint"
 workflow_success "Full backup $FULL_BACKUP_NAME is complete as $full_backup_type; tracker checkpoint recorded"
 
 workflow_step "2/5 Modify guest data after the full checkpoint"
-workflow_action "Port-forward service $SSH_SERVICE and append the idempotent CBT test line to ~/hello.txt"
+workflow_action "Port-forward service $SSH_SERVICE and append a ${GUEST_INCREMENTAL_DATA_SIZE_MB}MiB payload plus the idempotent CBT test line to ~/hello.txt"
 workflow_action "Print the new guest file SHA-256 and record it as the expected incremental-backup content"
 guest_mutation_command="
 if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
+  head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
+  printf '\n' >> ~/hello.txt
   printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
 sha256sum ~/hello.txt
