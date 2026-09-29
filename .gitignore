@@ -1,0 +1,26 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.kubeconfig
+kubeconfig
+.kube/
+
+# Generated workflow state and credentials
+vm-cbt-demo/
+*.vm-cbt-managed
+*.log
+logs/
+tmp/
+tmp-*/
+
+# Tool and OS metadata
+.DS_Store
+.idea/
+.vscode/
