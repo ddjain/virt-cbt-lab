@@ -75,7 +75,7 @@ load_dotenv_defaults "$ROOT_DIR/.env"
 
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
-GUEST_KEY="${GUEST_KEY:-${HOME:-$ROOT_DIR}/.local/share/vm-cbt-demo/id_ed25519}"
+GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
 if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 
 check_repository() {
@@ -150,7 +150,7 @@ check_cluster_capabilities() {
     return
   fi
 
-  local feature_gates cbt_configuration
+  local feature_gates
   for crd in virtualmachines.kubevirt.io virtualmachinebackups.backup.kubevirt.io virtualmachinebackuptrackers.backup.kubevirt.io; do
     if oc get crd "$crd" >/dev/null 2>"$TMP_DIR/oc-error"; then
       result PASS "required CRD $crd is installed"
@@ -175,12 +175,10 @@ check_cluster_capabilities() {
   else
     result FAIL "IncrementalBackup feature gate is not confirmed in KubeVirt configuration"
   fi
-  if cbt_configuration="$(oc get kubevirt -A -o 'jsonpath={range .items[*]}{.spec.configuration.developerConfiguration}{"\n"}{end}' 2>"$TMP_DIR/oc-error")" &&
-     printf '%s\n' "$cbt_configuration" | grep -Fq 'cbt-demo=enabled'; then
-    result PASS "CBT selector includes cbt-demo=enabled"
-  else
-    result FAIL "CBT selector cbt-demo=enabled is not confirmed"
-  fi
+  # The cluster's CBT selector is intentionally not a preflight gate. Some
+  # KubeVirt versions do not expose the selector consistently through this
+  # field, while vm-setup.sh and vm-cbt-verify.sh validate actual CBT state.
+  # cbt-demo=enabled remains the label supplied by manifests/vm.yaml.
 
   for permission in 'create namespaces' 'create virtualmachines' 'create virtualmachinebackups' 'delete namespaces'; do
     local verb="${permission%% *}" resource="${permission#* }"
@@ -197,7 +195,7 @@ check_guest_ssh() {
   if [[ -f "$GUEST_KEY" && -r "$GUEST_KEY" ]]; then
     result PASS "guest private key is readable"
     local key_mode
-    key_mode="$(stat -f '%Lp' "$GUEST_KEY" 2>/dev/null || stat -c '%a' "$GUEST_KEY" 2>/dev/null || true)"
+    key_mode="$(stat -c '%a' "$GUEST_KEY" 2>/dev/null || stat -f '%Lp' "$GUEST_KEY" 2>/dev/null || true)"
     if [[ "$key_mode" == 600 || "$key_mode" == 400 ]]; then
       result PASS "guest private key permissions are owner-only"
     else
@@ -217,9 +215,8 @@ check_guest_ssh() {
       result FAIL "guest private key cannot be validated"
     fi
   else
-    result FAIL "guest private key is missing or unreadable (set GUEST_KEY or run vm-setup.sh to generate it)"
+    result WARN "guest private key is missing; vm-setup.sh will generate it at the configured path"
   fi
-  result PASS "workflow guest user is configured as cbt-demo; SSH uses an ephemeral local oc port-forward"
 }
 
 check_permissions() {

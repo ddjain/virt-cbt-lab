@@ -13,6 +13,7 @@ kubeconfig
 .kube/
 
 # Generated workflow state and credentials
+/keys/
 vm-cbt-demo/
 *.vm-cbt-managed
 *.log

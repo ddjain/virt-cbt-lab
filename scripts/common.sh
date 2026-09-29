@@ -3,7 +3,7 @@ set -euo pipefail
 # shellcheck disable=SC2034
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
-GUEST_KEY="${GUEST_KEY:-${HOME:-$ROOT_DIR}/.local/share/vm-cbt-demo/id_ed25519}"
+GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
 # These constants are consumed by scripts that source this file.
 # shellcheck disable=SC2034
 NAMESPACE="vm-cbt-demo"

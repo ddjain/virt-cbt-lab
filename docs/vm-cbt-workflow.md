@@ -14,7 +14,7 @@ The demo proves the flow end to end by checking that:
 4. A second backup completes as `Incremental`, with a different checkpoint.
 5. The tracker advances to the incremental checkpoint.
 
-The incremental-backup feature is preview/alpha, not a GA feature. The cluster's OpenShift Virtualization `HyperConverged` resource must enable the `incrementalBackup` feature gate and select VMs with the `cbt-demo=enabled` label. The VM manifest supplies that label. `vm-setup.sh` stops with an error if the resulting VM CBT status is not `Enabled`.
+The incremental-backup feature is preview/alpha, not a GA feature. The cluster must enable the `incrementalBackup` feature gate. The VM manifest supplies the custom `cbt-demo=enabled` label; selector configuration is KubeVirt-version-dependent and is not treated as a preflight gate. `vm-setup.sh` and `vm-cbt-verify.sh` stop unless the resulting VM CBT status is `Enabled`.
 
 Upstream background: [CBT label selectors, PR #14772](https://github.com/kubevirt/kubevirt/pull/14772), [incremental VM backups, PR #16285](https://github.com/kubevirt/kubevirt/pull/16285), and the [KubeVirt v1.8.0 release](https://github.com/kubevirt/kubevirt/releases/tag/v1.8.0).
 
@@ -23,7 +23,7 @@ Upstream background: [CBT label selectors, PR #14772](https://github.com/kubevir
 The target server needs:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` backup APIs.
-- The `IncrementalBackup` feature gate enabled and a CBT selector matching `cbt-demo=enabled`.
+- The `IncrementalBackup` feature gate.
 - The `cbt-demo-hpp` virtualization storage class.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, and access to the local kubeconfig.
@@ -69,7 +69,7 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 `scripts/vm-setup.sh`:
 
 1. Checks that the Fedora `DataSource` is available.
-2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, `$HOME/.local/share/vm-cbt-demo/id_ed25519`).
+2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
 3. Applies `manifests/vm.yaml`, which creates namespace `vm-cbt-demo`, VM `vm-cbt-demo`, and the `vm-cbt-ssh` service.
 4. Creates a 30 GiB root `DataVolume` from the Fedora `DataSource`, using `cbt-demo-hpp`. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.

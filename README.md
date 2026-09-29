@@ -17,7 +17,7 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint.
 - `clean-all.sh` removes the demo namespace and only the guest key marked as workflow-managed.
 
-The VM manifest selects the Fedora `DataSource`, the `cbt-demo-hpp` storage class, and the `cbt-demo=enabled` label. The target cluster must be configured to select that label for CBT.
+The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The cluster's selector representation varies by KubeVirt version, so preflight does not gate on that literal configuration; setup and verification require the resulting VM CBT state to be `Enabled`.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ Local tools:
 Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
-- The `IncrementalBackup` feature gate and a CBT selector matching `cbt-demo=enabled`.
+- The `IncrementalBackup` feature gate.
 - A `cbt-demo-hpp` storage class that can provision the 30 GiB RWO demo volumes.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 
@@ -58,7 +58,7 @@ Supported variables:
 | Variable | Required | Meaning |
 |---|---:|---|
 | `KUBECONFIG_PATH` | No | Kubeconfig path; otherwise `KUBECONFIG` or the `oc` default is used. |
-| `GUEST_KEY` | No | Private key path. Default: `$HOME/.local/share/vm-cbt-demo/id_ed25519`. |
+| `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
 | `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
 
@@ -74,7 +74,7 @@ Run the read-only readiness check directly, or let `make e2e` run it automatical
 `make e2e` stops before creating resources when preflight reports a failure. Use `make preflight` to invoke the same check explicitly.
 
 
-`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup CRDs, the Fedora DataSource, `cbt-demo-hpp`, the `IncrementalBackup` gate and CBT selector, required create/delete permissions, the guest SSH key, and temporary-directory access. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
+`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup CRDs, the Fedora DataSource, `cbt-demo-hpp`, the `IncrementalBackup` gate, required create/delete permissions, the guest SSH key when present, and temporary-directory access. A missing guest key is a warning because `vm-setup.sh` generates it. The literal CBT selector is not a preflight gate because KubeVirt versions expose that configuration differently; setup and verification validate actual CBT state. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
 
 Each result is marked `PASS`, `WARN`, or `FAIL`. Warnings do not fail the check; any failure produces exit code `1` and `NOT READY`. Exit code `0` produces `READY`. Use `./preflight --verbose` for the same safe summary with an explicit note that command diagnostics are suppressed to avoid leaking credentials or kubeconfig data. Example:
 
@@ -84,7 +84,7 @@ PASS  an OpenShift context is selected
 PASS  oc authentication succeeded
 PASS  cluster API is reachable
 
-Summary: 56 checks; 56 passed; 0 warnings; 0 failures
+Summary: 58 checks; 58 passed; 0 warnings; 0 failures
 READY: environment is prepared for the repository workflow.
 ```
 
@@ -148,7 +148,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 - **Kubeconfig is not readable:** set `KUBECONFIG_PATH` to a readable file or unset it and configure `KUBECONFIG`/the standard `oc` context.
 - **Fedora `DataSource` not found:** verify CDI's `fedora` source in `openshift-virtualization-os-images`.
-- **CBT is not enabled:** verify the `IncrementalBackup` feature gate and the selector for `cbt-demo=enabled`.
+- **CBT is not enabled:** verify the `IncrementalBackup` feature gate, the VM's `cbt-demo=enabled` label, and the cluster's CBT selector configuration for the installed KubeVirt version.
 - **PVC remains pending:** verify that `cbt-demo-hpp` exists and can provision local demo volumes.
 - **Guest SSH retries or times out:** inspect VM readiness, the service, and the port-forward messages. Ensure the generated private key is readable only by its owner.
 - **An incremental backup already exists:** run `make clean-all` before repeating the fixed-name workflow.
