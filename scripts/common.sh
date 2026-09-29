@@ -214,3 +214,10 @@ get_tracker_checkpoint() {
     -n "$NAMESPACE" \
     -o 'jsonpath={.status.latestCheckpoint.name}'
 }
+
+get_backup_pvc_name() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.spec.pvcName}'
+}

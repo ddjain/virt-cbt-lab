@@ -58,3 +58,12 @@ fi
 workflow_success "CBT verification passed; full and incremental checkpoints are distinct and tracker matches incremental"
 printf 'Full checkpoint:        %s\nIncremental checkpoint: %s\n' \
   "$full_checkpoint" "$incremental_checkpoint"
+
+workflow_step "4/3 Verify backup restoration and artifact integrity (optional)"
+workflow_action "Running restore test to verify backup data accessibility"
+if "./scripts/vm-cbt-restore-test.sh"; then
+  workflow_success "Backup restore test completed; verify artifacts in vm-cbt-restore namespace"
+else
+  workflow_failed "Restore test encountered an error (this is optional verification)"
+  exit 1
+fi
