@@ -105,6 +105,12 @@ Run the complete workflow:
 make e2e
 ```
 
+Use a fixed, deterministic run name instead of the default random one:
+
+```sh
+make e2e NAME=foo
+```
+
 Run individual stages:
 
 ```sh

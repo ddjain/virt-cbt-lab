@@ -4,6 +4,9 @@ SHELL := /bin/bash
 
 export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_DATA_SIZE_MB GUEST_INCREMENTAL_DATA_SIZE_MB NAMESPACE
 
+# Optional fixed run name instead of the default random one.
+NAME ?=
+
 .PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all help
 
 preflight:
@@ -42,7 +45,7 @@ vm-cbt-demo:
 
 e2e: preflight
 	@printf '[make] [1/1] End-to-end demo: preflight passed; running setup, full backup, incremental backup, and verification.\n'
-	@$(MAKE) --no-print-directory vm-cbt-demo
+	@RUN_ID=$(NAME) $(MAKE) --no-print-directory vm-cbt-demo
 
 clean-all:
 	@printf '[make] [1/1] Cleanup: delete demo resources, reclaim their PVs, and remove only the workflow-managed key.\n'
@@ -57,6 +60,7 @@ help:
 	  'make vm-cbt-verify       Verify CBT and full/incremental backup status, then run the restore test.' \
 	  'make vm-cbt-restore-test Reconstruct the guest disk from the backups and verify its data (runs within vm-cbt-verify).' \
 	  'make vm-cbt-demo         Run the complete workflow.' \
+	  'make e2e NAME=foo        Use a fixed, deterministic run name instead of a random one.' \
 	  'make clean-all           Delete all virt-cbt-lab managed resources (every run) from the namespace, and its generated guest key.' \
 	  'sync.sh                  Copy the repository to REMOTE_HOST:REMOTE_DIR.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
