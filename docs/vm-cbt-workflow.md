@@ -136,13 +136,13 @@ Any mismatch fails the step (exit 1) — a missing incremental delta, a stale/co
 
 `vm-setup.sh` also generates a `REPORT_ID` (`run_<UTC timestamp>`, kept separate from the resource-naming run ID) and persists it to `state/report-id`. Every later stage appends a JSON fragment to `report/<REPORT_ID>/fragments/`:
 
-- `vm-setup.sh` → `setup.json`: namespace, VM name, guest file path, and the full-backup guest hash/size/capture time.
+- `vm-setup.sh` → `setup.json`: namespace, VM name, guest file path, and the full-backup guest hash/size (`size_bytes` and `size_mb`)/capture time.
 - `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint, its PVC name/requested size/capacity, and the VM's recorded backup start/end timestamps and completion status (captured immediately after `Done=True`, since `status.changedBlockTracking.backupStatus` is overwritten by the next backup).
-- `vm-cbt-backup.sh` → `incremental-backup.json`: same shape as above, plus the incremental-backup guest hash/size/capture time.
-- `vm-cbt-verify.sh` → `verify.json`: tracker name/latest checkpoint and the 5 CBT/checkpoint checks (each with a `passed` boolean).
-- `vm-cbt-restore-test.sh` → `restore-test.json`: the PVC-bound and hash/marker checks (each with a `passed` boolean), and the restore-verify pod's raw log saved to `report/<REPORT_ID>/restore-test.log`.
+- `vm-cbt-backup.sh` → `incremental-backup.json`: same shape as above, plus the incremental-backup guest hash/size (`size_bytes` and `size_mb`)/capture time.
+- `vm-cbt-verify.sh` → `verify.json`: tracker name/latest checkpoint and the 5 CBT/checkpoint checks (each with a `passed` boolean). This stage also collects the VM's `virt-launcher` pod's full log to `report/<REPORT_ID>/logs/virt-launcher.log`.
+- `vm-cbt-restore-test.sh` → `restore-test.json`: the PVC-bound and hash/marker checks (each with a `passed` boolean). The restore-verify pod's full log is saved to `report/<REPORT_ID>/logs/restore-verify-pod.log`.
 
-`vm-cbt-verify.sh` merges every fragment (deep-merging objects, concatenating each stage's `checks` array) into `report/<REPORT_ID>/report.json`, adds `run_id`/`report_id`, and sets `verification.overall_passed` from all checks across both scripts. `report/` is not touched by `make clean-all` — unlike `state/`, it is meant to persist as a debugging record across runs.
+`vm-cbt-verify.sh` merges every fragment (deep-merging objects, concatenating each stage's `checks` array) into `report/<REPORT_ID>/report.json`, adds `run_id`/`report_id`, sets `verification.overall_passed` from all checks across both scripts, and records a `logs` object pointing at the collected pod logs. `report/` is not touched by `make clean-all` — unlike `state/`, it is meant to persist as a debugging record across runs. Log collection is best-effort: if a pod is already gone, the workflow logs a warning and continues rather than failing the run.
 
 ## Resources and names
 

@@ -101,13 +101,12 @@ else
   printf 'Skipping disk reconstruction (steps 3-5): backup PVCs are not both Bound.\n' >&2
 fi
 
-printf '%s\n' "$restore_log" > "$REPORT_DIR/restore-test.log"
 write_report_fragment "restore-test" "$(jq -n --argjson checks "$restore_checks_json" \
   '{verification: {checks: $checks}}')"
 
 if [[ "$restore_passed" == true ]]; then
   printf '\n[%s] Restore verification passed: reconstructed disks match the guest data recorded at backup time.\n' "$WORKFLOW_NAME" >&2
 else
-  printf '\n[%s] Restore verification failed; see checks above and %s/restore-test.log for details.\n' "$WORKFLOW_NAME" "$REPORT_DIR" >&2
+  printf '\n[%s] Restore verification failed; see checks above and %s/logs/restore-verify-pod.log for details.\n' "$WORKFLOW_NAME" "$REPORT_DIR" >&2
   exit 1
 fi

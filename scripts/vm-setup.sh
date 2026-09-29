@@ -73,5 +73,5 @@ write_report_fragment "setup" "$(jq -n \
   --arg captured_at "$captured_at" \
   '{namespace: $namespace, vm_name: $vm_name,
     guest: {hello_file_path: $hello_file_path,
-            full_backup: {size_bytes: $size_bytes, sha256: $sha256, captured_at: $captured_at}}}')"
+            full_backup: {size_bytes: $size_bytes, size_mb: (($size_bytes / 1048576 * 100 | round) / 100), sha256: $sha256, captured_at: $captured_at}}}')"
 workflow_success "Guest setup is complete; expected full-backup hash recorded in $STATE_DIR"
