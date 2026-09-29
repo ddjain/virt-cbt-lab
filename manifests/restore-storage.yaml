@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-cbt-restored-root
+  namespace: vm-cbt-demo
+spec:
+  storageClassName: cbt-demo-hpp
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 40Gi
+  volumeMode: Filesystem
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vm-cbt-restore
+  namespace: vm-cbt-demo
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        vm-cbt-restore: conversion
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: __RESTORE_IMAGE__
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              set -- /backup/full/vm-cbt-demo/hello-full-*/hello-full-rootdisk.qcow2
+              [ "$#" -eq 1 ] && [ -f "$1" ] || { printf '%s\n' 'Expected exactly one full rootdisk QCOW2 artifact.' >&2; exit 1; }
+              full_artifact="$1"
+              set -- /backup/incremental/vm-cbt-demo/hello-incremental-*/hello-incremental-rootdisk.qcow2
+              [ "$#" -eq 1 ] && [ -f "$1" ] || { printf '%s\n' 'Expected exactly one incremental rootdisk QCOW2 artifact.' >&2; exit 1; }
+              incremental_artifact="$1"
+              cp -- "$incremental_artifact" /work/incremental.qcow2
+              qemu-img check -- "$full_artifact"
+              qemu-img rebase -u -f qcow2 -F qcow2 -b "$full_artifact" /work/incremental.qcow2
+              qemu-img check -- /work/incremental.qcow2
+              qemu-img convert -p -f qcow2 -O raw /work/incremental.qcow2 /restore/disk.img
+              qemu-img resize -f raw --shrink /restore/disk.img 34236006400
+              qemu-img info -f raw /restore/disk.img >/dev/null
+              printf '%s\n' 'Restored root image written to /restore/disk.img.'
+          volumeMounts:
+            - name: full
+              mountPath: /backup/full
+              readOnly: true
+            - name: incremental
+              mountPath: /backup/incremental
+              readOnly: true
+            - name: restore
+              mountPath: /restore
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: full
+          persistentVolumeClaim:
+            claimName: hello-full-output
+        - name: incremental
+          persistentVolumeClaim:
+            claimName: hello-incremental-output
+        - name: restore
+          persistentVolumeClaim:
+            claimName: vm-cbt-restored-root
+        - name: work
+          emptyDir: {}

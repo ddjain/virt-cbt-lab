@@ -20,6 +20,8 @@ vm-cbt-demo/
 logs/
 tmp/
 tmp-*/
+# Validation reports, run logs, and machine-readable results
+/validation/
 
 # Tool and OS metadata
 .DS_Store

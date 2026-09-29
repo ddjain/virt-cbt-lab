@@ -1,22 +1,22 @@
 # KubeVirt CBT VM backup workflow
 
-This guide explains the repository's `make e2e` demonstration: create a VM, write and hash `hello.txt`, take a full backup, append data, take an incremental backup, and verify the CBT result.
+This guide explains the repository's `make e2e` demonstration: create a Fedora VM with one 32 GiB persistent root disk and one cloud-init disk, write `/home/cbt-demo/hello.txt`, take a full backup, append a line after the full checkpoint, take an incremental backup, verify the CBT API state, and recover the post-incremental root image into a second VM.
 
 ## What the demo proves
 
-Changed Block Tracking (CBT) records changed virtual-disk blocks. The guest file is the workload used to cause a disk change; CBT operates on the VM disk, not on `hello.txt` by name.
+Changed Block Tracking (CBT) records changed virtual-disk blocks. The workload file causes changes on the persistent root disk; CBT operates on the VM disk, not on a filename.
 
-The demo proves the flow end to end by checking that:
+The demo proves:
 
-1. CBT is enabled on the VM.
-2. The first `VirtualMachineBackup` completes as `Full` and records a checkpoint in a `VirtualMachineBackupTracker`.
-3. The guest disk changes after that checkpoint.
-4. A second backup completes as `Incremental`, with a different checkpoint.
+1. CBT is enabled on the source VM.
+2. `hello-full` completes as `Full` and records a tracker checkpoint.
+3. The guest root-disk file changes after that checkpoint.
+4. `hello-incremental` completes as `Incremental`, with a different checkpoint.
 5. The tracker advances to the incremental checkpoint.
+6. The push-mode full and incremental `rootdisk` QCOW2 artifacts can be validated, rebased, flattened, and booted independently.
+7. The recovered VM contains exactly the expected two-line file.
 
-The incremental-backup feature is preview/alpha, not a GA feature. The cluster must enable the `incrementalBackup` feature gate. The VM manifest supplies the custom `cbt-demo=enabled` label; selector configuration is KubeVirt-version-dependent and is not treated as a preflight gate. `vm-setup.sh` and `vm-cbt-verify.sh` stop unless the resulting VM CBT status is `Enabled`.
-
-Upstream background: [CBT label selectors, PR #14772](https://github.com/kubevirt/kubevirt/pull/14772), [incremental VM backups, PR #16285](https://github.com/kubevirt/kubevirt/pull/16285), and the [KubeVirt v1.8.0 release](https://github.com/kubevirt/kubevirt/releases/tag/v1.8.0).
+The incremental-backup feature is preview/alpha, not a GA feature. The cluster must enable the `IncrementalBackup` feature gate. The VM manifest supplies the custom `cbt-demo=enabled` label; selector configuration is KubeVirt-version-dependent and is not treated as a preflight gate. `vm-setup.sh` and `vm-cbt-verify.sh` stop unless the resulting source VM CBT status is `Enabled`.
 
 ## Prerequisites
 
@@ -24,19 +24,17 @@ The target server needs:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` backup APIs.
 - The `IncrementalBackup` feature gate.
-- The `cbt-demo-hpp` virtualization storage class.
+- The `cbt-demo-hpp` virtualization storage class, able to provision 32 GiB source-root, 40 GiB full-output, 2 GiB incremental-output, and 40 GiB restored-root PVCs.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, and access to the local kubeconfig.
 
-Run the scripts on a server where the kubeconfig is available. Set
-`KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
-its standard default:
+Run the scripts where the kubeconfig is available. Set `KUBECONFIG_PATH` or `KUBECONFIG`, or let `oc` use its standard default:
 
 ```sh
 make e2e KUBECONFIG_PATH=/path/to/kubeconfig
 ```
 
-The configured HPP class is local/RWO demo storage. This VM is not live-migratable; the setup is for a CBT demonstration, not production storage guidance.
+The configured HPP class is local/RWO demo storage. This VM is not live-migratable; the setup is for a CBT and in-cluster recovery demonstration, not production storage guidance.
 
 ## Run the full workflow
 
@@ -44,23 +42,23 @@ The configured HPP class is local/RWO demo storage. This VM is not live-migratab
 make e2e
 ```
 
-`e2e` runs the read-only `preflight` target first. It stops before `vm-cbt-demo` if any mandatory prerequisite fails. Run `make preflight` separately to inspect readiness.
+`e2e` runs read-only `preflight` first. It stops before resource creation if a mandatory prerequisite fails. The sequence is:
 
-`e2e` delegates to the same sequence as `vm-cbt-demo`:
 ```text
-vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
+vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify -> vm-cbt-restore
 ```
 
-Each step can also be run separately:
+Each stage can also be run separately:
 
 ```sh
 make vm-setup
 make vm-backup
 make vm-cbt-backup
 make vm-cbt-verify
+make vm-cbt-restore
 ```
 
-The scripts emit concise structured progress messages to stderr: numbered workflow steps, `→` action descriptions, `✓` success messages, and an active-step failure message before the original command diagnostic. Make-level headers show the four demo stages; raw shell tracing is intentionally not enabled.
+The scripts emit numbered workflow steps, `→` action descriptions, `✓` success messages, and active-step failure messages. Make-level headers show five demo stages.
 
 ## Step-by-step behavior
 
@@ -69,64 +67,89 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 `scripts/vm-setup.sh`:
 
 1. Checks that the Fedora `DataSource` is available.
-2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
-3. Applies `manifests/vm.yaml`, which creates namespace `vm-cbt-demo`, VM `vm-cbt-demo`, and the `vm-cbt-ssh` service.
-4. Creates a 30 GiB root `DataVolume` from the Fedora `DataSource`, using `cbt-demo-hpp`. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
-5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` to `/home/cbt-demo/hello.txt`, and prints its SHA-256 hash.
+2. Ensures a dedicated guest SSH key exists locally. The public key is inserted into cloud-init; the private key stays at `GUEST_KEY` with mode `0600`.
+3. Applies `manifests/vm.yaml`, creating namespace `vm-cbt-demo`, source VM `vm-cbt-demo`, its `vm-cbt-root` 32 GiB DataVolume, and `vm-cbt-ssh`.
+4. Configures one vCPU, 2 GiB memory, pod networking, one VirtIO root disk, and one cloud-init disk.
+5. Labels the source VM `cbt-demo=enabled`, waits for `Ready`, and checks `.status.changedBlockTracking.state == Enabled`.
+6. Connects through a local `oc port-forward` and writes exactly `Hello from the VM CBT demo.` to `/home/cbt-demo/hello.txt`, then prints its SHA-256.
 
-`guest_ssh` uses a temporary randomized local port-forward, retries VM startup,
-and cleans up the port-forward when the command finishes.
+`guest_ssh` uses the shared temporary randomized localhost port-forward, retries guest startup, treats authentication failure as terminal, and cleans up the forward. `guest_ssh_to SERVICE COMMAND` supplies the same lifecycle for the restored service.
+
 ### 2. `make vm-backup`
 
-`scripts/vm-backup.sh` applies `manifests/full-backup.yaml`, which creates:
+`scripts/vm-backup.sh` applies `manifests/full-backup.yaml`, creating:
 
-- `hello-full-output`, a 30 GiB backup PVC.
-- `hello-tracker`, whose source is VM `vm-cbt-demo`.
-- `hello-full`, whose source is the tracker and whose output PVC is `hello-full-output`.
+- `hello-full-output`, a 40 GiB full-backup PVC.
+- `hello-tracker`, sourced from VM `vm-cbt-demo`.
+- `hello-full`, sourced from the tracker and writing to `hello-full-output`.
 
-The script waits for the `Done=True` condition and requires `.status.type == Full`. On success, it prints `.status.checkpointName`. The completed full backup also sets `hello-tracker.status.latestCheckpoint`.
+The script waits for `Done=True`, requires `.status.type == Full`, and prints the checkpoint. The completed full backup also updates `hello-tracker.status.latestCheckpoint`.
 
 ### 3. `make vm-cbt-backup`
 
 `scripts/vm-cbt-backup.sh`:
 
 1. Confirms the full backup completed as `Full`.
-2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
-3. Appends `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, then prints the new SHA-256 hash.
-4. Applies `manifests/incremental-backup.yaml`, creating the `hello-incremental-output` PVC and `hello-incremental` backup. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
+2. Waits for the tracker checkpoint to match the full backup checkpoint.
+3. Appends `This line was added after the full backup.` to `/home/cbt-demo/hello.txt` only when that exact line is absent, then prints the new SHA-256.
+4. Applies `manifests/incremental-backup.yaml`, creating `hello-incremental-output`, a 2 GiB incremental-output PVC, and the `hello-incremental` backup.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
-
-The append is idempotent for retries: the same line is not appended twice.
 
 ### 4. `make vm-cbt-verify`
 
-`scripts/vm-cbt-verify.sh` checks the API state rather than inferring success from command exit codes. It requires:
+`scripts/vm-cbt-verify.sh` requires:
 
-- VM CBT state `Enabled`.
+- Source VM CBT state `Enabled`.
 - `hello-full` type `Full` and `Done=True`.
 - `hello-incremental` type `Incremental` and `Done=True`.
 - Non-empty, different checkpoint names.
-- `hello-tracker.status.latestCheckpoint.name` equal to the incremental backup checkpoint.
+- `hello-tracker.status.latestCheckpoint.name` equal to the incremental checkpoint.
 
-It prints `CBT verification passed` only when every condition holds. The hashes printed by setup and incremental backup separately show that the guest file content changed.
+### 5. `make vm-cbt-restore`
+
+`scripts/vm-cbt-restore.sh` performs a five-step in-cluster recovery:
+
+1. Reads both completed backup APIs and requires the full backup to be `Full/Done=True`, the incremental backup to be `Incremental/Done=True`, and each `.status.includedVolumes[*].volumeName` set to exactly `rootdisk`.
+2. Enforces one run per namespace by refusing existing `vm-cbt-restored`, `vm-cbt-restored-root`, or `vm-cbt-restore` resources. It resolves exactly one running source `virt-launcher` pod and uses that pod's `compute` container image for the conversion Job.
+3. Applies `restore-storage.yaml`. The Job requires exactly one artifact at each push-mode path:
+
+   ```text
+   <backup-pvc>/vm-cbt-demo/<backup-name>-<timestamp>/<backup-name>-rootdisk.qcow2
+   ```
+
+   It mounts both backup PVCs read-only, copies the incremental artifact to `/work/incremental.qcow2`, checks the full artifact, rebases the copy to the full artifact, checks the rebased incremental copy, flattens the chain with `qemu-img convert` to a raw `disk.img`, resizes the result with `--shrink` to the Fedora image geometry of 34,236,006,400 bytes, validates the raw image with `qemu-img info`, and sets mode `0666`. Raw images do not support `qemu-img check`; `qemu-img info` verifies that the final image opens with the expected format. The incremental artifact's embedded backing filename points to the source VM's private path, so the copy is rebased before validation; neither backup PVC is modified. KubeVirt requires the filesystem-PVC image to be named `disk.img` at the PVC root.
+4. Applies `restored-vm.yaml` only after the Job completes. It boots `vm-cbt-restored` with one vCPU, 2 GiB memory, root PVC `vm-cbt-restored-root`, and service `vm-cbt-restored-ssh`. The restored VM has a unique `vm-cbt-restore=enabled` label and does not carry the CBT label.
+5. Uses the shared SSH helper to assert that `/home/cbt-demo/hello.txt` equals exactly:
+
+   ```text
+   Hello from the VM CBT demo.
+   This line was added after the full backup.
+   ```
+
+   It prints the restored file's SHA-256.
+
+A missing or duplicate artifact, invalid QCOW2, failed rebase/conversion, failed Job, or failed guest assertion stops the stage and preserves the Job and logs for diagnosis. This path intentionally does not use `VirtualMachineRestore`: that API consumes `VirtualMachineSnapshot` objects, not these `VirtualMachineBackup` push artifacts.
 
 ## Resources and names
 
-All workflow objects live in namespace `vm-cbt-demo`:
+All workflow objects remain in namespace `vm-cbt-demo`:
 
 | Resource | Name | Purpose |
 |---|---|---|
-| VirtualMachine | `vm-cbt-demo` | Fedora guest with CBT label |
-| DataVolume/PVC | `vm-cbt-root` | Persistent VM root disk |
-| Service | `vm-cbt-ssh` | Guest SSH access for the scripts |
-| VirtualMachineBackupTracker | `hello-tracker` | Stores the base/latest checkpoint |
+| VirtualMachine | `vm-cbt-demo` | Fedora source guest with CBT label |
+| DataVolume/PVC | `vm-cbt-root` | 32 GiB persistent source root disk |
+| Service | `vm-cbt-ssh` | Source guest SSH access |
+| VirtualMachineBackupTracker | `hello-tracker` | Base/latest checkpoint |
 | VirtualMachineBackup | `hello-full` | Initial full backup |
-| PVC | `hello-full-output` | Full backup output |
-| VirtualMachineBackup | `hello-incremental` | Backup based on the tracker checkpoint |
-| PVC | `hello-incremental-output` | Incremental backup output |
+| PVC | `hello-full-output` | 40 GiB full backup output |
+| VirtualMachineBackup | `hello-incremental` | Tracker-based incremental backup |
+| PVC | `hello-incremental-output` | 2 GiB incremental backup output |
+| PVC | `vm-cbt-restored-root` | 40 GiB flattened restored root image |
+| Job | `vm-cbt-restore` | QCOW2 validation and flattening |
+| VirtualMachine | `vm-cbt-restored` | Recovered guest |
+| Service | `vm-cbt-restored-ssh` | Recovered guest SSH access |
 
-Names are fixed, so the workflow is intentionally one run per namespace. To start over, use `make clean-all` first.
+Names are fixed, so the workflow is intentionally one run per namespace. Run `make clean-all` before starting over. All source, backup, restore, and recovered-VM resources are removed together by namespace cleanup.
 
 ## Cleanup
 
@@ -134,14 +157,12 @@ Names are fixed, so the workflow is intentionally one run per namespace. To star
 make clean-all
 ```
 
-`scripts/clean-all.sh` deletes namespace `vm-cbt-demo`, which removes the VM, DataVolume, service, backup PVCs, tracker, and backup resources. It waits for dynamically provisioned PVs with claims in that namespace to be reclaimed. It removes the guest SSH key only when the workflow's ownership marker exists. It does **not** uninstall KubeVirt/OpenShift Virtualization or delete the shared `cbt-demo-hpp` storage class and its backing storage.
+Cleanup deletes namespace `vm-cbt-demo` and waits for dynamically provisioned PVs with claims in that namespace to be reclaimed. It does not uninstall KubeVirt/OpenShift Virtualization or delete the shared storage class. The demonstration is in-cluster recovery, not an offsite backup product.
 
 ## Troubleshooting signals
 
-- Guest SSH retries indicate that the VM service or guest SSH daemon is not ready; inspect the local `oc port-forward` log and VM readiness.
-
-- `CBT is not enabled ...`: verify the cluster feature gate and that the VM has label `cbt-demo=enabled`.
-- Fedora `DataSource` not found: verify CDI's `fedora` source in `openshift-virtualization-os-images`.
-- PVC remains pending: verify `cbt-demo-hpp` is available and can provision local demo volumes.
-- `hello-incremental already exists`: the fixed-name workflow has already run; run `make clean-all` before another full E2E run.
-- Incremental type is not `Incremental`: check that the full checkpoint reached the tracker and inspect the `VirtualMachineBackup` conditions and tracker status.
+- Guest SSH retries indicate that the service or SSH daemon is not ready; inspect port-forward output and VM readiness.
+- `CBT is not enabled`: verify the feature gate and source VM label `cbt-demo=enabled`.
+- PVC remains pending: verify `cbt-demo-hpp` can provision local demo volumes.
+- `hello-incremental already exists`: run `make clean-all` before another fixed-name workflow.
+- Restore Job artifact errors: inspect `oc logs job/vm-cbt-restore -n vm-cbt-demo`; do not overwrite backup PVCs or substitute snapshot restore.
