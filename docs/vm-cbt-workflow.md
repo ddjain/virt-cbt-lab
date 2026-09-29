@@ -28,9 +28,9 @@ The target server needs:
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` backup APIs.
 - The `IncrementalBackup` feature gate.
 - The `cbt-demo-hpp` virtualization storage class.
-- The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
+- Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org`, so `vm-setup.sh` can import the Debian golden image into `vm-cbt-images` the first time it runs.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, and access to the local kubeconfig.
-- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `btrfs-progs`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
+- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -72,10 +72,10 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 
 `scripts/vm-setup.sh`:
 
-1. Checks that the Fedora `DataSource` is available.
+1. Applies `manifests/debian-image.yaml` and waits for `DataVolume debian-golden` (namespace `vm-cbt-images`) to reach `Succeeded`. The first run imports the ~2 GiB Debian genericcloud qcow2 from `cloud.debian.org`; later runs see it already `Succeeded` and return immediately, since `vm-cbt-images` lives outside `clean-all`'s scope.
 2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
 3. Applies `manifests/vm.yaml`, which creates namespace `vm-cbt-demo`, VM `vm-cbt-demo`, and the `vm-cbt-ssh` service.
-4. Creates a 35 GiB root `DataVolume` from the Fedora `DataSource`, using `cbt-demo-hpp`. This must stay larger than the cluster's current Fedora image size (CDI refreshes it periodically via a `dataImportCron`); a target smaller than the source fails the clone. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
+4. Creates a 5 GiB root `DataVolume` from the `debian` `DataSource`, using `cbt-demo-hpp`. This must stay larger than the golden image's size; a target smaller than the source fails the clone. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
 6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` followed by a `GUEST_DATA_SIZE_MB` (default 64) MiB random payload to `/home/cbt-demo/hello.txt`, prints its SHA-256 hash, and records that hash to `state/full-backup.sha256` (this is the content the full backup will contain, since no guest mutation happens before `make vm-backup` runs). The larger payload gives CBT a realistic block delta to track rather than a single text line.
 
@@ -85,7 +85,7 @@ and cleans up the port-forward when the command finishes.
 
 `scripts/vm-backup.sh` applies `manifests/full-backup.yaml`, which creates:
 
-- `hello-full-output`, a 35 GiB backup PVC.
+- `hello-full-output`, a 5 GiB backup PVC.
 - `hello-tracker`, whose source is VM `vm-cbt-demo`.
 - `hello-full`, whose source is the tracker and whose output PVC is `hello-full-output`.
 
@@ -98,7 +98,7 @@ The script waits for the `Done=True` condition and requires `.status.type == Ful
 1. Confirms the full backup completed as `Full`.
 2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
 3. Appends a `GUEST_INCREMENTAL_DATA_SIZE_MB` (default 32) MiB random payload followed by `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, prints the new SHA-256 hash, and records it to `state/incremental-backup.sha256` (the content the full+incremental restore must reproduce).
-4. Applies `manifests/incremental-backup.yaml`, creating the `hello-incremental-output` PVC (5 GiB, sized for the delta only) and `hello-incremental` backup. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
+4. Applies `manifests/incremental-backup.yaml`, creating the `hello-incremental-output` PVC (3 GiB, sized for the delta only) and `hello-incremental` backup. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
 
 The append is idempotent for retries: the same line is not appended twice.
@@ -124,7 +124,7 @@ This is the step that actually proves the backups contain correct, restorable da
 3. Applies `manifests/restore-verify-pod.yaml` (with placeholders substituted, the same pattern `vm-setup.sh` uses for the SSH public key) as a short-lived pod that mounts both backup PVCs read-only, then:
    - `qemu-img convert` the full backup's qcow2 straight to raw (full-only restore).
    - `qemu-img rebase` the incremental qcow2 onto the full qcow2, then `qemu-img convert` the result to raw (full+incremental restore).
-   - Extracts `/home/cbt-demo/hello.txt` from each raw disk with `losetup` + `btrfs restore` (userspace, no btrfs kernel module needed — see `images/restore-helper/Dockerfile`).
+   - Extracts `/home/cbt-demo/hello.txt` from each raw disk with `losetup` + a direct `mount -o ro` of its ext4 root filesystem (see `images/restore-helper/Dockerfile`).
 4. Deletes the pod (via a trap, on success or failure) and reads its logs for the two hashes and whether the incremental marker line is present in each.
 5. Asserts: the full-only restore matches `state/full-backup.sha256` and does **not** contain the incremental marker line; the full+incremental restore matches `state/incremental-backup.sha256` and **does** contain the marker line.
 
@@ -136,7 +136,7 @@ All workflow objects live in namespace `vm-cbt-demo`:
 
 | Resource | Name | Purpose |
 |---|---|---|
-| VirtualMachine | `vm-cbt-demo` | Fedora guest with CBT label |
+| VirtualMachine | `vm-cbt-demo` | Debian guest with CBT label |
 | DataVolume/PVC | `vm-cbt-root` | Persistent VM root disk |
 | Service | `vm-cbt-ssh` | Guest SSH access for the scripts |
 | VirtualMachineBackupTracker | `hello-tracker` | Stores the base/latest checkpoint |
@@ -147,6 +147,8 @@ All workflow objects live in namespace `vm-cbt-demo`:
 | Pod (short-lived) | `hello-restore-verify` | Reconstructs and reads the guest disk during `vm-cbt-restore-test` |
 
 Names are fixed, so the workflow is intentionally one run per namespace. To start over, use `make clean-all` first.
+
+The Debian golden image (`DataVolume`/`DataSource` `debian-golden`/`debian`) lives in namespace `vm-cbt-images`, deliberately outside `vm-cbt-demo`, so it survives `make clean-all` and is only downloaded once.
 
 ## Cleanup
 
@@ -161,7 +163,7 @@ make clean-all
 - Guest SSH retries indicate that the VM service or guest SSH daemon is not ready; inspect the local `oc port-forward` log and VM readiness.
 
 - `CBT is not enabled ...`: verify the cluster feature gate and that the VM has label `cbt-demo=enabled`.
-- Fedora `DataSource` not found: verify CDI's `fedora` source in `openshift-virtualization-os-images`.
+- Debian golden image import stuck or failing: check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
 - PVC remains pending: verify `cbt-demo-hpp` is available and can provision local demo volumes.
 - `hello-incremental already exists`: the fixed-name workflow has already run; run `make clean-all` before another full E2E run.
 - Incremental type is not `Incremental`: check that the full checkpoint reached the tracker and inspect the `VirtualMachineBackup` conditions and tracker status.

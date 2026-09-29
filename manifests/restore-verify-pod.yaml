@@ -67,24 +67,29 @@ spec:
           qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2
           qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw
 
-          # Extract the guest file straight from the raw disk's btrfs
-          # filesystem using `btrfs restore`, which parses the on-disk format
-          # in userspace via a loop device. This avoids requiring a btrfs
-          # kernel module, which RHEL/CentOS-family kernels (host or
-          # libguestfs appliance) do not ship.
+          # Extract the guest file by mounting the raw disk's ext4 root
+          # filesystem directly via a loop device (Debian's genericcloud
+          # image uses ext4, which every helper image can mount natively).
           extract_hello_file() {
             local raw_image="$1" out_dir="$2"
-            local loop_dev part found
+            local loop_dev part mount_dir found
             loop_dev="$(losetup -fP --show "$raw_image")"
             udevadm settle --timeout=5 2>/dev/null || sleep 1
             # Skip the first line (the whole loop device itself), then pick
             # the largest remaining partition (the root filesystem) rather
             # than just the last one, since partition count/order can vary.
             part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
-            mkdir -p "$out_dir"
-            btrfs restore -i "$part" "$out_dir" >&2 || true
+            mount_dir="$out_dir/mnt"
+            mkdir -p "$mount_dir"
+            mount -o ro "$part" "$mount_dir"
+            found="$(find "$mount_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
+            if [[ -n "$found" ]]; then
+              mkdir -p "$out_dir/extract"
+              cp "$found" "$out_dir/extract/"
+              found="$out_dir/extract/$(basename "$hello_file")"
+            fi
+            umount "$mount_dir"
             losetup -d "$loop_dev"
-            found="$(find "$out_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
             printf '%s' "$found"
           }
 

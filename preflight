@@ -151,18 +151,13 @@ check_cluster_capabilities() {
   fi
 
   local feature_gates
-  for crd in virtualmachines.kubevirt.io virtualmachinebackups.backup.kubevirt.io virtualmachinebackuptrackers.backup.kubevirt.io; do
+  for crd in virtualmachines.kubevirt.io virtualmachinebackups.backup.kubevirt.io virtualmachinebackuptrackers.backup.kubevirt.io datavolumes.cdi.kubevirt.io datasources.cdi.kubevirt.io; do
     if oc get crd "$crd" >/dev/null 2>"$TMP_DIR/oc-error"; then
       result PASS "required CRD $crd is installed"
     else
       result FAIL "required CRD $crd is unavailable"
     fi
   done
-  if oc get datasource fedora -n openshift-virtualization-os-images >/dev/null 2>"$TMP_DIR/oc-error"; then
-    result PASS "Fedora CDI DataSource is available"
-  else
-    result FAIL "Fedora DataSource is unavailable in openshift-virtualization-os-images"
-  fi
   if oc get storageclass cbt-demo-hpp >/dev/null 2>"$TMP_DIR/oc-error"; then
     result PASS "storage class cbt-demo-hpp is available"
   else

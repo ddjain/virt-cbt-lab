@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Helpers for scripts/vm-cbt-restore-test.sh: run a short-lived pod that
 # reconstructs the guest disk from the backup PVCs (qemu-img rebase/convert)
-# and reads the guest file with `btrfs restore`, without booting a second VM.
+# and reads the guest file by loop-mounting its ext4 root filesystem, without
+# booting a second VM.
 set -euo pipefail
 
 RESTORE_POD_NAME="hello-restore-verify"
-# No default: this image must provide qemu-img and btrfs-progs (see
+# No default: this image must provide qemu-img and util-linux (see
 # images/restore-helper/Dockerfile). Build it and set RESTORE_HELPER_IMAGE in
-# .env to your pushed reference; there is no generic public image that
-# reliably reads a btrfs guest filesystem, since that needs userspace
-# `btrfs restore` rather than a mountable kernel module.
+# .env to your pushed reference.
 # shellcheck disable=SC2034
 RESTORE_HELPER_IMAGE="${RESTORE_HELPER_IMAGE:-}"
 

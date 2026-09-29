@@ -18,14 +18,14 @@ spec:
       spec:
         sourceRef:
           kind: DataSource
-          name: fedora
-          namespace: openshift-virtualization-os-images
+          name: debian
+          namespace: vm-cbt-images
         storage:
           accessModes:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 35Gi
+              storage: 5Gi
           storageClassName: cbt-demo-hpp
           volumeMode: Filesystem
   template:
@@ -68,13 +68,17 @@ spec:
           cloudInitNoCloud:
             userData: |
               #cloud-config
+              package_update: true
+              packages:
+                - qemu-guest-agent
               runcmd:
-                - [systemctl, enable, --now, sshd]
+                - [systemctl, enable, --now, qemu-guest-agent]
+                - [systemctl, enable, --now, ssh]
               ssh_pwauth: false
               users:
                 - name: cbt-demo
                   gecos: CBT demo user
-                  groups: [wheel]
+                  groups: [sudo]
                   sudo: ["ALL=(ALL) NOPASSWD:ALL"]
                   shell: /bin/bash
                   lock_passwd: true

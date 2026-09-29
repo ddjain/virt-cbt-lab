@@ -11,7 +11,7 @@ preflight:
 	@./preflight
 
 vm-setup:
-	@printf '[make] [1/1] VM setup: create the CBT-enabled Fedora VM and initialize guest data.\n'
+	@printf '[make] [1/1] VM setup: create the CBT-enabled Debian VM and initialize guest data.\n'
 	@./scripts/vm-setup.sh
 
 vm-backup:
@@ -60,4 +60,4 @@ help:
 	  'make clean-all           Delete this demo namespace and its generated guest key.' \
 	  'sync.sh                  Copy the repository to REMOTE_HOST:REMOTE_DIR.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
-	  'Prerequisites: OpenShift Virtualization, cbt-demo-hpp, and the Fedora DataSource.'
+	  'Prerequisites: OpenShift Virtualization and cbt-demo-hpp (the Debian golden image is imported automatically on first run).'

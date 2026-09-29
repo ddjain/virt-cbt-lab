@@ -6,10 +6,12 @@ WORKFLOW_NAME="vm-setup"
 require_command ssh
 require_command ssh-keygen
 
-workflow_step "1/5 Check the Fedora source"
-workflow_action "oc get datasource fedora -n openshift-virtualization-os-images"
-oc_cmd get datasource fedora -n openshift-virtualization-os-images >/dev/null
-workflow_success "Fedora DataSource is available"
+workflow_step "1/5 Prepare the Debian golden image"
+workflow_action "oc apply -f manifests/debian-image.yaml (namespace vm-cbt-images, DataVolume debian-golden)"
+oc_cmd apply -f "$ROOT_DIR/manifests/debian-image.yaml" >/dev/null
+workflow_action "oc wait dv/debian-golden -n vm-cbt-images --for=jsonpath={.status.phase}=Succeeded --timeout=20m"
+oc_cmd wait dv/debian-golden -n vm-cbt-images --for=jsonpath='{.status.phase}'=Succeeded --timeout=20m >/dev/null
+workflow_success "Debian golden image is ready (downloaded once, reused on subsequent runs)"
 
 workflow_step "2/5 Prepare guest SSH access"
 workflow_action "Generate or reuse the guest key at $GUEST_KEY (private key stays local)"
