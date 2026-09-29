@@ -56,9 +56,11 @@ run_restore_verify_pod() {
   if [[ "$phase" != Succeeded ]]; then
     printf 'Restore-verify pod ended in phase %s (expected Succeeded); logs follow.\n' "${phase:-unknown}" >&2
     oc_cmd logs "pod/$RESTORE_POD_NAME" -n "$NAMESPACE" >&2 || true
+    collect_pod_log "$RESTORE_POD_NAME" "restore-verify-pod.log"
     return 1
   fi
 
+  collect_pod_log "$RESTORE_POD_NAME" "restore-verify-pod.log"
   oc_cmd logs "pod/$RESTORE_POD_NAME" -n "$NAMESPACE"
 }
 

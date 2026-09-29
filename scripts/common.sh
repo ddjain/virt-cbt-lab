@@ -183,6 +183,19 @@ write_report_fragment() {
   printf '%s' "$json_content" | jq '.' > "$REPORT_DIR/fragments/$fragment_name.json"
 }
 
+# Save one run-owned pod's full log to report/<REPORT_ID>/logs/<log_filename>,
+# for debugging a run after the fact. Best-effort: a missing pod or `oc logs`
+# failure (e.g. the pod was already cleaned up) does not fail the workflow.
+collect_pod_log() {
+  local pod_name="$1" log_filename="$2"
+  mkdir -p "$REPORT_DIR/logs"
+  if ! oc_cmd logs "pod/$pod_name" -n "$NAMESPACE" --all-containers=true \
+      > "$REPORT_DIR/logs/$log_filename" 2>&1; then
+    printf '[vm-cbt] Could not collect logs for pod %s (already gone?); see %s for details.\n' \
+      "$pod_name" "$REPORT_DIR/logs/$log_filename" >&2
+  fi
+}
+
 ensure_guest_key() {
   printf '[vm-cbt] Ensuring the guest SSH key is available at %s.\n' "$GUEST_KEY" >&2
   mkdir -p "$(dirname "$GUEST_KEY")"

@@ -106,6 +106,6 @@ write_report_fragment "incremental-backup" "$(jq -n \
   --arg pvc_requested "$(get_pvc_requested "$INCREMENTAL_BACKUP_PVC_NAME")" \
   --arg pvc_capacity "$(get_pvc_capacity "$INCREMENTAL_BACKUP_PVC_NAME")" \
   --argjson backup_status "$incremental_backup_status" \
-  '{guest: {incremental_backup: {size_bytes: $size_bytes, sha256: $sha256, captured_at: $captured_at}},
+  '{guest: {incremental_backup: {size_bytes: $size_bytes, size_mb: (($size_bytes / 1048576 * 100 | round) / 100), sha256: $sha256, captured_at: $captured_at}},
     backups: {incremental: ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
                               pvc_name: $pvc_name, pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)}}')"

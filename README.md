@@ -175,21 +175,22 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 │   ├── dotenv.sh         # Safe parser for supported .env values
 │   └── restore-lib.sh    # Restore-verification pod orchestration
 ├── state/                # Guest hashes recorded at backup time (gitignored, created at runtime)
-├── report/               # Per-run JSON reports and restore logs (gitignored, created at runtime, survives clean-all)
+├── report/               # Per-run JSON reports and run-owned pod logs (gitignored, created at runtime, survives clean-all)
 └── sync.sh               # Optional remote synchronization helper
 ```
 
 ## Run report
 
-Each `vm-setup.sh` run generates a `REPORT_ID` (`run_<UTC timestamp>`, independent of the resource-naming `RUN_ID`) and every later stage in the same run appends a JSON fragment under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges all fragments into `report/<REPORT_ID>/report.json` once the restore test finishes, alongside the restore-verify pod's raw log at `report/<REPORT_ID>/restore-test.log`.
+Each `vm-setup.sh` run generates a `REPORT_ID` (`run_<UTC timestamp>`, independent of the resource-naming `RUN_ID`) and every later stage in the same run appends a JSON fragment under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges all fragments into `report/<REPORT_ID>/report.json` once the restore test finishes, alongside full logs of the run's own pods under `report/<REPORT_ID>/logs/` (`virt-launcher.log` for the VM, `restore-verify-pod.log` for the restore-verification pod).
 
 `report.json` contains, per run:
-- `guest.full_backup` / `guest.incremental_backup`: the guest file's path, size in bytes, SHA-256, and capture time, for both backups.
+- `guest.full_backup` / `guest.incremental_backup`: the guest file's path, size (`size_bytes` and `size_mb`), SHA-256, and capture time, for both backups.
 - `backups.full` / `backups.incremental`: backup name, type, checkpoint name, backup PVC name/requested size/actual capacity, and (when available) the VM's recorded backup start/end timestamps and completion status.
 - `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
 - `verification.checks`: every individual check from `vm-cbt-verify.sh` and `vm-cbt-restore-test.sh` (CBT state, checkpoint distinctness, PVC binding, restore hash/marker matches) with a `passed` boolean each, plus `overall_passed` and `restore_log_path`.
+- `logs`: paths (relative to the report directory) to the collected `virt-launcher` and restore-verify pod logs.
 
-Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to remain as a debugging record across runs. Inspect it with `jq . report/run_*/report.json` or diff two runs' `report.json` files to compare outcomes.
+Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to remain as a debugging record across runs. Inspect it with `jq . report/run_*/report.json` or diff two runs' `report.json` files to compare outcomes. Log collection is best-effort and only covers pods the run itself creates (the VM's `virt-launcher` pod and the short-lived restore-verify pod); it does not collect cluster component logs (KubeVirt/CDI operators, node agents, etc.).
 
 ## Known limitations
 

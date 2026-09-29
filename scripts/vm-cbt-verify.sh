@@ -86,6 +86,15 @@ else
   printf 'Restore test failed; the backup does not reconstruct the expected guest data.\n' >&2
 fi
 
+workflow_action "Collecting the VM's virt-launcher pod log for the run report"
+virt_launcher_pod="$(oc_cmd get pod -n "$NAMESPACE" -l "vm.kubevirt.io/name=$VM_NAME" \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+if [[ -n "$virt_launcher_pod" ]]; then
+  collect_pod_log "$virt_launcher_pod" "virt-launcher.log"
+else
+  printf '[vm-cbt] No virt-launcher pod found for VM %s; skipping log collection.\n' "$VM_NAME" >&2
+fi
+
 write_report_fragment "verify" "$(jq -n \
   --arg tracker_name "$TRACKER_NAME" \
   --arg latest_checkpoint "$latest_checkpoint" \
@@ -112,7 +121,8 @@ if [[ "$verify_passed" == true && "$restore_test_passed" == true ]]; then
 fi
 jq --arg run_id "$RUN_ID" --arg report_id "$REPORT_ID" --argjson overall_passed "$overall_passed" \
   '.run_id = $run_id | .report_id = $report_id | .verification.overall_passed = $overall_passed |
-   .verification.restore_log_path = "restore-test.log"' \
+   .verification.restore_log_path = "logs/restore-verify-pod.log" |
+   .logs = {virt_launcher: "logs/virt-launcher.log", restore_verify_pod: "logs/restore-verify-pod.log"}' \
   "$report_path" > "$report_path.tmp" && mv "$report_path.tmp" "$report_path"
 
 workflow_success "Run report written to $report_path"
