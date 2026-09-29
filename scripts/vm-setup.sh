@@ -50,10 +50,14 @@ workflow_success "VM $VM_NAME is ready; CBT state is $cbt_state"
 workflow_step "5/5 Initialize and validate guest data"
 workflow_action "Port-forward service $SSH_SERVICE and write ~/hello.txt (${GUEST_DATA_SIZE_MB}MiB payload) as $GUEST_USER"
 workflow_action "Print the guest file SHA-256 and size, and record them as the expected full-backup content"
+# `sync` before the backup runs: without it, the write can still be sitting
+# in the guest's page cache when the external snapshot is taken, so the full
+# backup captures an empty/stale hello.txt.
 guest_setup_command="
 printf '%s\n' \"Hello from the VM CBT demo.\" > ~/hello.txt
 head -c ${GUEST_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
 printf '\n' >> ~/hello.txt
+sync
 sha256sum ~/hello.txt
 stat -c 'SIZE_BYTES=%s' ~/hello.txt
 "
