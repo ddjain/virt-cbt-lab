@@ -33,9 +33,15 @@ fi
 workflow_success "VM $VM_NAME is ready; CBT state is $cbt_state"
 
 workflow_step "5/5 Initialize and validate guest data"
-workflow_action "Port-forward service $SSH_SERVICE and write ~/hello.txt as $GUEST_USER"
+workflow_action "Port-forward service $SSH_SERVICE and write ~/hello.txt (${GUEST_DATA_SIZE_MB}MiB payload) as $GUEST_USER"
 workflow_action "Print the guest file SHA-256 and record it as the expected full-backup content"
-guest_hash_line="$(guest_ssh 'printf "%s\n" "Hello from the VM CBT demo." > ~/hello.txt; sha256sum ~/hello.txt')"
+guest_setup_command="
+printf '%s\n' \"Hello from the VM CBT demo.\" > ~/hello.txt
+head -c ${GUEST_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
+printf '\n' >> ~/hello.txt
+sha256sum ~/hello.txt
+"
+guest_hash_line="$(guest_ssh "$guest_setup_command")"
 printf '%s\n' "$guest_hash_line"
 write_state_file "full-backup.sha256" "$(printf '%s' "$guest_hash_line" | extract_sha256)"
 workflow_success "Guest setup is complete; expected full-backup hash recorded in $STATE_DIR"

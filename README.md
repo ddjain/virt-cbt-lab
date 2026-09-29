@@ -30,7 +30,7 @@ Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
 - The `IncrementalBackup` feature gate.
-- A `cbt-demo-hpp` storage class that can provision the 30 GiB RWO demo volumes.
+- A `cbt-demo-hpp` storage class that can provision the demo's RWO volumes: a 35 GiB root disk, a 35 GiB full-backup PVC, and a 5 GiB incremental-backup PVC (75 GiB total per run). The root disk and full-backup PVC must stay larger than the cluster's current Fedora `DataSource` image size (verify with `oc get datasource fedora -n openshift-virtualization-os-images`), since CDI refreshes that image periodically and rejects a clone target smaller than the source.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
@@ -63,6 +63,8 @@ Supported variables:
 | `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `btrfs-progs`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `GUEST_DATA_SIZE_MB` | No | Size (MiB) of the random payload written to `hello.txt` at setup. Default: `64`. |
+| `GUEST_INCREMENTAL_DATA_SIZE_MB` | No | Size (MiB) of the random payload appended to `hello.txt` before the incremental backup. Default: `32`. |
 
 
 ## Preflight
@@ -178,7 +180,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 - Resource names and namespace are fixed; concurrent runs require separate copies with deliberate manifest/script changes.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- The demo uses a 30 GiB local/RWO disk and is not production storage or disaster-recovery guidance.
+- The demo uses local/RWO disks (35 GiB root, 35 GiB full-backup PVC, 5 GiB incremental-backup PVC) and is not production storage or disaster-recovery guidance. The root/full-backup sizes must track the cluster's Fedora `DataSource` image size, which CDI refreshes periodically.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
 - `make vm-cbt-restore-test` runs a privileged pod to reconstruct the guest disk (`qemu-img`) and read its files with `btrfs restore` (needed because the demo's Fedora guest uses a btrfs root filesystem, and RHEL/CentOS-family kernels don't ship a btrfs kernel module for mounting). Build `images/restore-helper/Dockerfile`, push it, and set `RESTORE_HELPER_IMAGE`; the cluster must permit pulling that image and running the privileged pod.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

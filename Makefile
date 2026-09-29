@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 -include .env
 
-export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE
+export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_DATA_SIZE_MB GUEST_INCREMENTAL_DATA_SIZE_MB
 
 .PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all help
 
