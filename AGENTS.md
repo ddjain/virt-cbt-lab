@@ -40,6 +40,15 @@ The last two commands require a compatible OpenShift Virtualization/KubeVirt clu
 Run `./preflight` or `make preflight` before any individual workflow target. `make e2e` runs the same preflight automatically before starting `vm-cbt-demo`. It performs read-only local, kubeconfig, OpenShift access, KubeVirt capability, storage, permission, and guest-SSH checks. A failure blocks the workflow with exit 1; it never installs tools or changes cluster resources. Use `./preflight --help` for usage and `./preflight --verbose` for the safe diagnostic summary.
 
 
+# AI-agent context and evidence workflow
+
+- Keep this file hot-path and stable: repository contract, safety boundaries, navigation, and verification only.
+- Use `.agents/skills/cbt-diagnostics/SKILL.md` for on-demand CBT diagnosis procedure.
+- Run `make ai-context` for a metadata-only inventory of `logs/` and `validation/`; it does not inspect log content for matches or emit it.
+- Select evidence explicitly with `scripts/ai-context.sh --file PATH --snippets [--focus REGEX]`. Use `--raw-range PATH:S-E` only for exact local evidence; it is unredacted.
+- Prefer the smallest relevant `oc get ... -o jsonpath=...` query and resource-scoped Warning events over dumping metrics or logs. Escalate to bounded logs only when status/events leave a causal gap.
+- Preserve source artifacts. Report path/resource, query or expression, time/line range, and SHA-256; distinguish observed facts from inference.
+
 ## Coding conventions
 
 - Keep scripts Bash with `#!/usr/bin/env bash` and `set -euo pipefail`.

@@ -19,6 +19,39 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 
 The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The cluster's selector representation varies by KubeVirt version, so preflight does not gate on that literal configuration; setup and verification require the resulting VM CBT state to be `Enabled`.
 
+## AI-assisted diagnosis
+
+The repository includes a bounded, read-only context workflow for AI calls and human triage. It avoids loading every metric or log before the failing workflow invariant is known:
+
+```text
+map -> index -> select -> query -> escalate
+```
+
+- `AGENTS.md` contains the short, always-loaded repository contract.
+- `.agents/skills/cbt-diagnostics/SKILL.md` contains the reusable CBT diagnosis procedure for Agent Skills-compatible clients.
+- `scripts/ai-context.sh` inventories `logs/` and `validation/` without scanning or emitting their contents, then returns bounded, redacted snippets only for explicitly selected files.
+- `docs/ai-agent-workflow.md` documents evidence selection, Kubernetes queries, redaction, and no-data-loss rules.
+
+Start with an offline inventory:
+
+```sh
+make ai-context
+```
+
+Then select only the relevant artifact and signal:
+
+```sh
+scripts/ai-context.sh \
+  --file logs/e2e-2026-09-29-success.log \
+  --snippets \
+  --focus 'error|fail|warn|checkpoint|backup'
+```
+
+Use `--raw-range PATH:S-E` only for exact local evidence. It is intentionally unredacted and should not be sent to an AI service without review. The tool never modifies source artifacts and reports a SHA-256 plus line references so bounded output remains auditable.
+
+For cluster diagnosis, query the named backup/VM fields with `oc get -o jsonpath`, then resource-scoped Warning events. Escalate to bounded controller or pod logs only when object status and events leave a causal gap. Metrics and traces remain appropriate for performance and cross-component timing questions; they are not substitutes for backup object status.
+
+
 ## Prerequisites
 
 Local tools:
@@ -142,6 +175,13 @@ Check the Make targets without contacting a cluster:
 make help
 ```
 
+Inventory generated evidence without scanning or emitting its contents:
+
+```sh
+make ai-context
+```
+
+
 For an environment with the prerequisites and cluster resources, run `make e2e`, then `make clean-all`. No offline simulation can prove Kubernetes backup status; the E2E workflow is the functional validation.
 
 ## Troubleshooting
@@ -158,12 +198,14 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 ```text
 .
+├── .agents/               # Reusable Agent Skills-compatible procedures
+│   └── skills/cbt-diagnostics/SKILL.md
 ├── .env.example          # Sanitized local configuration template
 ├── .gitignore            # Secret and generated-artifact exclusions
 ├── AGENTS.md             # Repository-specific contributor/agent guidance
-├── docs/                 # Detailed workflow documentation
+├── docs/                 # Detailed workflow and AI evidence documentation
 ├── manifests/            # VM, full-backup, and incremental-backup resources
-├── scripts/              # Workflow implementation and shared helpers
+├── scripts/              # Workflow, context triage, and shared helpers
 │   └── dotenv.sh         # Safe parser for supported .env values
 └── sync.sh               # Optional remote synchronization helper
 ```

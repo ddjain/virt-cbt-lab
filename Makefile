@@ -4,7 +4,10 @@ SHELL := /bin/bash
 
 export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-demo e2e clean-all help
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-demo e2e clean-all ai-context help
+
+ai-context:
+	@./scripts/ai-context.sh
 
 preflight:
 	@printf '[make] [1/1] Preflight: check local tools, cluster access, and guest SSH prerequisites (read-only).\n'
@@ -46,6 +49,7 @@ clean-all:
 
 help:
 	@printf '%s\n' \
+	  'make ai-context    Inventory validation/log artifacts without scanning or emitting their contents; select evidence explicitly.' \
 	  'make preflight     Check local, cluster, and guest SSH prerequisites without changing cluster state.' \
 	  'make vm-setup       Create the VM, write hello.txt, and print its hash.' \
 	  'make vm-backup      Take the full VM backup.' \
