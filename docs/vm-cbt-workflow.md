@@ -44,8 +44,9 @@ The configured HPP class is local/RWO demo storage. This VM is not live-migratab
 make e2e
 ```
 
-`e2e` delegates to the same sequence as `vm-cbt-demo`:
+`e2e` runs the read-only `preflight` target first. It stops before `vm-cbt-demo` if any mandatory prerequisite fails. Run `make preflight` separately to inspect readiness.
 
+`e2e` delegates to the same sequence as `vm-cbt-demo`:
 ```text
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```

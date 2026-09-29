@@ -61,7 +61,36 @@ Supported variables:
 | `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
 
+
+## Preflight
+
+Run the read-only readiness check directly, or let `make e2e` run it automatically before any workflow step:
+
+```sh
+./preflight
+```
+
+`make e2e` stops before creating resources when preflight reports a failure. Use `make preflight` to invoke the same check explicitly.
+
+
+`preflight` checks repository files and executable bits, the required local tools (`bash`, `make`, `oc`, `ssh`, `ssh-keygen`, and standard shell utilities), `.env`/kubeconfig configuration, OpenShift authentication and API reachability, KubeVirt CBT backup CRDs, the Fedora DataSource, `cbt-demo-hpp`, the `IncrementalBackup` gate and CBT selector, required create/delete permissions, the guest SSH key, and temporary-directory access. `rsync` is reported as a warning because it is needed only by optional `sync.sh`. It does not install tools or change cluster resources.
+
+Each result is marked `PASS`, `WARN`, or `FAIL`. Warnings do not fail the check; any failure produces exit code `1` and `NOT READY`. Exit code `0` produces `READY`. Use `./preflight --verbose` for the same safe summary with an explicit note that command diagnostics are suppressed to avoid leaking credentials or kubeconfig data. Example:
+
+```text
+== Cluster Access ==
+PASS  an OpenShift context is selected
+PASS  oc authentication succeeded
+PASS  cluster API is reachable
+
+Summary: 54 checks; 54 passed; 0 warnings; 0 failures
+READY: environment is prepared for the repository workflow.
+```
+
+The script reads supported values from `.env` when corresponding environment variables are unset; it does not execute `.env`. `KUBECONFIG_PATH` and `GUEST_KEY` use the same defaults as the workflow scripts. A preflight pass confirms prerequisites and access, not that a later backup operation will succeed.
+
 ## Run the demo
+
 
 Run the complete workflow:
 
@@ -90,7 +119,7 @@ Cleanup deletes only `vm-cbt-demo` resources and waits for its dynamically provi
 
 ## Synchronization helper
 
-`sync.sh` copies the repository to a configured remote host. It requires both `REMOTE_HOST` and `REMOTE_DIR`, and requires `ssh` and `rsync` locally. It excludes `.git`, `.env`, dotenv variants, and log files:
+`sync.sh` copies the repository to a configured remote host. It reads `REMOTE_HOST` and `REMOTE_DIR` from the current environment first, then from the local `.env` without executing that file. It requires `ssh` and `rsync` locally. It excludes `.git`, `.env`, dotenv variants, and log files:
 
 ```sh
 REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup ./sync.sh

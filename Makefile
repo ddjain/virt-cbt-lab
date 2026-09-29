@@ -4,10 +4,14 @@ SHELL := /bin/bash
 
 export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR
 
-.PHONY: vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-demo e2e clean-all help
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-demo e2e clean-all help
+
+preflight:
+	@./preflight
 
 vm-setup:
 	@./scripts/vm-setup.sh
+
 
 vm-backup:
 	@./scripts/vm-backup.sh
@@ -24,13 +28,14 @@ vm-cbt-demo:
 	$(MAKE) vm-cbt-backup
 	$(MAKE) vm-cbt-verify
 
-e2e: vm-cbt-demo
+e2e: preflight vm-cbt-demo
 
 clean-all:
 	@./scripts/clean-all.sh
 
 help:
 	@printf '%s\n' \
+	  'make preflight     Check local, cluster, and guest SSH prerequisites without changing cluster state.' \
 	  'make vm-setup       Create the VM, write hello.txt, and print its hash.' \
 	  'make vm-backup      Take the full VM backup.' \
 	  'make vm-cbt-backup  Append to hello.txt, print its hash, and take an incremental backup.' \

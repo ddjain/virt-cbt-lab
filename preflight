@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERBOSE=0
+CHECKS=0
+PASSED=0
+WARNINGS=0
+FAILURES=0
+TMP_DIR=""
+
+usage() {
+  cat <<'USAGE'
+Usage: ./preflight [--verbose] [--help]
+
+Check whether this repository's KubeVirt CBT workflow can run safely.
+The checks are read-only with respect to the cluster; nothing is installed
+and no Kubernetes resource is created, changed, or deleted.
+USAGE
+}
+
+while (($#)); do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --verbose|-v) VERBOSE=1 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+cleanup() {
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbt-preflight.XXXXXX")"
+
+section() {
+  printf '\n== %s ==\n' "$1"
+}
+
+result() {
+  local state="$1" message="$2"
+  CHECKS=$((CHECKS + 1))
+  case "$state" in
+    PASS) PASSED=$((PASSED + 1)); printf 'PASS  %s\n' "$message" ;;
+    WARN) WARNINGS=$((WARNINGS + 1)); printf 'WARN  %s\n' "$message" ;;
+    FAIL) FAILURES=$((FAILURES + 1)); printf 'FAIL  %s\n' "$message" ;;
+    *) printf 'FAIL  Internal preflight error\n' >&2; exit 2 ;;
+  esac
+}
+
+check_command() {
+  local name="$1" hint="$2" version=
+  if ! command -v "$name" >/dev/null 2>&1; then
+    result FAIL "$name is missing or not executable; $hint"
+    return
+  fi
+  if [[ "$name" == oc ]]; then
+    version="$(oc version --client 2>/dev/null | sed -n '1p' || true)"
+  elif [[ "$name" == ssh ]]; then
+    version="$(ssh -V 2>&1 | sed -n '1p' || true)"
+  elif [[ "$name" == make || "$name" == bash ]]; then
+    version="$("$name" --version 2>/dev/null | sed -n '1p' || true)"
+  fi
+  [[ -n "$version" ]] && result PASS "$name is available ($version)" || result PASS "$name is available"
+}
+
+load_dotenv_defaults() {
+  local file="$ROOT_DIR/.env" line key value
+  [[ -r "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(KUBECONFIG_PATH|GUEST_KEY|REMOTE_HOST|REMOTE_DIR)[[:space:]]*= ]] || continue
+    key="${BASH_REMATCH[1]}"
+    value="${line#*=}"
+    value="${value##[[:space:]]}"
+    value="${value%%[[:space:]]}"
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then value="${value:1:${#value}-2}"; fi
+    if [[ "$value" == \'*\' && "$value" == *\' ]]; then value="${value:1:${#value}-2}"; fi
+    if [[ -z "${!key+x}" ]]; then printf -v "$key" '%s' "$value"; fi
+  done < "$file"
+}
+
+load_dotenv_defaults
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
+GUEST_KEY="${GUEST_KEY:-${HOME:-$ROOT_DIR}/.local/share/vm-cbt-demo/id_ed25519}"
+if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
+
+section "Repository"
+[[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
+for file in scripts/common.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml; do
+  [[ -f "$ROOT_DIR/$file" ]] && result PASS "$file found" || result FAIL "$file is missing"
+done
+
+section "CLI Tools"
+check_command bash "install Bash 3.2 or newer"
+check_command make "install make"
+check_command oc "install the OpenShift CLI (oc)"
+check_command ssh "install an OpenSSH client"
+check_command ssh-keygen "install OpenSSH client tools"
+for command_name in sed mktemp grep sleep kill cat mkdir rm rmdir chmod awk stat; do
+  check_command "$command_name" "install the command or restore the standard OS utilities"
+done
+if command -v rsync >/dev/null 2>&1; then result PASS "rsync is available for optional sync.sh"; else result WARN "rsync is missing; sync.sh cannot be used (not required for make e2e)"; fi
+
+section "Environment"
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  [[ -f "$KUBECONFIG_PATH" && -r "$KUBECONFIG_PATH" ]] && result PASS "configured kubeconfig is a readable file" || result FAIL "KUBECONFIG_PATH is not a readable file"
+else
+  result PASS "using oc's standard kubeconfig/context resolution"
+fi
+if [[ -r "$ROOT_DIR/.env" ]]; then result PASS ".env is readable and supported values were loaded without executing it"; else result WARN ".env is absent; environment variables and oc defaults will be used"; fi
+
+section "Cluster Access"
+if ! command -v oc >/dev/null 2>&1; then
+  result FAIL "oc is required before cluster access can be checked"
+else
+  context="$(oc config current-context 2>"$TMP_DIR/oc-error" || true)"
+  [[ -n "$context" ]] && result PASS "an OpenShift context is selected" || result FAIL "no usable kubeconfig context is selected"
+  if oc whoami >"$TMP_DIR/whoami" 2>"$TMP_DIR/oc-error"; then result PASS "oc authentication succeeded"; else result FAIL "oc authentication failed; log in with oc or fix the kubeconfig"; fi
+  if oc get --raw=/version >"$TMP_DIR/version" 2>"$TMP_DIR/oc-error"; then result PASS "cluster API is reachable"; else result FAIL "cluster API is not reachable; check the server, network, and credentials"; fi
+fi
+
+section "Cluster Capabilities"
+if command -v oc >/dev/null 2>&1; then
+  for crd in virtualmachines.kubevirt.io virtualmachinebackups.backup.kubevirt.io virtualmachinebackuptrackers.backup.kubevirt.io; do
+    if oc get crd "$crd" >/dev/null 2>"$TMP_DIR/oc-error"; then result PASS "required CRD $crd is installed"; else result FAIL "required CRD $crd is unavailable"; fi
+  done
+  if oc get datasource fedora -n openshift-virtualization-os-images >/dev/null 2>"$TMP_DIR/oc-error"; then result PASS "Fedora CDI DataSource is available"; else result FAIL "Fedora DataSource is unavailable in openshift-virtualization-os-images"; fi
+  if oc get storageclass cbt-demo-hpp >/dev/null 2>"$TMP_DIR/oc-error"; then result PASS "storage class cbt-demo-hpp is available"; else result FAIL "storage class cbt-demo-hpp is unavailable"; fi
+  if kubevirt_config="$(oc get kubevirt -A -o jsonpath='{range .items[*]}{.spec.configuration.developerConfiguration.featureGates}{"\\n"}{.spec.configuration.developerConfiguration}{"\\n"}{end}' 2>"$TMP_DIR/oc-error")" && printf '%s\n' "$kubevirt_config" | grep -Eq '(^|[^[:alnum:]])IncrementalBackup([^[:alnum:]]|$)'; then
+    result PASS "IncrementalBackup feature gate is configured"
+  else
+    result FAIL "IncrementalBackup feature gate is not confirmed in KubeVirt configuration"
+  fi
+  if printf '%s\n' "${kubevirt_config:-}" | grep -Fq 'cbt-demo=enabled'; then result PASS "CBT selector includes cbt-demo=enabled"; else result FAIL "CBT selector cbt-demo=enabled is not confirmed"; fi
+  for permission in 'create namespaces' 'create virtualmachines' 'create virtualmachinebackups' 'delete namespaces'; do
+    verb="${permission%% *}"; resource="${permission#* }"
+    if oc auth can-i "$verb" "$resource" >/dev/null 2>"$TMP_DIR/oc-error"; then result PASS "permission to $verb $resource is available"; else result FAIL "permission to $verb $resource is missing"; fi
+  done
+else
+  result FAIL "cluster capabilities cannot be checked without oc"
+fi
+
+section "VM/SSH"
+if [[ -f "$GUEST_KEY" && -r "$GUEST_KEY" ]]; then
+  result PASS "guest private key is readable"
+  key_mode="$(stat -f '%Lp' "$GUEST_KEY" 2>/dev/null || stat -c '%a' "$GUEST_KEY" 2>/dev/null || true)"
+  if [[ "$key_mode" == 600 || "$key_mode" == 400 ]]; then result PASS "guest private key permissions are owner-only"; else result FAIL "guest private key permissions must be 0600 or 0400"; fi
+  if ssh-keygen -y -f "$GUEST_KEY" >"$TMP_DIR/derived.pub" 2>"$TMP_DIR/key-error"; then
+    result PASS "guest private key is a valid SSH key"
+    if [[ -f "$GUEST_KEY.pub" && -r "$GUEST_KEY.pub" ]]; then
+      expected="$(awk '{print $1 " " $2}' "$TMP_DIR/derived.pub")"
+      actual="$(awk '{print $1 " " $2}' "$GUEST_KEY.pub")"
+      [[ "$expected" == "$actual" ]] && result PASS "guest public/private key pair matches" || result FAIL "guest public key does not match the private key"
+    else
+      result WARN "guest public key is absent; vm-setup.sh can derive it from the private key"
+    fi
+  else
+    result FAIL "guest private key cannot be validated"
+  fi
+else
+  result FAIL "guest private key is missing or unreadable (set GUEST_KEY or run vm-setup.sh to generate it)"
+fi
+result PASS "workflow guest user is configured as cbt-demo; SSH uses an ephemeral local oc port-forward"
+
+section "Permissions"
+for script in preflight scripts/*.sh sync.sh; do
+  if [[ -x "$ROOT_DIR/$script" ]]; then result PASS "$script is executable"; else result FAIL "$script is not executable"; fi
+done
+if probe_dir="$(mktemp -d "$TMP_DIR/work.XXXXXX" 2>/dev/null)"; then result PASS "temporary work directory can be created"; rmdir "$probe_dir"; else result FAIL "temporary work directory cannot be created"; fi
+
+printf '\nSummary: %d checks; %d passed; %d warnings; %d failures\n' "$CHECKS" "$PASSED" "$WARNINGS" "$FAILURES"
+if ((VERBOSE)); then
+  printf 'Diagnostics: detailed command errors were suppressed to avoid exposing credentials or kubeconfig data.\n'
+fi
+if ((FAILURES == 0)); then printf 'READY: environment is prepared for the repository workflow.\n'; exit 0; fi
+printf 'NOT READY: resolve the failed checks before running make e2e.\n'
+exit 1

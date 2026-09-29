@@ -13,7 +13,7 @@ This repository is a shell-driven KubeVirt CBT demonstration. `make e2e` runs se
 - `scripts/vm-cbt-backup.sh`: guest mutation and incremental backup.
 - `scripts/vm-cbt-verify.sh`: end-state validation.
 - `scripts/clean-all.sh`: namespace/PV/key cleanup.
-- `sync.sh`: optional SSH/rsync helper; it requires explicit `REMOTE_HOST` and `REMOTE_DIR`.
+- `sync.sh`: optional SSH/rsync helper; it reads `REMOTE_HOST` and `REMOTE_DIR` from the environment or local `.env`.
 
 ## Setup and validation
 
@@ -36,6 +36,9 @@ make clean-all
 ```
 
 The last two commands require a compatible OpenShift Virtualization/KubeVirt cluster. Do not claim E2E success from syntax checks alone.
+
+Run `./preflight` or `make preflight` before any individual workflow target. `make e2e` runs the same preflight automatically before starting `vm-cbt-demo`. It performs read-only local, kubeconfig, OpenShift access, KubeVirt capability, storage, permission, and guest-SSH checks. A failure blocks the workflow with exit 1; it never installs tools or changes cluster resources. Use `./preflight --help` for usage and `./preflight --verbose` for the safe diagnostic summary.
+
 
 ## Coding conventions
 

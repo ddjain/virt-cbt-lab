@@ -11,7 +11,7 @@ public_key="$(ensure_guest_key)"
 printf '[vm-setup] Applying the VM and SSH service manifests.\n' >&2
 sed "s|__SSH_PUBLIC_KEY__|$public_key|g" "$ROOT_DIR/manifests/vm.yaml" | oc_cmd apply -f -
 printf '[vm-setup] Waiting for the VM and disk import to become ready.\n' >&2
-oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=condition=Ready --timeout=20m
+oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=20m
 
 cbt_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
 if [[ "$cbt_state" != Enabled ]]; then
