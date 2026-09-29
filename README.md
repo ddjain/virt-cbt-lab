@@ -14,7 +14,8 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 - `vm-setup.sh` creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
-- `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint.
+- `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`.
+- `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and incremental backup PVCs and verifies its actual data — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and how to independently cross-check it.
 - `clean-all.sh` removes the demo namespace and only the guest key marked as workflow-managed.
 
 The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The cluster's selector representation varies by KubeVirt version, so preflight does not gate on that literal configuration; setup and verification require the resulting VM CBT state to be `Enabled`.
@@ -61,6 +62,7 @@ Supported variables:
 | `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
 | `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `btrfs-progs`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 
 
 ## Preflight
@@ -120,7 +122,7 @@ Cleanup deletes only `vm-cbt-demo` resources and waits for its dynamically provi
 
 ## Synchronization helper
 
-`sync.sh` copies the repository to a configured remote host. It reads `REMOTE_HOST` and `REMOTE_DIR` from the current environment first, then from the local `.env` without executing that file. It requires `ssh` and `rsync` locally. It excludes `.git`, `.env`, dotenv variants, and log files:
+`sync.sh` copies the repository and its `.git` metadata to a configured remote host. It reads `REMOTE_HOST` and `REMOTE_DIR` from the current environment first, then from the local `.env` without executing that file. It requires `ssh` and `rsync` locally. It excludes `.env`, dotenv variants, and log files, but includes `.git` so the destination remains a Git working copy:
 
 ```sh
 REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup ./sync.sh
@@ -161,10 +163,14 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── .env.example          # Sanitized local configuration template
 ├── .gitignore            # Secret and generated-artifact exclusions
 ├── AGENTS.md             # Repository-specific contributor/agent guidance
-├── docs/                 # Detailed workflow documentation
-├── manifests/            # VM, full-backup, and incremental-backup resources
+├── docs/                 # Detailed workflow and restore-verification documentation
+├── images/
+│   └── restore-helper/   # Dockerfile for the restore-verification pod image
+├── manifests/            # VM, full-backup, incremental-backup, and restore-verify pod resources
 ├── scripts/              # Workflow implementation and shared helpers
-│   └── dotenv.sh         # Safe parser for supported .env values
+│   ├── dotenv.sh         # Safe parser for supported .env values
+│   └── restore-lib.sh    # Restore-verification pod orchestration
+├── state/                # Guest hashes recorded at backup time (gitignored, created at runtime)
 └── sync.sh               # Optional remote synchronization helper
 ```
 
@@ -174,4 +180,5 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
 - The demo uses a 30 GiB local/RWO disk and is not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
+- `make vm-cbt-restore-test` runs a privileged pod to reconstruct the guest disk (`qemu-img`) and read its files with `btrfs restore` (needed because the demo's Fedora guest uses a btrfs root filesystem, and RHEL/CentOS-family kernels don't ship a btrfs kernel module for mounting). Build `images/restore-helper/Dockerfile`, push it, and set `RESTORE_HELPER_IMAGE`; the cluster must permit pulling that image and running the privileged pod.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

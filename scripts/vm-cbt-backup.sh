@@ -41,15 +41,17 @@ workflow_success "Full backup $FULL_BACKUP_NAME is complete as $full_backup_type
 
 workflow_step "2/5 Modify guest data after the full checkpoint"
 workflow_action "Port-forward service $SSH_SERVICE and append the idempotent CBT test line to ~/hello.txt"
-workflow_action "Print the new guest file SHA-256"
-guest_mutation_command='
-if ! grep -Fqx "This line was added after the full backup." ~/hello.txt; then
-  printf "%s\n" "This line was added after the full backup." >> ~/hello.txt
+workflow_action "Print the new guest file SHA-256 and record it as the expected incremental-backup content"
+guest_mutation_command="
+if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
+  printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
 sha256sum ~/hello.txt
-'
-guest_ssh "$guest_mutation_command"
-workflow_success "Guest data changed after checkpoint $full_checkpoint"
+"
+guest_hash_line="$(guest_ssh "$guest_mutation_command")"
+printf '%s\n' "$guest_hash_line"
+write_state_file "incremental-backup.sha256" "$(printf '%s' "$guest_hash_line" | extract_sha256)"
+workflow_success "Guest data changed after checkpoint $full_checkpoint; expected incremental-backup hash recorded in $STATE_DIR"
 
 workflow_step "3/5 Create the incremental backup request"
 workflow_action "oc apply -f manifests/incremental-backup.yaml (PVC hello-incremental-output and backup $INCREMENTAL_BACKUP_NAME)"

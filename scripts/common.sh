@@ -17,6 +17,13 @@ TRACKER_NAME="hello-tracker"
 FULL_BACKUP_NAME="hello-full"
 # shellcheck disable=SC2034
 INCREMENTAL_BACKUP_NAME="hello-incremental"
+# shellcheck disable=SC2034
+STATE_DIR="$ROOT_DIR/state"
+# Guest mutation used to prove the incremental backup carries real changes.
+# shellcheck disable=SC2034
+CBT_INCREMENTAL_MARKER_LINE="This line was added after the full backup."
+# shellcheck disable=SC2034
+GUEST_HELLO_FILE="/home/$GUEST_USER/hello.txt"
 
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   export KUBECONFIG="$KUBECONFIG_PATH"
@@ -213,4 +220,34 @@ get_tracker_checkpoint() {
   oc_cmd get vmbackuptracker "$TRACKER_NAME" \
     -n "$NAMESPACE" \
     -o 'jsonpath={.status.latestCheckpoint.name}'
+}
+
+get_backup_pvc_name() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.spec.pvcName}'
+}
+
+# Record a guest-observed value (e.g. a hash captured at backup time) so a
+# later step, possibly a separate script invocation, can assert against it.
+write_state_file() {
+  local state_name="$1" value="$2"
+  mkdir -p "$STATE_DIR"
+  printf '%s' "$value" > "$STATE_DIR/$state_name"
+}
+
+read_state_file() {
+  local state_name="$1"
+  local state_path="$STATE_DIR/$state_name"
+  if [[ ! -f "$state_path" ]]; then
+    printf 'Missing state file %s; run the step that records it first.\n' "$state_path" >&2
+    return 1
+  fi
+  cat "$state_path"
+}
+
+# Extract the hash from a `sha256sum <file>` line ("<hash>  <file>").
+extract_sha256() {
+  awk '{print $1; exit}'
 }

@@ -13,6 +13,9 @@ The demo proves the flow end to end by checking that:
 3. The guest disk changes after that checkpoint.
 4. A second backup completes as `Incremental`, with a different checkpoint.
 5. The tracker advances to the incremental checkpoint.
+6. The full backup, and the full backup rebased with the incremental, actually reconstruct into a disk containing the exact guest data recorded at backup time (see "Restore verification" below).
+
+KubeVirt's CBT/incremental-backup feature (`backup.kubevirt.io/v1alpha1`) does not define a restore API; it only writes qcow2 files (a full image, then incremental overlays) to the PVC named in each backup's `spec.pvcName`. Restoring is left to backup vendors. This repo's restore test performs the reference `qemu-img rebase`/`convert` reconstruction itself so that CI can assert on real guest data rather than trusting backup/PVC status alone.
 
 The incremental-backup feature is preview/alpha, not a GA feature. The cluster must enable the `incrementalBackup` feature gate. The VM manifest supplies the custom `cbt-demo=enabled` label; selector configuration is KubeVirt-version-dependent and is not treated as a preflight gate. `vm-setup.sh` and `vm-cbt-verify.sh` stop unless the resulting VM CBT status is `Enabled`.
 
@@ -27,6 +30,7 @@ The target server needs:
 - The `cbt-demo-hpp` virtualization storage class.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, and access to the local kubeconfig.
+- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `btrfs-progs`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -73,7 +77,7 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 3. Applies `manifests/vm.yaml`, which creates namespace `vm-cbt-demo`, VM `vm-cbt-demo`, and the `vm-cbt-ssh` service.
 4. Creates a 30 GiB root `DataVolume` from the Fedora `DataSource`, using `cbt-demo-hpp`. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` to `/home/cbt-demo/hello.txt`, and prints its SHA-256 hash.
+6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` to `/home/cbt-demo/hello.txt`, prints its SHA-256 hash, and records that hash to `state/full-backup.sha256` (this is the content the full backup will contain, since no guest mutation happens before `make vm-backup` runs).
 
 `guest_ssh` uses a temporary randomized local port-forward, retries VM startup,
 and cleans up the port-forward when the command finishes.
@@ -93,7 +97,7 @@ The script waits for the `Done=True` condition and requires `.status.type == Ful
 
 1. Confirms the full backup completed as `Full`.
 2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
-3. Appends `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, then prints the new SHA-256 hash.
+3. Appends `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, prints the new SHA-256 hash, and records it to `state/incremental-backup.sha256` (the content the full+incremental restore must reproduce).
 4. Applies `manifests/incremental-backup.yaml`, creating the `hello-incremental-output` PVC and `hello-incremental` backup. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
 
@@ -111,6 +115,21 @@ The append is idempotent for retries: the same line is not appended twice.
 
 It prints `CBT verification passed` only when every condition holds. The hashes printed by setup and incremental backup separately show that the guest file content changed.
 
+### 5. Restore verification (`scripts/vm-cbt-restore-test.sh`, runs as step 4/4 of `vm-cbt-verify`)
+
+This is the step that actually proves the backups contain correct, restorable data, rather than only checking backup/PVC status:
+
+1. Reads the expected hashes recorded in `state/full-backup.sha256` and `state/incremental-backup.sha256`.
+2. Confirms both backup PVCs (`hello-full-output`, `hello-incremental-output`) are `Bound`.
+3. Applies `manifests/restore-verify-pod.yaml` (with placeholders substituted, the same pattern `vm-setup.sh` uses for the SSH public key) as a short-lived pod that mounts both backup PVCs read-only, then:
+   - `qemu-img convert` the full backup's qcow2 straight to raw (full-only restore).
+   - `qemu-img rebase` the incremental qcow2 onto the full qcow2, then `qemu-img convert` the result to raw (full+incremental restore).
+   - Extracts `/home/cbt-demo/hello.txt` from each raw disk with `losetup` + `btrfs restore` (userspace, no btrfs kernel module needed — see `images/restore-helper/Dockerfile`).
+4. Deletes the pod (via a trap, on success or failure) and reads its logs for the two hashes and whether the incremental marker line is present in each.
+5. Asserts: the full-only restore matches `state/full-backup.sha256` and does **not** contain the incremental marker line; the full+incremental restore matches `state/incremental-backup.sha256` and **does** contain the marker line.
+
+Any mismatch fails the step (exit 1) — a missing incremental delta, a stale/corrupt/empty restored disk, or a backup that silently drops data will all produce a hash or marker-line mismatch here rather than passing on PVC status alone.
+
 ## Resources and names
 
 All workflow objects live in namespace `vm-cbt-demo`:
@@ -125,6 +144,7 @@ All workflow objects live in namespace `vm-cbt-demo`:
 | PVC | `hello-full-output` | Full backup output |
 | VirtualMachineBackup | `hello-incremental` | Backup based on the tracker checkpoint |
 | PVC | `hello-incremental-output` | Incremental backup output |
+| Pod (short-lived) | `hello-restore-verify` | Reconstructs and reads the guest disk during `vm-cbt-restore-test` |
 
 Names are fixed, so the workflow is intentionally one run per namespace. To start over, use `make clean-all` first.
 
