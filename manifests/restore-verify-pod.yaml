@@ -5,6 +5,8 @@ metadata:
   namespace: __NAMESPACE__
   labels:
     cbt-demo-restore-verify: "true"
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
   restartPolicy: Never
   volumes:

@@ -4,31 +4,51 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="clean-all"
 
-workflow_step "1/3 Delete demo namespace resources"
-workflow_action "oc delete namespace $NAMESPACE --ignore-not-found=true --wait=true --timeout=10m"
-oc_cmd delete namespace "$NAMESPACE" --ignore-not-found=true --wait=true --timeout=10m
-workflow_success "Namespace $NAMESPACE deletion completed"
+# Every resource kind an E2E run can create directly (VM/DataVolume owned
+# child resources like the root PVC cascade-delete with the VM).
+MANAGED_RESOURCE_KINDS=(vm dv vmbackup vmbackuptracker pod pvc service)
 
-workflow_step "2/3 Wait for demo persistent volumes to be reclaimed"
-workflow_action "Poll PV claim references for namespace $NAMESPACE (up to 2 minutes)"
-remaining_pv_names=
-for ((attempt = 1; attempt <= 60; attempt++)); do
-  remaining_pv_names="$(oc_cmd get pv -o "jsonpath={range .items[?(@.spec.claimRef.namespace==\"$NAMESPACE\")]}{.metadata.name}{\",\"}{end}")"
-  if [[ -z "$remaining_pv_names" ]]; then
-    break
-  fi
-  if (( attempt == 1 || attempt % 10 == 0 )); then
-    workflow_action "PV reclamation pending: ${remaining_pv_names//$'\n'/, } (poll $attempt/60)"
-  fi
-  sleep 2
+workflow_step "1/3 Delete virt-cbt-lab managed resources in namespace $NAMESPACE"
+workflow_action "Recording PVCs labeled $RUN_LABEL_SELECTOR before deletion (for PV reclamation tracking)"
+mapfile -t managed_pvc_names < <(
+  oc_cmd get pvc -n "$NAMESPACE" -l "$RUN_LABEL_SELECTOR" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+)
+
+for kind in "${MANAGED_RESOURCE_KINDS[@]}"; do
+  workflow_action "oc delete $kind -n $NAMESPACE -l $RUN_LABEL_SELECTOR --ignore-not-found=true --wait=true --timeout=10m"
+  oc_cmd delete "$kind" -n "$NAMESPACE" -l "$RUN_LABEL_SELECTOR" --ignore-not-found=true --wait=true --timeout=10m
 done
-if [[ -n "$remaining_pv_names" ]]; then
-  printf '[clean-all] Persistent volumes are not reclaimed yet: %s\n' "${remaining_pv_names//$'\n'/, }" >&2
-  exit 1
-fi
-workflow_success "All demo PVs are reclaimed"
+workflow_success "All virt-cbt-lab managed resources deleted from namespace $NAMESPACE (unrelated namespace resources preserved)"
 
-workflow_step "3/3 Remove only the workflow-managed guest key"
+workflow_step "2/3 Wait for managed persistent volumes to be reclaimed"
+if ((${#managed_pvc_names[@]} == 0)); then
+  workflow_success "No managed PVCs were present; nothing to reclaim"
+else
+  workflow_action "Poll PV claim references for ${#managed_pvc_names[@]} managed PVC(s) (up to 2 minutes)"
+  remaining_pv_names=
+  for ((attempt = 1; attempt <= 60; attempt++)); do
+    remaining_pv_names=""
+    for pvc_name in "${managed_pvc_names[@]}"; do
+      match="$(oc_cmd get pv -o "jsonpath={range .items[?(@.spec.claimRef.name==\"$pvc_name\")]}{.metadata.name}{\",\"}{end}" 2>/dev/null || true)"
+      remaining_pv_names+="$match"
+    done
+    if [[ -z "$remaining_pv_names" ]]; then
+      break
+    fi
+    if (( attempt == 1 || attempt % 10 == 0 )); then
+      workflow_action "PV reclamation pending: ${remaining_pv_names//$'\n'/, } (poll $attempt/60)"
+    fi
+    sleep 2
+  done
+  if [[ -n "$remaining_pv_names" ]]; then
+    printf '[clean-all] Persistent volumes are not reclaimed yet: %s\n' "${remaining_pv_names//$'\n'/, }" >&2
+    exit 1
+  fi
+  workflow_success "All managed PVs are reclaimed"
+fi
+
+workflow_step "3/3 Remove only the workflow-managed guest key and local run state"
 workflow_action "Check ownership marker $GUEST_KEY.vm-cbt-managed before deleting key files"
 marker="$GUEST_KEY.vm-cbt-managed"
 if [[ -f "$marker" ]]; then
@@ -39,4 +59,8 @@ if [[ -f "$marker" ]]; then
 else
   workflow_success "No workflow-managed key found; existing key files preserved"
 fi
-printf '[clean-all] Demo cleanup complete; shared KubeVirt and storage resources were left intact.\n' >&2
+workflow_action "Removing local run state (recorded run ID and guest hashes) in $STATE_DIR"
+rm -rf "$STATE_DIR"
+# report/ is intentionally left in place: it holds each run's JSON report and
+# restore-test log for post-run debugging, and survives cleanup on purpose.
+printf '[clean-all] Demo cleanup complete; namespace %s and shared KubeVirt/storage resources were left intact.\n' "$NAMESPACE" >&2

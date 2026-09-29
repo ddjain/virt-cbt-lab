@@ -3,10 +3,22 @@ set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="vm-backup"
+load_run_id
+load_report_id
 
 workflow_step "1/4 Create full-backup resources"
-workflow_action "oc apply -f manifests/full-backup.yaml (PVC hello-full-output, tracker $TRACKER_NAME, backup $FULL_BACKUP_NAME)"
-oc_cmd apply -f "$ROOT_DIR/manifests/full-backup.yaml"
+workflow_action "oc apply -f manifests/full-backup.yaml (PVC $FULL_BACKUP_PVC_NAME, tracker $TRACKER_NAME, backup $FULL_BACKUP_NAME)"
+sed \
+  -e "s|__NAMESPACE__|$NAMESPACE|g" \
+  -e "s|__VM_NAME__|$VM_NAME|g" \
+  -e "s|__TRACKER_NAME__|$TRACKER_NAME|g" \
+  -e "s|__FULL_BACKUP_NAME__|$FULL_BACKUP_NAME|g" \
+  -e "s|__FULL_BACKUP_PVC__|$FULL_BACKUP_PVC_NAME|g" \
+  -e "s|__RUN_ID__|$RUN_ID|g" \
+  -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
+  -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
+  -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
+  "$ROOT_DIR/manifests/full-backup.yaml" | oc_cmd apply -f -
 workflow_success "PVC, tracker, and full backup request created in namespace $NAMESPACE"
 
 workflow_step "2/4 Wait for the full backup to complete"
@@ -25,3 +37,19 @@ workflow_success "$FULL_BACKUP_NAME is a $full_backup_type backup"
 workflow_step "4/4 Record the full checkpoint"
 full_backup_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
 workflow_success "$FULL_BACKUP_NAME checkpoint is $full_backup_checkpoint"
+
+workflow_action "Recording full backup PVC size and VM backup status for the run report"
+full_backup_status="$(get_vm_backup_status)"
+if [[ "$(jq -r '.backupName // empty' <<<"$full_backup_status")" != "$FULL_BACKUP_NAME" ]]; then
+  full_backup_status='{}'
+fi
+write_report_fragment "full-backup" "$(jq -n \
+  --arg name "$FULL_BACKUP_NAME" \
+  --arg type "$full_backup_type" \
+  --arg checkpoint_name "$full_backup_checkpoint" \
+  --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
+  --arg pvc_requested "$(get_pvc_requested "$FULL_BACKUP_PVC_NAME")" \
+  --arg pvc_capacity "$(get_pvc_capacity "$FULL_BACKUP_PVC_NAME")" \
+  --argjson backup_status "$full_backup_status" \
+  '{backups: {full: ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
+                      pvc_name: $pvc_name, pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)}}')"

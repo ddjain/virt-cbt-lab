@@ -1,20 +1,25 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: vm-cbt-demo
+  name: __NAMESPACE__
 ---
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: vm-cbt-demo
-  namespace: vm-cbt-demo
+  name: __VM_NAME__
+  namespace: __NAMESPACE__
   labels:
     cbt-demo: enabled
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
   runStrategy: Always
   dataVolumeTemplates:
     - metadata:
-        name: vm-cbt-root
+        name: __DV_NAME__
+        labels:
+          __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+          __RUN_ID_LABEL_KEY__: __RUN_ID__
       spec:
         sourceRef:
           kind: DataSource
@@ -63,7 +68,7 @@ spec:
       volumes:
         - name: rootdisk
           dataVolume:
-            name: vm-cbt-root
+            name: __DV_NAME__
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
@@ -88,11 +93,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vm-cbt-ssh
-  namespace: vm-cbt-demo
+  name: __SSH_SERVICE__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
   selector:
-    vm.kubevirt.io/name: vm-cbt-demo
+    vm.kubevirt.io/name: __VM_NAME__
   ports:
     - name: ssh
       port: 22

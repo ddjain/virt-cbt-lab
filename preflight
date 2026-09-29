@@ -93,6 +93,7 @@ check_cli_tools() {
   check_command oc "install the OpenShift CLI (oc)"
   check_command ssh "install an OpenSSH client"
   check_command ssh-keygen "install OpenSSH client tools"
+  check_command jq "install jq (used to build/merge the per-run JSON report)"
   for command_name in sed mktemp grep sleep kill cat mkdir rm rmdir chmod awk stat; do
     check_command "$command_name" "install the command or restore the standard OS utilities"
   done
