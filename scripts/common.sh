@@ -12,6 +12,14 @@ VM_NAME="vm-cbt-demo"
 GUEST_USER="cbt-demo"
 SSH_SERVICE="vm-cbt-ssh"
 # shellcheck disable=SC2034
+RESTORED_VM_NAME="vm-cbt-restored"
+# shellcheck disable=SC2034
+RESTORED_ROOT_PVC="vm-cbt-restored-root"
+# shellcheck disable=SC2034
+RESTORE_JOB_NAME="vm-cbt-restore"
+# shellcheck disable=SC2034
+RESTORE_SSH_SERVICE="vm-cbt-restored-ssh"
+# shellcheck disable=SC2034
 TRACKER_NAME="hello-tracker"
 # shellcheck disable=SC2034
 FULL_BACKUP_NAME="hello-full"
@@ -100,15 +108,16 @@ extract_forwarded_port() {
   sed -n 's/^Forwarding from 127[.]0[.]0[.]1:\([0-9][0-9]*\) -> 22$/\1/p' "$forward_log" | sed -n '1p'
 }
 
-guest_ssh() {
-  local guest_command
-  if (($# != 1)); then
-    printf 'guest_ssh expects exactly one remote command.\n' >&2
+guest_ssh_to() {
+  local service_name guest_command
+  if (($# != 2)); then
+    printf 'guest_ssh_to expects a service name and exactly one remote command.\n' >&2
     return 2
   fi
-  guest_command="$1"
+  service_name="$1"
+  guest_command="$2"
 
-  printf '[guest-ssh] Connecting through local port-forward to %s.\n' "$SSH_SERVICE" >&2
+  printf '[guest-ssh] Connecting through local port-forward to %s.\n' "$service_name" >&2
   local forward_log probe_log forward_pid port
   forward_log="$(mktemp)"
   probe_log="$(mktemp)"
@@ -130,9 +139,9 @@ guest_ssh() {
 
   for ((attempt = 1; attempt <= 30; attempt++)); do
     printf '[guest-ssh] → oc port-forward -n %s service/%s :22 (attempt %d/30).\n' \
-      "$NAMESPACE" "$SSH_SERVICE" "$attempt" >&2
+      "$NAMESPACE" "$service_name" "$attempt" >&2
     : > "$forward_log"
-    oc_cmd port-forward -n "$NAMESPACE" "service/$SSH_SERVICE" :22 >"$forward_log" 2>&1 &
+    oc_cmd port-forward -n "$NAMESPACE" "service/$service_name" :22 >"$forward_log" 2>&1 &
     forward_pid=$!
     port=
     for ((wait_attempt = 1; wait_attempt <= 30; wait_attempt++)); do
@@ -159,7 +168,6 @@ guest_ssh() {
         return 1
       fi
       printf '[guest-ssh] SSH probe failed; retrying.\n' >&2
-      # Authentication failures are terminal; startup failures can recover.
       if grep -q 'Permission denied' "$probe_log"; then
         cat "$probe_log" >&2
         cleanup
@@ -178,6 +186,14 @@ guest_ssh() {
   printf 'Could not connect to the VM guest over SSH.\n' >&2
   cleanup
   return 1
+}
+
+guest_ssh() {
+  if (($# != 1)); then
+    printf 'guest_ssh expects exactly one remote command.\n' >&2
+    return 2
+  fi
+  guest_ssh_to "$SSH_SERVICE" "$1"
 }
 
 wait_for_backup_done() {

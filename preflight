@@ -81,7 +81,7 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 check_repository() {
   section "Repository"
   [[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
-  for file in scripts/common.sh scripts/dotenv.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml; do
+  for file in scripts/common.sh scripts/dotenv.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh scripts/vm-cbt-restore.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml manifests/restore-storage.yaml manifests/restored-vm.yaml; do
     [[ -f "$ROOT_DIR/$file" ]] && result PASS "$file found" || result FAIL "$file is missing"
   done
 }

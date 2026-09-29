@@ -17,7 +17,7 @@ public_key="$(ensure_guest_key)"
 workflow_success "Guest key is ready for user $GUEST_USER"
 
 workflow_step "3/5 Create the VM, root disk, namespace, and SSH service"
-workflow_action "oc apply -f manifests/vm.yaml (VM $VM_NAME, DataVolume vm-cbt-root, service $SSH_SERVICE)"
+workflow_action "oc apply -f manifests/vm.yaml (VM $VM_NAME, root DataVolume vm-cbt-root, service $SSH_SERVICE)"
 # Inject only the public key; the private key stays outside the manifest.
 sed "s|__SSH_PUBLIC_KEY__|$public_key|g" "$ROOT_DIR/manifests/vm.yaml" | oc_cmd apply -f -
 workflow_success "VM resources applied in namespace $NAMESPACE"
@@ -32,8 +32,12 @@ if [[ "$cbt_state" != Enabled ]]; then
 fi
 workflow_success "VM $VM_NAME is ready; CBT state is $cbt_state"
 
-workflow_step "5/5 Initialize and validate guest data"
-workflow_action "Port-forward service $SSH_SERVICE and write ~/hello.txt as $GUEST_USER"
-workflow_action "Print the guest file SHA-256"
-guest_ssh 'printf "%s\n" "Hello from the VM CBT demo." > ~/hello.txt; sha256sum ~/hello.txt'
-workflow_success "Guest setup is complete"
+workflow_step "5/5 Initialize and validate the root disk"
+workflow_action "Write the CBT test file as $GUEST_USER"
+workflow_action "Print the root-file SHA-256 hash"
+guest_ssh '
+set -e
+printf "%s\n" "Hello from the VM CBT demo." > /home/cbt-demo/hello.txt
+sha256sum /home/cbt-demo/hello.txt
+'
+workflow_success "Root disk workload initialized at /home/cbt-demo/hello.txt"

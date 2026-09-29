@@ -1,20 +1,21 @@
 # KubeVirt CBT VM backup demo
 
-This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Fedora VM, changes a guest file, takes a full backup, changes the file again, takes an incremental backup, and verifies the API state.
+This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Fedora VM with one 32 GiB persistent root disk and one cloud-init disk, changes `/home/cbt-demo/hello.txt`, takes a full backup, changes the file again, takes an incremental backup, and restores the post-incremental root image into a second VM.
 
 The workflow is a demonstration, not a production backup policy. It uses fixed resource names and a local/RWO storage class.
 
 ## Architecture and workflow
 
 ```text
-vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
+vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify -> vm-cbt-restore
 ```
-- `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
+- `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, reusable port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
-- `vm-setup.sh` creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
-- `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
-- `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
+- `vm-setup.sh` creates the namespace, one root DataVolume, VM, and SSH service; it writes the workload file at `/home/cbt-demo/hello.txt` and checks that CBT is enabled.
+- `vm-backup.sh` creates the 40 GiB full-backup PVC, tracker, and full backup, then waits for completion.
+- `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `/home/cbt-demo/hello.txt`, creates the 2 GiB incremental backup, and checks its type.
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint.
+- `vm-cbt-restore.sh` validates the chain, rebases and flattens the push-mode QCOW2 artifacts in-cluster, boots `vm-cbt-restored`, and verifies the restored file.
 - `clean-all.sh` removes the demo namespace and only the guest key marked as workflow-managed.
 
 The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The cluster's selector representation varies by KubeVirt version, so preflight does not gate on that literal configuration; setup and verification require the resulting VM CBT state to be `Enabled`.
@@ -29,7 +30,7 @@ Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
 - The `IncrementalBackup` feature gate.
-- A `cbt-demo-hpp` storage class that can provision the 30 GiB RWO demo volumes.
+- A `cbt-demo-hpp` storage class that can provision the 32 GiB RWO VM root disk, 40 GiB full-backup volume, 2 GiB incremental-backup volume, and 40 GiB restored-root PVC.
 - The CDI `fedora` `DataSource` in `openshift-virtualization-os-images`.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
@@ -106,9 +107,14 @@ make vm-setup
 make vm-backup
 make vm-cbt-backup
 make vm-cbt-verify
+make vm-cbt-restore
 ```
 
-The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
+The workflow uses one 32 GiB persistent root disk, one cloud-init disk, a 40 GiB full output PVC, a 2 GiB incremental output PVC, and a 40 GiB restored-root PVC. The workload file is `/home/cbt-demo/hello.txt`; setup writes `Hello from the VM CBT demo.`, and mutation appends `This line was added after the full backup.`.
+
+The push artifacts are expected at `<backup-pvc>/vm-cbt-demo/<backup-name>-<timestamp>/<backup-name>-rootdisk.qcow2`. Restore copies the incremental artifact, validates both QCOW2 files, rebases the copy to the full artifact, flattens it to `/restore/disk.img`, and boots `vm-cbt-restored` from `vm-cbt-restored-root`. It then asserts that the restored file contains exactly those two lines and prints its SHA-256.
+
+The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines. `make vm-cbt-demo` and `make e2e` include restore verification.
 
 The fixed names allow one run per namespace. Start over with:
 
@@ -116,7 +122,7 @@ The fixed names allow one run per namespace. Start over with:
 make clean-all
 ```
 
-Cleanup deletes only `vm-cbt-demo` resources and waits for its dynamically provisioned PVs to be reclaimed. It does not uninstall KubeVirt or delete the shared storage class.
+Cleanup deletes source, backup, restore, and restored-VM resources in `vm-cbt-demo` and waits for their dynamically provisioned PVs to be reclaimed. This is an in-cluster recovery demonstration, not an offsite backup product.
 
 ## Synchronization helper
 
@@ -143,6 +149,11 @@ make help
 ```
 
 For an environment with the prerequisites and cluster resources, run `make e2e`, then `make clean-all`. No offline simulation can prove Kubernetes backup status; the E2E workflow is the functional validation.
+Validation artifacts are stored locally under `validation/`. The directory is
+git-ignored and is intended for dated validation summaries, command logs, and
+machine-readable JSON reports produced by cluster runs. Do not store
+kubeconfigs, credentials, private keys, or unredacted sensitive command output
+there.
 
 ## Troubleshooting
 
@@ -162,7 +173,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── .gitignore            # Secret and generated-artifact exclusions
 ├── AGENTS.md             # Repository-specific contributor/agent guidance
 ├── docs/                 # Detailed workflow documentation
-├── manifests/            # VM, full-backup, and incremental-backup resources
+├── manifests/            # VM, backup, restore, and recovered-VM resources
 ├── scripts/              # Workflow implementation and shared helpers
 │   └── dotenv.sh         # Safe parser for supported .env values
 └── sync.sh               # Optional remote synchronization helper
@@ -172,6 +183,6 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 - Resource names and namespace are fixed; concurrent runs require separate copies with deliberate manifest/script changes.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- The demo uses a 30 GiB local/RWO disk and is not production storage or disaster-recovery guidance.
+- The demo uses local/RWO storage and is an in-cluster recovery demonstration, not an offsite backup product.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

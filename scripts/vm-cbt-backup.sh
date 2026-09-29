@@ -39,14 +39,15 @@ workflow_action "Wait for tracker $TRACKER_NAME to record checkpoint $full_check
 wait_for_full_checkpoint_in_tracker "$full_checkpoint"
 workflow_success "Full backup $FULL_BACKUP_NAME is complete as $full_backup_type; tracker checkpoint recorded"
 
-workflow_step "2/5 Modify guest data after the full checkpoint"
-workflow_action "Port-forward service $SSH_SERVICE and append the idempotent CBT test line to ~/hello.txt"
-workflow_action "Print the new guest file SHA-256"
+workflow_step "2/5 Modify the root-disk file after the full checkpoint"
+workflow_action "Port-forward service $SSH_SERVICE and append the idempotent CBT test line to /home/cbt-demo/hello.txt"
+workflow_action "Print the new root-file SHA-256 hash"
 guest_mutation_command='
-if ! grep -Fqx "This line was added after the full backup." ~/hello.txt; then
-  printf "%s\n" "This line was added after the full backup." >> ~/hello.txt
+set -e
+if ! grep -Fqx "This line was added after the full backup." /home/cbt-demo/hello.txt; then
+  printf "%s\n" "This line was added after the full backup." >> /home/cbt-demo/hello.txt
 fi
-sha256sum ~/hello.txt
+sha256sum /home/cbt-demo/hello.txt
 '
 guest_ssh "$guest_mutation_command"
 workflow_success "Guest data changed after checkpoint $full_checkpoint"
