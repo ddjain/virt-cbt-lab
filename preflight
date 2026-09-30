@@ -159,10 +159,15 @@ check_cluster_capabilities() {
       result FAIL "required CRD $crd is unavailable"
     fi
   done
-  if oc get storageclass cbt-demo-hpp >/dev/null 2>"$TMP_DIR/oc-error"; then
-    result PASS "storage class cbt-demo-hpp is available"
+  local demo_storage_class
+  case "${MANIFEST_VARIANT:-odf}" in
+    odf | large-odf) demo_storage_class="ocs-storagecluster-ceph-rbd" ;;
+    *) demo_storage_class="cbt-demo-hpp" ;;
+  esac
+  if oc get storageclass "$demo_storage_class" >/dev/null 2>"$TMP_DIR/oc-error"; then
+    result PASS "storage class $demo_storage_class is available"
   else
-    result FAIL "storage class cbt-demo-hpp is unavailable"
+    result FAIL "storage class $demo_storage_class is unavailable"
   fi
 
   if feature_gates="$(oc get kubevirt -A -o 'jsonpath={range .items[*]}{.spec.configuration.developerConfiguration.featureGates}{"\n"}{end}' 2>"$TMP_DIR/oc-error")" &&

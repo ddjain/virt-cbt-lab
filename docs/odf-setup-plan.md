@@ -157,16 +157,31 @@ Jetlag.
    reported raw/usable capacity matches the projection above (pro-rated
    down if starting with fewer labeled nodes).
 
-## Phase 3 — Migrate this repo's demo workloads (optional, later)
+## Phase 3 — Migrate this repo's demo workloads (complete, 2026-09-30)
 
-Point new `DataVolume`/`VirtualMachine` manifests (`manifests/vm.yaml`,
-`manifests/full-backup.yaml`, `manifests/incremental-backup.yaml`) at the
-new `ocs-storagecluster-ceph-rbd` StorageClass instead of `cbt-demo-hpp`.
-This is a coordinated migration per this repo's change rules (the fixed
-resource contract), not a drop-in swap — update `README.md` and
-`docs/vm-cbt-workflow.md` alongside any manifest change, and add any new
-environment variable to `.env.example`. Leave the existing single-node HPP
-pool running untouched until ODF is validated in production use.
+Added an `odf` `MANIFEST_VARIANT` (`manifests/vm-odf.yaml`,
+`manifests/full-backup-odf.yaml`, `manifests/incremental-backup-odf.yaml`)
+pointing the root disk and both backup PVCs at `ocs-storagecluster-ceph-rbd`
+instead of `cbt-demo-hpp`, and a `large-odf` variant combining that with the
+existing `large` chaos-testing sizing. `MANIFEST_VARIANT=odf` is now the
+default for `make e2e`; `default` (plain `cbt-demo-hpp`) remains available
+for clusters without ODF. `README.md`, `docs/vm-cbt-workflow.md`, and
+`.env.example` were updated alongside the manifests, and `./preflight`
+checks for `ocs-storagecluster-ceph-rbd` when an `odf`/`large-odf` variant is
+selected.
+
+The ODF-backed PVCs are sized larger than their `cbt-demo-hpp` equivalents
+(6Gi/6Gi/4Gi vs. 5Gi/5Gi/3Gi for the small variant; 48Gi/48Gi/30Gi vs.
+40Gi/40Gi/25Gi for large) — found necessary by actually running
+`make e2e MANIFEST_VARIANT=odf` against this cluster: CDI's clone-time
+filesystem-overhead reservation inflates the root disk past its nominal
+request, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`,
+which silently tolerates the same overcommit), so a flat backup-target PVC
+at the nominal size failed the full backup with
+`Backup has failed: No space left on device`. All four variants
+(`default`, `large`, `odf`, `large-odf`) were run end to end against
+`cloud05` after the fix, including the restore-verification hash checks,
+and passed. The existing single-node HPP pool is left untouched.
 
 ## Operational notes and decisions carried from planning discussion
 
@@ -201,10 +216,189 @@ pool running untouched until ODF is validated in production use.
 ## Open items requiring explicit confirmation before execution
 
 1. Authorization to run Phase 1 step 5 (the 18-host BMC virtual-media boot).
+   **Resolved 2026-09-30: authorized and completed — see execution log.**
 2. Whether to label all 18 new nodes for ODF immediately, or start with a
    smaller subset (e.g. 6–9) and expand the `StorageCluster` device sets
-   incrementally.
+   incrementally. **Resolved 2026-09-30: label all 18 new nodes now.**
 3. Whether to also convert the existing 10 workers' spare disks (9 of them
    have 2× 1.49 TiB + NVMe completely unused today, and `d38-h18` has 1
    disk already consumed by the existing HPP pool) into the same ODF pool,
    or keep the initial ODF deployment scoped to only the 18 new nodes.
+   **Resolved 2026-09-30: scope initial ODF deployment to the 18 new nodes
+   only; existing 10 workers stay untouched.**
+
+## Execution log
+
+All commands below were run against the `cloud05` bastion
+(`ssh cloud05`, `/root/openshift-cluster/jetlag`, `KUBECONFIG=/root/mno/kubeconfig`).
+
+### Phase 1 — day-2 worker scale-out (2026-09-30)
+
+1. Edited `ansible/vars/all.yml`: `worker_node_count: 10` → `28`.
+2. Created `ansible/vars/scale_out.yml`:
+   ```yaml
+   current_worker_count: 10
+   scale_out_count: 18
+   ```
+3. Backed up the existing inventory, then regenerated it:
+   ```sh
+   cp ansible/inventory/cloud05.local ansible/inventory/cloud05.local.bak-preso-scaleout-<timestamp>
+   ansible-playbook -i ansible/inventory/cloud05.local ansible/create-inventory.yml
+   ```
+   Verified via `ansible-inventory --graph` and `diff` against the backup:
+   `[worker]` group grew from 10 to 28 entries, only new entries appended,
+   each with valid `install_disk`/`mac_address`/`ip`.
+4. `ansible-playbook --syntax-check ansible/ocp-scale-out.yml` — passed.
+5. Ran the scale-out playbook detached in `tmux` (session `ocp-scale-out`,
+   log `scale-out-run.log`):
+   ```sh
+   ansible-playbook -i ansible/inventory/cloud05.local ansible/ocp-scale-out.yml
+   ```
+   - **First attempt failed** before any host was touched: the
+     `ocp-scale-out` role hardcoded `dest: /opt/http_store/data/...`
+     instead of using the `http_store_path` variable every other role in
+     this codebase uses (which resolves to the real path,
+     `/opt/jetlag/http_store`). Fixed in
+     `ansible/roles/ocp-scale-out/tasks/main.yml`:
+     `dest: "{{ http_store_path }}/data/ocp-scale-out.x86_64.iso"`.
+   - **Second attempt failed** (still before any host was touched):
+     `http_store_path` was undefined in this role's context — it's only
+     defined as a default in the `bastion-http` role, which
+     `ocp-scale-out.yml` doesn't include. Fixed by adding
+     `http_store_path: /opt/jetlag/http_store` to
+     `ansible/roles/ocp-scale-out/defaults/main.yml`.
+   - **Third attempt succeeded**: `EXIT:0`, `failed=0`. All 18 new hosts
+     were BMC-booted off the generated discovery ISO one at a time,
+     installed RHCOS, and joined the cluster with CSRs auto-approved by
+     the playbook's own retry loop, in well under 20 minutes end to end.
+6. Verified: `oc get nodes -o wide` — 31 total nodes (3 control-plane + 28
+   workers), all `Ready`.
+
+### Phase 2 — ODF deployment (in progress, 2026-09-30)
+
+1. Labeled all 18 new worker nodes:
+   ```sh
+   for n in d39-h09-000-r660 ... d40-h06-000-r660; do
+     oc label node "$n" cluster.ocs.openshift.io/openshift-storage="" --overwrite
+   done
+   ```
+   Verified: `oc get nodes -l cluster.ocs.openshift.io/openshift-storage=`
+   returns 18 nodes.
+
+2. Installed `odf-operator` via `oc apply` of a namespace + `OperatorGroup`
+   + `Subscription` manifest (channel `stable-4.22`, source
+   `redhat-operators` — matches cluster OCP 4.22.15):
+   ```yaml
+   apiVersion: v1
+   kind: Namespace
+   metadata:
+     name: openshift-storage
+     labels:
+       openshift.io/cluster-monitoring: "true"
+   ---
+   apiVersion: operators.coreos.com/v1
+   kind: OperatorGroup
+   metadata:
+     name: openshift-storage-operatorgroup
+     namespace: openshift-storage
+   spec:
+     targetNamespaces:
+     - openshift-storage
+   ---
+   apiVersion: operators.coreos.com/v1alpha1
+   kind: Subscription
+   metadata:
+     name: odf-operator
+     namespace: openshift-storage
+   spec:
+     channel: stable-4.22
+     name: odf-operator
+     source: redhat-operators
+     sourceNamespace: openshift-marketplace
+   ```
+   OLM auto-installed the full dependency set (12 CSVs, all `Succeeded`
+   within ~2 minutes): `odf-operator`, `odf-dependencies`, `ocs-operator`,
+   `ocs-client-operator`, `rook-ceph-operator`, `mcg-operator`,
+   `cephcsi-operator`, `odf-csi-addons-operator`,
+   `odf-external-snapshotter-operator`, `odf-prometheus-operator`,
+   `ocs-tls-profiles`, `recipe` — all at `4.22.5-rhodf`.
+
+3. Disk discovery:
+   - Applied a `LocalVolumeDiscovery` scoped to the 18 labeled nodes via
+     `nodeSelector` on `cluster.ocs.openshift.io/openshift-storage`. It sat
+     idle (CRD present, no controller) because **`local-storage-operator`
+     was not yet installed** — ODF 4.22 does not bundle it automatically.
+     Installed it separately (`Subscription`, channel `stable`, source
+     `redhat-operators`); CSV `local-storage-operator.v4.22.0-202609212027`
+     reached `Succeeded`, after which the discovery daemonset
+     (`diskmaker-discovery`) came up on all 18 nodes and produced 18
+     `LocalVolumeDiscoveryResult` objects.
+   - Confirmed the plan's device-letter-irregularity concern directly:
+     `d40-h01-000-r660`'s OS disk is `sdb` (not `sda`, unlike most other
+     nodes), and LSO's discovery correctly marked it `NotAvailable`
+     (partitioned/mounted) while flagging `sda`, `sdc`, and `nvme0n1` as
+     `Available` — i.e. LSO's availability check already handles the
+     device-letter irregularity; the important part is to select on
+     size/type, never a device-name allowlist.
+   - Applied a `LocalVolumeSet` (`odf-local-block`, storage class
+     `localblock`) using `deviceInclusionSpec.minSize: 1000Gi` +
+     `deviceMechanicalProperties: [NonRotational]` to select only the two
+     1.49 TiB disks and the NVMe per node, safely excluding the 446 GiB OS
+     disk everywhere regardless of its letter.
+   - Result: 54 `Available` PVs (18 nodes × 3 disks) — 36 × 1489Gi + 18 ×
+     2980Gi, matching the expected raw layout exactly.
+
+4. Applied the `StorageCluster` CR (`ocs-storagecluster`), single device
+   set `ocs-deviceset-localblock`, `count: 54`, `replica: 1`,
+   `portable: false`, `storageClassName: localblock`.
+   - 22 of the 54 `rook-ceph-osd-prepare` jobs failed immediately with
+     `failed to get device already provisioned by ceph-volume raw: osd.N:
+     "<uuid>" belonging to a different ceph cluster "<foreign-fsid>"` —
+     stale Ceph OSD signatures left on these disks from a prior, unrelated
+     Ceph cluster (this hardware was reallocated to `cloud05` by QUADS; the
+     leftover data predates this allocation). Confirmed via
+     `ceph-volume raw list` and manual `wipefs`/`sgdisk --zap-all`/`dd`
+     wiping of the 22 specific devices, though the manual approach also
+     surfaced a separate kubelet-level complication: raw-block local PVs
+     are bind-mounted into pods via loop devices, and the loop device
+     backing a given PVC is not automatically recreated across job pod
+     retries, so a manually wiped disk could still appear "stale" to a
+     retried prepare pod until its loop device was explicitly detached
+     (`losetup -d`) and remounted fresh.
+   - **The correct, documented fix** (found in
+     `virt-cbt/docs/odf/ODF-SETUP.md`, from a prior successful ODF
+     deployment on different hardware that hit this exact same failure
+     mode) is a `StorageCluster` cleanup-policy flag instead of manual
+     device wiping:
+     ```sh
+     oc patch storagecluster ocs-storagecluster -n openshift-storage --type=merge \
+       -p '{"spec":{"managedResources":{"cephCluster":{"cleanupPolicy":{"wipeDevicesFromOtherClusters":true}}}}}'
+     ```
+     After applying this and letting the operator reconcile (it recreated
+     the failed prepare jobs on its own; no manual job deletion was
+     needed), all 22 previously-blocked devices wiped and provisioned
+     cleanly through the operator's own path.
+   - **Destructive-operation note:** this flag authorizes Ceph to wipe any
+     device carrying a foreign cluster's OSD signature. Only acceptable
+     here because the 18 nodes are freshly QUADS-reallocated spares with no
+     known current legitimate owner of that leftover data — confirmed with
+     the user before applying. Do not enable this flag on a cluster where
+     device provenance is uncertain without the same explicit confirmation.
+   - End state: `CephCluster` `Ready`/`HEALTH_OK`, all 54 OSDs `up`/`in`,
+     `StorageCluster` `Ready`. `ceph -s` / `ceph df`:
+     - `105 TiB` raw available (projection: ~106 TB for 18 nodes).
+     - `30 TiB` MAX AVAIL per pool at replica-3 (projection: ~35 TB usable
+       for 18 nodes — close match, delta is normal Ceph/replication
+       overhead).
+     - Storage classes present: `ocs-storagecluster-ceph-rbd`,
+       `ocs-storagecluster-ceph-rbd-virtualization`,
+       `ocs-storagecluster-cephfs`, `ocs-storagecluster-ceph-rgw`.
+     - Ceph toolbox enabled via
+       `oc patch ocsinitialization ocsinit -n openshift-storage --type json
+       --patch '[{"op":"add","path":"/spec/enableCephTools","value":true}]'`
+       (note: object name is `ocsinit`, not `ocs-storagecluster`).
+
+Phase 2 is complete. Phase 3 (migrating `cbt-setup`'s demo `DataVolume`/
+`VirtualMachine` manifests to `ocs-storagecluster-ceph-rbd`) is also
+complete — see the Phase 3 section above — and `odf` is now the default
+`MANIFEST_VARIANT`. The existing HPP pool is left untouched.

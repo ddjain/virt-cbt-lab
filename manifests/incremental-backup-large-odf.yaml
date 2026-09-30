@@ -1,0 +1,38 @@
+# LARGE-ODF VARIANT — opt-in via MANIFEST_VARIANT=large-odf (see .env.example).
+# Same chaos-testing sizing intent as incremental-backup-large.yaml, but
+# backed by ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp, with the
+# same +20% margin used in incremental-backup-odf.yaml (Ceph RBD enforces PVC
+# capacity strictly; see docs/odf-setup-plan.md). Requires ODF/Ceph deployed
+# on the cluster first. Keep structurally identical to
+# incremental-backup-large.yaml (only storage class and sizes differ) so
+# scripts/vm-cbt-backup.sh's sed pipeline works unchanged.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __INCREMENTAL_BACKUP_PVC__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  storageClassName: ocs-storagecluster-ceph-rbd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackup
+metadata:
+  name: __INCREMENTAL_BACKUP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: backup.kubevirt.io
+    kind: VirtualMachineBackupTracker
+    name: __TRACKER_NAME__
+  pvcName: __INCREMENTAL_BACKUP_PVC__

@@ -40,25 +40,35 @@ GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
 GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
 
 # Manifest variant to use for the vm/full-backup/incremental-backup
-# resources. "default" is the small/fast demo sizing; "large" swaps in
+# resources. "odf" (the default) swaps in manifests/vm-odf.yaml,
+# manifests/full-backup-odf.yaml, and manifests/incremental-backup-odf.yaml,
+# small demo sizing (6Gi/6Gi/4Gi) backed by the ocs-storagecluster-ceph-rbd
+# StorageClass (see docs/odf-setup-plan.md); requires ODF/Ceph deployed on
+# the cluster. "default" is the small/fast demo sizing (5Gi/5Gi/3Gi) on
+# cbt-demo-hpp instead, for clusters without ODF. "large" swaps in
 # manifests/vm-large.yaml, manifests/full-backup-large.yaml, and
-# manifests/incremental-backup-large.yaml for chaos-testing scenarios that
-# need a sustained, disk-bound backup-copy window (see cbt-chaos/chaos-plan.md).
+# manifests/incremental-backup-large.yaml on cbt-demo-hpp, for chaos-testing
+# scenarios that need a sustained, disk-bound backup-copy window (see
+# cbt-chaos/chaos-plan.md). "large-odf" is the same large sizing (scaled up
+# with the same ODF capacity margin) but on ocs-storagecluster-ceph-rbd.
 # shellcheck disable=SC2034
-MANIFEST_VARIANT="${MANIFEST_VARIANT:-default}"
-if [[ "$MANIFEST_VARIANT" != "default" && "$MANIFEST_VARIANT" != "large" ]]; then
-  printf 'MANIFEST_VARIANT must be "default" or "large" (got: %s)\n' "$MANIFEST_VARIANT" >&2
-  exit 1
-fi
+MANIFEST_VARIANT="${MANIFEST_VARIANT:-odf}"
+case "$MANIFEST_VARIANT" in
+  default | large | odf | large-odf) ;;
+  *)
+    printf 'MANIFEST_VARIANT must be "default", "large", "odf", or "large-odf" (got: %s)\n' "$MANIFEST_VARIANT" >&2
+    exit 1
+    ;;
+esac
 
 # Resolves a manifest base name (e.g. "vm", "full-backup") to the actual
 # manifest path for the current MANIFEST_VARIANT.
 manifest_path() {
   local base_name="$1"
-  if [[ "$MANIFEST_VARIANT" == "large" ]]; then
-    printf '%s/manifests/%s-large.yaml' "$ROOT_DIR" "$base_name"
-  else
+  if [[ "$MANIFEST_VARIANT" == "default" ]]; then
     printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
+  else
+    printf '%s/manifests/%s-%s.yaml' "$ROOT_DIR" "$base_name" "$MANIFEST_VARIANT"
   fi
 }
 
