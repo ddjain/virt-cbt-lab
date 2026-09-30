@@ -39,6 +39,29 @@ GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
 # shellcheck disable=SC2034
 GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
 
+# Manifest variant to use for the vm/full-backup/incremental-backup
+# resources. "default" is the small/fast demo sizing; "large" swaps in
+# manifests/vm-large.yaml, manifests/full-backup-large.yaml, and
+# manifests/incremental-backup-large.yaml for chaos-testing scenarios that
+# need a sustained, disk-bound backup-copy window (see cbt-chaos/chaos-plan.md).
+# shellcheck disable=SC2034
+MANIFEST_VARIANT="${MANIFEST_VARIANT:-default}"
+if [[ "$MANIFEST_VARIANT" != "default" && "$MANIFEST_VARIANT" != "large" ]]; then
+  printf 'MANIFEST_VARIANT must be "default" or "large" (got: %s)\n' "$MANIFEST_VARIANT" >&2
+  exit 1
+fi
+
+# Resolves a manifest base name (e.g. "vm", "full-backup") to the actual
+# manifest path for the current MANIFEST_VARIANT.
+manifest_path() {
+  local base_name="$1"
+  if [[ "$MANIFEST_VARIANT" == "large" ]]; then
+    printf '%s/manifests/%s-large.yaml' "$ROOT_DIR" "$base_name"
+  else
+    printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
+  fi
+}
+
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   export KUBECONFIG="$KUBECONFIG_PATH"
 fi
@@ -349,6 +372,26 @@ get_backup_done_status() {
   oc_cmd get vmbackup "$backup_name" \
     -n "$NAMESPACE" \
     -o 'jsonpath={.status.conditions[?(@.type=="Done")].status}'
+}
+
+# `Done=True` is set by KubeVirt on both a genuinely completed backup and a
+# terminal failure (e.g. "Backup has failed: VMI backup status was lost") —
+# the `status` field alone cannot distinguish them, only `reason` can. See
+# cbt-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
+# §5 for the run that surfaced this.
+get_backup_done_reason() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}'
+}
+
+# Returns 0 (success) unless the Done reason is KubeVirt's own terminal
+# failure wording. Benign warnings (e.g. "Completed VirtualMachineBackup,
+# warning: Failed freezing guest filesystem: ...") are not failures.
+backup_done_reason_is_failure() {
+  local reason="$1"
+  [[ "$reason" == "Backup has failed"* ]]
 }
 
 get_tracker_checkpoint() {

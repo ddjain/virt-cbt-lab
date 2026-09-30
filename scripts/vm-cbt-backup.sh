@@ -27,6 +27,12 @@ wait_for_full_checkpoint_in_tracker() {
 workflow_step "1/5 Confirm the full-backup checkpoint"
 workflow_action "oc wait vmbackup/$FULL_BACKUP_NAME -n $NAMESPACE --for=condition=Done --timeout=20m"
 wait_for_backup_done "$FULL_BACKUP_NAME"
+full_backup_done_reason="$(get_backup_done_reason "$FULL_BACKUP_NAME")"
+if backup_done_reason_is_failure "$full_backup_done_reason"; then
+  printf '%s reached Done=True but the backup actually failed: %s\n' \
+    "$FULL_BACKUP_NAME" "$full_backup_done_reason" >&2
+  exit 1
+fi
 full_backup_type="$(get_backup_type "$FULL_BACKUP_NAME")"
 if [[ "$full_backup_type" != Full ]]; then
   printf 'Run make vm-backup first; %s is not a completed full backup.\n' "$FULL_BACKUP_NAME" >&2
@@ -49,7 +55,7 @@ workflow_action "Print the new guest file SHA-256 and record it as the expected 
 # is taken, so the incremental backup misses part of the delta.
 guest_mutation_command="
 if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
-  head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
+  head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 >> ~/hello.txt
   printf '\n' >> ~/hello.txt
   printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
@@ -77,13 +83,19 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$ROOT_DIR/manifests/incremental-backup.yaml" | oc_cmd apply -f -
+  "$(manifest_path incremental-backup)" | oc_cmd apply -f -
 workflow_success "Incremental backup request $INCREMENTAL_BACKUP_NAME submitted from tracker $TRACKER_NAME"
 
 workflow_step "4/5 Wait for incremental backup completion"
 workflow_action "oc wait vmbackup/$INCREMENTAL_BACKUP_NAME -n $NAMESPACE --for=condition=Done --timeout=20m"
 wait_for_backup_done "$INCREMENTAL_BACKUP_NAME"
-workflow_success "$INCREMENTAL_BACKUP_NAME reports Done=True"
+incremental_backup_done_reason="$(get_backup_done_reason "$INCREMENTAL_BACKUP_NAME")"
+workflow_success "$INCREMENTAL_BACKUP_NAME reports Done=True (reason: $incremental_backup_done_reason)"
+if backup_done_reason_is_failure "$incremental_backup_done_reason"; then
+  printf '%s reached Done=True but the backup actually failed: %s\n' \
+    "$INCREMENTAL_BACKUP_NAME" "$incremental_backup_done_reason" >&2
+  exit 1
+fi
 
 workflow_step "5/5 Validate incremental type and checkpoint"
 incremental_backup_type="$(get_backup_type "$INCREMENTAL_BACKUP_NAME")"
@@ -106,10 +118,11 @@ write_report_fragment "incremental-backup" "$(jq -n \
   --arg name "$INCREMENTAL_BACKUP_NAME" \
   --arg type "$incremental_backup_type" \
   --arg checkpoint_name "$incremental_checkpoint" \
+  --arg done_reason "$incremental_backup_done_reason" \
   --arg pvc_name "$INCREMENTAL_BACKUP_PVC_NAME" \
   --arg pvc_requested "$(get_pvc_requested "$INCREMENTAL_BACKUP_PVC_NAME")" \
   --arg pvc_capacity "$(get_pvc_capacity "$INCREMENTAL_BACKUP_PVC_NAME")" \
   --argjson backup_status "$incremental_backup_status" \
   '{guest: {incremental_backup: {size_bytes: $size_bytes, size_mb: (($size_bytes / 1048576 * 100 | round) / 100), sha256: $sha256, captured_at: $captured_at}},
-    backups: {incremental: ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
+    backups: {incremental: ({name: $name, type: $type, checkpoint_name: $checkpoint_name, done_reason: $done_reason,
                               pvc_name: $pvc_name, pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)}}')"

@@ -7,7 +7,7 @@ export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUE
 # Optional fixed run name instead of the default random one.
 NAME ?=
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all help
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor help
 
 preflight:
 	@printf '[make] [1/1] Preflight: check local tools, cluster access, and guest SSH prerequisites (read-only).\n'
@@ -51,6 +51,10 @@ clean-all:
 	@printf '[make] [1/1] Cleanup: delete demo resources, reclaim their PVs, and remove only the workflow-managed key.\n'
 	@./scripts/clean-all.sh
 
+monitor:
+	@printf '[make] [1/1] Monitor: watch full/incremental backup start and completion times for VM=%s.\n' "$(VM)"
+	@./scripts/monitor.sh "$(VM)"
+
 help:
 	@printf '%s\n' \
 	  'make preflight           Check local, cluster, and guest SSH prerequisites without changing cluster state.' \
@@ -62,6 +66,7 @@ help:
 	  'make vm-cbt-demo         Run the complete workflow.' \
 	  'make e2e NAME=foo        Use a fixed, deterministic run name instead of a random one.' \
 	  'make clean-all           Delete all virt-cbt-lab managed resources (every run) from the namespace, and its generated guest key.' \
+	  'make monitor VM=vm-foo   Watch the full/incremental backups for a run (read-only); run alongside make e2e NAME=foo.' \
 	  'sync.sh                  Copy the repository to REMOTE_HOST:REMOTE_DIR.' \
 	  'sync.sh --pull-reports   Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
