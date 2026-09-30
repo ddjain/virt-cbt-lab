@@ -351,6 +351,26 @@ get_backup_done_status() {
     -o 'jsonpath={.status.conditions[?(@.type=="Done")].status}'
 }
 
+# `Done=True` is set by KubeVirt on both a genuinely completed backup and a
+# terminal failure (e.g. "Backup has failed: VMI backup status was lost") —
+# the `status` field alone cannot distinguish them, only `reason` can. See
+# cclm-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
+# §5 for the run that surfaced this.
+get_backup_done_reason() {
+  local backup_name="$1"
+  oc_cmd get vmbackup "$backup_name" \
+    -n "$NAMESPACE" \
+    -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}'
+}
+
+# Returns 0 (success) unless the Done reason is KubeVirt's own terminal
+# failure wording. Benign warnings (e.g. "Completed VirtualMachineBackup,
+# warning: Failed freezing guest filesystem: ...") are not failures.
+backup_done_reason_is_failure() {
+  local reason="$1"
+  [[ "$reason" == "Backup has failed"* ]]
+}
+
 get_tracker_checkpoint() {
   oc_cmd get vmbackuptracker "$TRACKER_NAME" \
     -n "$NAMESPACE" \
