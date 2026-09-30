@@ -1,6 +1,6 @@
 # Scenario: 10-node-io-hog-during-copy
 
-**QE Chaos Matrix ref:** row #10 in `cclm-chaos/chaos-plan.md` §G (Priority: P3)
+**QE Chaos Matrix ref:** row #10 in `cbt-chaos/chaos-plan.md` §G (Priority: P3)
 
 ## 1. Title
 Generic node I/O hog during live block-copy as a coarse cross-check of the storage-throttle scenario.
@@ -67,6 +67,6 @@ whole-node I/O contention against PVC-scoped throttling for the same live-copy w
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/10-node-io-hog-during-copy/chaos-trigger.sh` so the scenario can be re-run
+`cbt-chaos/scenarios/10-node-io-hog-during-copy/chaos-trigger.sh` so the scenario can be re-run
 identically in the future. This spec describes intent; the script is the executable source of truth for
 the exact invocation.

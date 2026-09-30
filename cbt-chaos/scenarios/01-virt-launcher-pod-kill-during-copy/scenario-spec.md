@@ -1,6 +1,6 @@
 # Scenario: 01-virt-launcher-pod-kill-during-copy
 
-**QE Chaos Matrix ref:** row #1 in `cclm-chaos/chaos-plan.md` §G (Priority: P0)
+**QE Chaos Matrix ref:** row #1 in `cbt-chaos/chaos-plan.md` §G (Priority: P0)
 
 ## 1. Title
 Kill virt-launcher mid live block-copy to test whether `Done=True` can ever cover a truncated backup artifact.
@@ -105,6 +105,6 @@ understand this scenario first before running 09.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/chaos-trigger.sh` so the scenario can be
+`cbt-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/chaos-trigger.sh` so the scenario can be
 re-run identically in the future. This spec describes intent; the script is the executable source of
 truth for the exact invocation.

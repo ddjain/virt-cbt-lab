@@ -1,6 +1,6 @@
 # Scenario: 03-checkpoint-pvc-fill
 
-**QE Chaos Matrix ref:** row #3 in `cclm-chaos/chaos-plan.md` §G (Priority: P0)
+**QE Chaos Matrix ref:** row #3 in `cbt-chaos/chaos-plan.md` §G (Priority: P0)
 
 ## 1. Title
 Fill/stress the CBT checkpoint-bearing persistent-state PVC to test checkpoint-chain integrity.
@@ -77,6 +77,6 @@ could report success while the checkpoint tree itself is corrupted.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/03-checkpoint-pvc-fill/chaos-trigger.sh` so the scenario can be re-run identically
+`cbt-chaos/scenarios/03-checkpoint-pvc-fill/chaos-trigger.sh` so the scenario can be re-run identically
 in the future. This spec describes intent; the script is the executable source of truth for the exact
 invocation.

@@ -1,6 +1,6 @@
 # Scenario: 05-virt-controller-pod-kill-post-done
 
-**QE Chaos Matrix ref:** row #5 in `cclm-chaos/chaos-plan.md` §G (Priority: P1)
+**QE Chaos Matrix ref:** row #5 in `cbt-chaos/chaos-plan.md` §G (Priority: P1)
 
 ## 1. Title
 Kill a virt-controller replica immediately after `Done=True` to test the reconcile-duplicate-call race
@@ -76,6 +76,6 @@ Control-plane correctness scenario, not guest-data correctness — no Tier-B res
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/05-virt-controller-pod-kill-post-done/chaos-trigger.sh` so the scenario can be
+`cbt-chaos/scenarios/05-virt-controller-pod-kill-post-done/chaos-trigger.sh` so the scenario can be
 re-run identically in the future. This spec describes intent; the script is the executable source of
 truth for the exact invocation.

@@ -9,7 +9,7 @@
 | Field | Value |
 |-------|-------|
 | **Scenario ID** | {{SCENARIO_ID}} |
-| **Scenario spec** | `cclm-chaos/scenarios/{{SCENARIO_ID}}/scenario-spec.md` |
+| **Scenario spec** | `cbt-chaos/scenarios/{{SCENARIO_ID}}/scenario-spec.md` |
 | **Run NAME** | {{RUN_NAME}} |
 | **Date** | {{RUN_DATE}} |
 | **Host / cluster** | {{REMOTE_HOST}} (`{{REMOTE_DIR}}`) |

@@ -354,7 +354,7 @@ get_backup_done_status() {
 # `Done=True` is set by KubeVirt on both a genuinely completed backup and a
 # terminal failure (e.g. "Backup has failed: VMI backup status was lost") —
 # the `status` field alone cannot distinguish them, only `reason` can. See
-# cclm-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
+# cbt-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
 # §5 for the run that surfaced this.
 get_backup_done_reason() {
   local backup_name="$1"

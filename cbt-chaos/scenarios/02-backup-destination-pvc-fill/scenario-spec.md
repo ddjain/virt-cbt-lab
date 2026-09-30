@@ -1,6 +1,6 @@
 # Scenario: 02-backup-destination-pvc-fill
 
-**QE Chaos Matrix ref:** row #2 in `cclm-chaos/chaos-plan.md` §G (Priority: P0)
+**QE Chaos Matrix ref:** row #2 in `cbt-chaos/chaos-plan.md` §G (Priority: P0)
 
 ## 1. Title
 Fill the backup-destination PVC during live block-copy to test clean-failure vs silent truncation.
@@ -72,6 +72,6 @@ need to be adjusted to make filling practical within a reasonable `DURATION`.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/02-backup-destination-pvc-fill/chaos-trigger.sh` so the scenario can be re-run
+`cbt-chaos/scenarios/02-backup-destination-pvc-fill/chaos-trigger.sh` so the scenario can be re-run
 identically in the future. This spec describes intent; the script is the executable source of truth
 for the exact invocation.

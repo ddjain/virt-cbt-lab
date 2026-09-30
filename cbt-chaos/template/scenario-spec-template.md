@@ -1,6 +1,6 @@
 # Scenario: <scenario-name>
 
-**QE Chaos Matrix ref:** row #<N> in `cclm-chaos/chaos-plan.md` §G (Priority: <P0/P1/P2/P3>)
+**QE Chaos Matrix ref:** row #<N> in `cbt-chaos/chaos-plan.md` §G (Priority: <P0/P1/P2/P3>)
 
 ## 1. Title
 <One line: what CBT behavior this scenario is testing and why.>
@@ -80,6 +80,6 @@ understood (e.g. node-level scenarios compound with pod/PVC-level ones).>
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/<scenario-name>/chaos-trigger.sh` so the scenario can be
+`cbt-chaos/scenarios/<scenario-name>/chaos-trigger.sh` so the scenario can be
 re-run identically in the future. This spec describes intent; the script is the
 executable source of truth for the exact invocation.

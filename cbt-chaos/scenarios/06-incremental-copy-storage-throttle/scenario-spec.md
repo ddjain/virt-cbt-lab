@@ -1,6 +1,6 @@
 # Scenario: 06-incremental-copy-storage-throttle
 
-**QE Chaos Matrix ref:** row #6 in `cclm-chaos/chaos-plan.md` §G (Priority: P1)
+**QE Chaos Matrix ref:** row #6 in `cbt-chaos/chaos-plan.md` §G (Priority: P1)
 
 ## 1. Title
 Throttle I/O on the incremental backup destination PVC to widen the reconcile-duplicate race window.
@@ -77,6 +77,6 @@ window with the reconcile-duplicate race.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/06-incremental-copy-storage-throttle/chaos-trigger.sh` so the scenario can be
+`cbt-chaos/scenarios/06-incremental-copy-storage-throttle/chaos-trigger.sh` so the scenario can be
 re-run identically in the future. This spec describes intent; the script is the executable source of
 truth for the exact invocation.

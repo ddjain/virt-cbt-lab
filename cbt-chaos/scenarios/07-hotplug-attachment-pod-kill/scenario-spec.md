@@ -1,6 +1,6 @@
 # Scenario: 07-hotplug-attachment-pod-kill
 
-**QE Chaos Matrix ref:** row #7 in `cclm-chaos/chaos-plan.md` §G (Priority: P1)
+**QE Chaos Matrix ref:** row #7 in `cbt-chaos/chaos-plan.md` §G (Priority: P1)
 
 ## 1. Title
 Kill the `hp-volume-*` hotplug attachment pod before `VolumeMountedToPod` to test the hotplug-attach
@@ -74,6 +74,6 @@ state.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/07-hotplug-attachment-pod-kill/chaos-trigger.sh` so the scenario can be re-run
+`cbt-chaos/scenarios/07-hotplug-attachment-pod-kill/chaos-trigger.sh` so the scenario can be re-run
 identically in the future. This spec describes intent; the script is the executable source of truth for
 the exact invocation.

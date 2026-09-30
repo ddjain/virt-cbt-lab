@@ -1,6 +1,6 @@
 # Scenario: 08-guest-network-filter-during-mutation
 
-**QE Chaos Matrix ref:** row #8 in `cclm-chaos/chaos-plan.md` §G (Priority: P2)
+**QE Chaos Matrix ref:** row #8 in `cbt-chaos/chaos-plan.md` §G (Priority: P2)
 
 ## 1. Title
 Block SSH (TCP/22) to the guest during the guest-mutation step to test the SSH retry loop's failure
@@ -80,6 +80,6 @@ error rather than hanging past other scripts' `oc wait` timeouts elsewhere.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/08-guest-network-filter-during-mutation/chaos-trigger.sh` so the scenario can be
+`cbt-chaos/scenarios/08-guest-network-filter-during-mutation/chaos-trigger.sh` so the scenario can be
 re-run identically in the future. This spec describes intent; the script is the executable source of
 truth for the exact invocation.

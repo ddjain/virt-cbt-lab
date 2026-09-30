@@ -1,6 +1,6 @@
 # Scenario: 04-vmi-restart-between-backups
 
-**QE Chaos Matrix ref:** row #4 in `cclm-chaos/chaos-plan.md` §G (Priority: P0)
+**QE Chaos Matrix ref:** row #4 in `cbt-chaos/chaos-plan.md` §G (Priority: P0)
 
 ## 1. Title
 Restart the VMI between full completion and incremental start to test `checkpointRedefinitionRequired`.
@@ -79,6 +79,6 @@ actually does so correctly under this scenario is what this test answers.
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cclm-chaos/scenarios/04-vmi-restart-between-backups/chaos-trigger.sh` so the scenario can be re-run
+`cbt-chaos/scenarios/04-vmi-restart-between-backups/chaos-trigger.sh` so the scenario can be re-run
 identically in the future. This spec describes intent; the script is the executable source of truth for
 the exact invocation.
