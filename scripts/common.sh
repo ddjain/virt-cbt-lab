@@ -122,16 +122,26 @@ set_resource_names() {
 # the same E2E run reuses it.
 new_run_id() {
   mkdir -p "$STATE_DIR"
-  local adjective noun tag
-  adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
-  noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
-  # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
-  # reader and trip `set -o pipefail` under the ERR trap.
-  tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-  RUN_ID="${adjective}-${noun}-${tag}"
+  if [[ -n "${RUN_ID:-}" ]]; then
+    # NAME (passed through `make e2e NAME=foo`) must be DNS-1123-safe since
+    # it flows straight into Kubernetes resource names.
+    if ! [[ "$RUN_ID" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+      printf '[vm-cbt] NAME must be lowercase alphanumeric with internal hyphens (got: %s).\n' "$RUN_ID" >&2
+      exit 1
+    fi
+    printf '[vm-cbt] Using assigned run ID: %s\n' "$RUN_ID" >&2
+  else
+    local adjective noun tag
+    adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
+    noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
+    # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
+    # reader and trip `set -o pipefail` under the ERR trap.
+    tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+    RUN_ID="${adjective}-${noun}-${tag}"
+    printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
+  fi
   printf '%s' "$RUN_ID" > "$RUN_ID_FILE"
   set_resource_names
-  printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
 }
 
 # Load the run ID persisted by new_run_id (or an explicitly exported RUN_ID)

@@ -55,6 +55,8 @@ make e2e
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
 
+`make e2e NAME=foo` uses `foo` as the run ID instead of a random one, for a deterministic, repeatable run name; omit `NAME` to keep the default random `<adjective>-<noun>-<hex tag>` scheme.
+
 Each step can also be run separately:
 
 ```sh

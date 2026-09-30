@@ -105,6 +105,12 @@ Run the complete workflow:
 make e2e
 ```
 
+Use a fixed, deterministic run name instead of the default random one:
+
+```sh
+make e2e NAME=foo
+```
+
 Run individual stages:
 
 ```sh
@@ -131,6 +137,8 @@ Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-la
 ```sh
 REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup ./sync.sh
 ```
+
+If you run the workflow on the remote host (e.g. because that's where cluster access is configured), pull its generated reports back with `./sync.sh --pull-reports`, which copies `REMOTE_DIR/report/` into the local `report/` directory and never modifies the remote.
 
 Use a host alias and destination appropriate for your environment. The helper does not transfer credentials.
 
