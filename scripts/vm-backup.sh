@@ -18,7 +18,7 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$ROOT_DIR/manifests/full-backup.yaml" | oc_cmd apply -f -
+  "$(manifest_path full-backup)" | oc_cmd apply -f -
 workflow_success "PVC, tracker, and full backup request created in namespace $NAMESPACE"
 
 workflow_step "2/4 Wait for the full backup to complete"

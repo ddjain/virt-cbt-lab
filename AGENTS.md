@@ -13,6 +13,7 @@ This repository is a shell-driven KubeVirt CBT demonstration. `make e2e` runs se
 - `scripts/vm-cbt-backup.sh`: guest mutation and incremental backup.
 - `scripts/vm-cbt-verify.sh`: end-state validation.
 - `scripts/clean-all.sh`: namespace/PV/key cleanup.
+- `scripts/monitor.sh <vm_name>`: read-only, watches a run's full/incremental `vmbackup` objects and prints real start/done timestamps and duration for each; run it alongside `make e2e` in a separate terminal.
 - `sync.sh`: optional SSH/rsync helper; it reads `REMOTE_HOST` and `REMOTE_DIR` from the environment or local `.env`.
 
 ## Setup and validation
@@ -38,6 +39,8 @@ make clean-all
 The last two commands require a compatible OpenShift Virtualization/KubeVirt cluster. Do not claim E2E success from syntax checks alone.
 
 Run `./preflight` or `make preflight` before any individual workflow target. `make e2e` runs the same preflight automatically before starting `vm-cbt-demo`. It performs read-only local, kubeconfig, OpenShift access, KubeVirt capability, storage, permission, and guest-SSH checks. A failure blocks the workflow with exit 1; it never installs tools or changes cluster resources. Use `./preflight --help` for usage and `./preflight --verbose` for the safe diagnostic summary.
+
+**Need a longer live backup-copy window** (e.g. for a chaos scenario that must land mid-copy)? The default demo sizing finishes the copy in a few seconds on `cbt-demo-hpp` because it's page-cache-absorbed at that scale — a bigger PVC alone does not help. Set `MANIFEST_VARIANT=large` plus a correspondingly large `GUEST_DATA_SIZE_MB`/`GUEST_INCREMENTAL_DATA_SIZE_MB` (see `.env.example` for measured values that produce a ~28s full / ~16s incremental backup); this swaps in `manifests/vm-large.yaml`, `manifests/full-backup-large.yaml`, and `manifests/incremental-backup-large.yaml` and does not change default `make e2e` behavior otherwise. Verify the actual window with `scripts/monitor.sh <vm_name>`, not by assumption — see `docs/vm-cbt-workflow.md` for the measured data points.
 
 
 ## Coding conventions

@@ -34,7 +34,7 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$ROOT_DIR/manifests/vm.yaml" | oc_cmd apply -f -
+  "$(manifest_path vm)" | oc_cmd apply -f -
 workflow_success "VM resources applied in namespace $NAMESPACE"
 
 workflow_step "4/5 Wait for VM readiness and confirm CBT"
@@ -53,9 +53,13 @@ workflow_action "Print the guest file SHA-256 and size, and record them as the e
 # `sync` before the backup runs: without it, the write can still be sitting
 # in the guest's page cache when the external snapshot is taken, so the full
 # backup captures an empty/stale hello.txt.
+# base64's default line wrap (not -w0) keeps this a series of ordinary-length
+# lines: vm-cbt-backup.sh's `grep -Fqx` on the marker line has to buffer
+# whatever line it's scanning, and an unwrapped multi-GB payload becomes one
+# single line that OOM-kills grep in the guest at MANIFEST_VARIANT=large sizes.
 guest_setup_command="
 printf '%s\n' \"Hello from the VM CBT demo.\" > ~/hello.txt
-head -c ${GUEST_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
+head -c ${GUEST_DATA_SIZE_MB}M /dev/urandom | base64 >> ~/hello.txt
 printf '\n' >> ~/hello.txt
 sync
 sha256sum ~/hello.txt

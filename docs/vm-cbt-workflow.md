@@ -107,6 +107,10 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 The append is idempotent for retries: the same line is not appended twice.
 
+**Large-disk variant.** Setting `MANIFEST_VARIANT=large` (see `.env.example`) swaps `manifests/vm.yaml`, `manifests/full-backup.yaml`, and `manifests/incremental-backup.yaml` for `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC), structurally identical apart from sizes. It is opt-in and does not change default `make e2e` behavior.
+
+By itself, a bigger disk does not widen the live block-copy window (`cbt-chaos/chaos-plan.md`): `cbt-demo-hpp`'s copy is page-cache-absorbed on a node with hundreds of GB of free RAM, so a 64/32 MiB payload finishes in a few seconds regardless of PVC size. What actually widens the window is a correspondingly large `GUEST_DATA_SIZE_MB`/`GUEST_INCREMENTAL_DATA_SIZE_MB`. Measured with `scripts/monitor.sh` on cbt-demo-hpp: `GUEST_DATA_SIZE_MB=8192` gave a ~28s full backup, and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` gave a ~16s incremental backup — both comfortably past a 15s target for chaos scenarios to land mid-copy. Duration scaled roughly linearly with incremental payload size in the 4-12GiB range tested (4096→~6s, 8192→~11s, 12288→~16s), so further tuning can extrapolate from those points rather than guessing.
+
 ### 4. `make vm-cbt-verify`
 
 `scripts/vm-cbt-verify.sh` checks the API state rather than inferring success from command exit codes. It requires:
