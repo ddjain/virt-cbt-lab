@@ -22,9 +22,8 @@ vm-cbt-demo/
 logs/
 tmp/
 tmp-*/
-# CCLM generated run artifacts
-/cbt-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/runs/
-/cbt-chaos/scenarios/05-virt-controller-pod-kill-post-done/runs/
+# CBT generated run artifacts
+/cbt-chaos/scenarios/*/runs/
 
 # Tool and OS metadata
 .DS_Store
