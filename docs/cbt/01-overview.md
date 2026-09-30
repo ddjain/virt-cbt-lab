@@ -16,6 +16,35 @@ The feature is implemented by KubeVirt's alpha `backup.kubevirt.io/v1alpha1` API
 - A restore requires the full base plus the required incremental chain.
 - KubeVirt does not provide a native restore API for this feature; this repository supplies a verification restore path.
 
+## What is actually tracked
+
+CBT is not a file-level backup and it does not watch `hello.txt`. QEMU/libvirt maintains a checkpoint and dirty-block state for the virtual disk. In the live cloud05 VMI, the active chain was:
+
+```text
+root PVC file:
+  /var/run/kubevirt-private/vmi-disks/rootdisk/disk.img
+      |
+      v
+CBT qcow2 layer on persistent-state PVC:
+  /var/run/kubevirt-private/libvirt/qemu/cbt/rootdisk.qcow2
+      |
+      v
+guest virtio disk:
+  /dev/vda
+```
+
+The persistent-state PVC is therefore part of the CBT control/data state. Losing or corrupting it is different from losing only a backup destination PVC: the destination may be intact while the checkpoint chain needed for the next incremental backup is unusable.
+
+## Checkpoint identity
+
+Every successful backup reports a checkpoint name. The tracker stores the latest checkpoint, and the next tracker-backed backup names that checkpoint as its parent. A valid incremental result has three independent relationships:
+
+1. the incremental CR reports `status.type: Incremental`;
+2. the virt-launcher log names the full checkpoint as the incremental source;
+3. the live libvirt checkpoint tree shows a full parent and incremental child.
+
+The CR fields and the libvirt tree can diverge after failures; chaos verification must inspect both rather than trusting one API object.
+
 ## The simplest mental model
 
 ```text
@@ -103,3 +132,6 @@ make e2e
 **Data plane:** QEMU/libvirt reads the active VM disk chain and writes qcow2 data to the hotplugged destination PVC. The guest keeps running during the live block-copy window.
 
 The full and incremental sequence details are in [05. Full backup](05-full-backup.md) and [06. Incremental backup](06-incremental-backup.md).
+## Source-of-truth pointer
+
+The normal-path model is implemented across the [KubeVirt API types](12-kubevirt-source-reference.md#crd-and-api-contract), [controller reconciliation](12-kubevirt-source-reference.md#control-plane-reconciliation), and [launcher/QEMU path](12-kubevirt-source-reference.md#node-local-runtime-and-qemulibvirt-path). The repository's diagrams intentionally separate API/control traffic from local QEMU/PVC data movement because they are different failure domains.

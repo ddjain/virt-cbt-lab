@@ -40,6 +40,21 @@ sequenceDiagram
 
 The helper uses `qemu-img convert`, `qemu-img rebase`, `losetup`, and a read-only ext4 mount. It requires a custom image built from `images/restore-helper/Dockerfile`, a privileged pod, and access to the node's `/dev`.
 
+## Artifact-level verification gap
+
+The restore test proves semantic guest data, not the physical delta representation. It does not currently run `qemu-img info` or `qemu-img map` assertions on both artifacts, compare the incremental `backing-filename`, or compare allocated clusters. A malformed or unnecessarily full-sized incremental image could still pass the `hello.txt` hash test if the resulting disk state is correct.
+
+For a chaos test that claims CBT delta preservation, add a read-only artifact check before and after the injection:
+
+```sh
+qemu-img info <full.qcow2>
+qemu-img info <incremental.qcow2>
+qemu-img map --output=json <full.qcow2>
+qemu-img map --output=json <incremental.qcow2>
+```
+
+Record the backing-file relationship, virtual size, actual file size, and allocated cluster map. Do not use file size alone as proof: qcow2 metadata, preallocation, compression, and filesystem allocation can change physical size.
+
 ## Security and scheduling requirements
 
 The restore pod intentionally uses:
@@ -63,3 +78,6 @@ It does not prove:
 - the artifacts have been replicated off cluster.
 
 For manual commands and an independently rendered pod manifest, see [`../restore-verification.md`](../restore-verification.md).
+## Upstream boundary
+
+The absence of a native restore API is an API/design boundary, not a missing step in this repository. The backup CRD and status contract are defined in [KubeVirt API types](12-kubevirt-source-reference.md#crd-and-api-contract); the Push/backup engine ends in the [launcher storage path](12-kubevirt-source-reference.md#node-local-runtime-and-qemulibvirt-path). The repository's `qemu-img` reconstruction is therefore an external consumer of the artifacts, not a KubeVirt controller behavior.

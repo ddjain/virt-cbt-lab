@@ -12,6 +12,25 @@ The observed `cbt-demo-hpp` class used:
 
 This is demonstration storage. It is not replicated storage, off-cluster backup, or disaster recovery.
 
+## Cloud05 storage facts
+
+The live HPP resource was:
+
+```text
+HostPathProvisioner: cbt-demo-hpp
+pool: cbt-demo-pool
+pool path: host-local path configured by the HPP resource
+pool backing claim: HPP-generated claim on the selected worker
+pool backing capacity: 1489Gi in this audit
+HPP workload node: one selected worker, dynamic
+```
+
+The HPP pool template requests `1Ti`, but the backing PV and every observed workload PVC reported `1489Gi`. That is the provisioned backing-pool/PV capacity, not the amount requested or the amount of qcow2 data written. The destination PVCs still request only 5/3 GiB in the default manifests or 40/25 GiB in the large manifests.
+
+`WaitForFirstConsumer` means a PVC can remain Pending until a consumer supplies scheduling information. The golden image is the exception: `manifests/debian-image.yaml` sets `cdi.kubevirt.io/storage.bind.immediate.requested: "true"` because it has no VM consumer of its own. CDI clones also create temporary source/clone pods and PVCs; those are part of image preparation, not CBT backup data.
+
+All observed CBT workload PVCs were `ReadWriteOnce`, `Filesystem`, and selected to the same HPP worker. The current cloud05 layout is a single-node storage failure domain.
+
 ## Topology
 
 ```text
@@ -34,6 +53,10 @@ HPP node-local pool
 ```
 
 The root, persistent-state, and backup PVCs are RWO and node-affine. The VM reports `LiveMigratable=False` with this local layout.
+
+For the live large run, the root PVC requested approximately `45,526,653,338` bytes (40 GiB) and was marked CDI-preallocated. The VM's VMI reported `filesystemOverhead: 0.06`, `preallocated: true`, and `LiveMigratable=False` with reason `DisksNotLiveMigratable`. The VM manifest explicitly sets `evictionStrategy: None`; this avoids eviction/migration behavior in the demo, but it does not make the local RWO disk migratable.
+
+The cluster-level KubeVirt configuration observed `evictionStrategy: LiveMigrate`, so distinguish the cluster default from the VM-level override when designing node-disruption tests.
 
 ## Active VM disk chain
 
@@ -94,3 +117,6 @@ Transient hotplug warnings can occur while the destination `disk.img` is being m
 ## Retention implication
 
 An incremental overlay is not a standalone restore set. Retention must preserve the full base and every required parent checkpoint in the chain. Deleting demo PVCs under the HPP `Delete` reclaim policy deletes the corresponding local artifacts.
+## Upstream source references
+
+The destination hotplug contract is implemented in [`pkg/storage/cbt/push-target-pvc.go`](https://github.com/kubevirt/kubevirt/blob/v1.8.4/pkg/storage/cbt/push-target-pvc.go#L60-L214). CBT overlay creation and the persistent-state path are in [`pkg/virt-launcher/virtwrap/storage/cbt.go`](https://github.com/kubevirt/kubevirt/blob/v1.8.4/pkg/virt-launcher/virtwrap/storage/cbt.go#L243-L334), while the qcow2 front-file/raw-`DataStore` relationship is built in [`pkg/virt-launcher/virtwrap/converter/converter.go`](https://github.com/kubevirt/kubevirt/blob/v1.8.4/pkg/virt-launcher/virtwrap/converter/converter.go#L692-L783). The complete source map is [12. KubeVirt source reference](12-kubevirt-source-reference.md#node-local-runtime-and-qemulibvirt-path).

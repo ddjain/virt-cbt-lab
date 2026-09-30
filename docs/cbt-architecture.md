@@ -13,6 +13,9 @@ This file is the stable entry point for the CBT knowledgebase. The detailed mate
 7. [Restore verification](cbt/07-restore-verification.md)
 8. [Operations and troubleshooting](cbt/08-operations.md)
 9. [Limitations and production cautions](cbt/09-limitations.md)
+10. [Chaos-test design](cbt/10-chaos-test-design.md)
+11. [Cloud05 live audit](cbt/11-cloud05-audit.md)
+12. [KubeVirt source reference](cbt/12-kubevirt-source-reference.md)
 
 ## One-page mental model
 
@@ -50,3 +53,5 @@ The full, incremental, and restore pages contain Mermaid sequence diagrams showi
 ## Evidence status
 
 The default cloud05 E2E passed full, incremental, checkpoint, and restore-data verification. A large-copy experiment measured 29 seconds for full and 15 seconds for incremental backup copies, but its final restore report was invalidated by concurrent workflows sharing one checkout's local state. The concurrency limitation is documented in [09. Limitations](cbt/09-limitations.md).
+
+The later cloud05 audit also observed the installed API/runtime boundary directly: OpenShift 4.22.15, HCO 4.22.9/KubeVirt operator `v1.8.4`, `IncrementalBackup`, selector `cbt-demo=enabled`, a persistent-state qcow2 CBT layer, a real libvirt full-to-incremental checkpoint tree, and HPP storage pinned to one node. It found that the repository still needs independent `qemu-img info/map` assertions when a test claims physical delta preservation; semantic restore hashes alone are not sufficient for that claim.

@@ -9,7 +9,7 @@ The workflow is a demonstration, not a production backup policy. Each run uses r
 ```text
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
-For the component, network, storage, checkpoint, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
+For the component, network, storage, checkpoint, source-code, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
 - `vm-setup.sh` imports the cached Debian golden image (once), then creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
@@ -26,7 +26,7 @@ The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The clu
 ## Prerequisites
 
 Local tools:
-- Bash 3.2 or newer, Make, `oc`, `ssh`, `ssh-keygen`, `jq` (builds and merges the per-run JSON report), and `rsync` for `sync.sh`.
+- Bash 3.2 or newer for the core workflow; `make monitor` requires Bash 4+ because `scripts/monitor.sh` uses associative arrays. Also require Make, `oc`, `ssh`, `ssh-keygen`, `jq` (builds and merges the per-run JSON report), and `rsync` for `sync.sh`.
 - A readable kubeconfig and permission to create/delete the demo resources.
 
 Cluster resources:

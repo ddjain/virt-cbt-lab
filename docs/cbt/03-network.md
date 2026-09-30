@@ -40,6 +40,22 @@ The VM manifest declares:
 
 Cloud05 used OVN-Kubernetes with MTU 1400. Pod IPs, Service ClusterIPs, MAC addresses, and node names are dynamic and must not be hard-coded.
 
+## Cloud05 network values
+
+The audit observed:
+
+- OVN-Kubernetes as the default network;
+- cluster pod CIDR `10.128.0.0/14`, host prefix `/23`;
+- Service CIDR `172.30.0.0/16`;
+- cluster network MTU `1400`;
+- Geneve port `6081` and IPsec disabled.
+
+The example VMI had a private pod/guest address from the cluster pod CIDR; the VM Service had a dynamically assigned Service-CIDR ClusterIP. These values identify only the audit shape. Always query the current VMI and Service.
+
+The guest-agent path is local to the VMI, not a Service connection. The live domain XML contained a virtio-serial channel named `org.qemu.guest_agent.0` with state `connected`, and the compute log showed polling of `guest-fsfreeze-status`. The VM manifest installs/enables `qemu-guest-agent`; KubeVirt materializes the runtime channel in the domain.
+
+The backup data path is also not the guest network. The live QEMU command line used the local `file` driver for both `disk.img` and `rootdisk.qcow2`; it did not use NBD or the guest Service. A VMI network filter can break SSH or guest-agent operations while leaving local backup I/O unaffected. Conversely, node-local storage pressure can break a backup while SSH remains healthy.
+
 ## What uses the network
 
 | Operation | Network dependency |
@@ -60,3 +76,6 @@ The VM includes a `qemu-guest-agent` package and a QEMU `org.qemu.guest_agent.0`
 ## SSH security boundary
 
 The repository disables host-key checking only for the randomized localhost port-forward. It does not expose the Service externally and does not use that SSH exception for general remote administration.
+## Upstream source references
+
+The network/data-plane boundary is confirmed by [`pkg/virt-launcher/virtwrap/storage/backup.go`](https://github.com/kubevirt/kubevirt/blob/v1.8.4/pkg/virt-launcher/virtwrap/storage/backup.go#L126-L205) and [`pkg/virt-launcher/virtwrap/converter/converter.go`](https://github.com/kubevirt/kubevirt/blob/v1.8.4/pkg/virt-launcher/virtwrap/converter/converter.go#L692-L783): backup XML and CBT disks use local libvirt file/block paths. The guest-agent freeze/thaw channel is handled by the launcher and is not an SSH/Service data path. For the full source/error map, see [12. KubeVirt source reference](12-kubevirt-source-reference.md#node-local-runtime-and-qemulibvirt-path).

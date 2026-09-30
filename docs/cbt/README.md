@@ -15,6 +15,9 @@ This is the beginner-friendly map of the KubeVirt Changed Block Tracking (CBT) d
 | [07. Restore verification](07-restore-verification.md) | How the repository proves the backup contains real guest data |
 | [08. Operations](08-operations.md) | Commands, reports, monitoring, events, and troubleshooting |
 | [09. Limitations](09-limitations.md) | Alpha status, storage constraints, concurrency, and untested failure paths |
+| [10. Chaos-test design](10-chaos-test-design.md) | Failure boundaries, trigger timing, verification layers, and scenario map |
+| [11. Cloud05 live audit](11-cloud05-audit.md) | Point-in-time cluster evidence and reproducible inspection commands |
+| [12. KubeVirt source reference](12-kubevirt-source-reference.md) | Exact v1.8.4 CR, controller, handler, launcher, storage, checkpoint, and Pull-mode code paths |
 
 ## Related procedural documents
 
@@ -28,5 +31,7 @@ This is the beginner-friendly map of the KubeVirt Changed Block Tracking (CBT) d
 - **OBSERVED**: live cloud05 API, event, pod, PVC/PV, or log result.
 - **INFERRED**: engineering conclusion from source and observations.
 - **UNKNOWN**: not exercised by the normal workflow.
+
+The live audit also confirmed the installed control-plane/runtime split, persistent CBT qcow2 state, real libvirt checkpoint parent/child tree, HPP single-node storage boundary, and the remaining artifact-metadata proof gap. See [10. Chaos-test design](10-chaos-test-design.md) for how to test those boundaries.
 
 The default cloud05 E2E completed successfully, including full-only and full-plus-incremental restore verification. The large-copy timing experiment reached both backup completion states, but its final restore report was invalidated by concurrent workflow state overwriting; see [09. Limitations](09-limitations.md).
