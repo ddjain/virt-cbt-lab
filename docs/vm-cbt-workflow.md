@@ -1,7 +1,7 @@
 # KubeVirt CBT VM backup workflow
 
 This guide explains the repository's `make e2e` demonstration: create a VM, write and hash `hello.txt`, take a full backup, append data, take an incremental backup, and verify the CBT result.
-For the component/control-plane, network, storage, checkpoint, and failure-boundary model behind the workflow, see [`docs/cbt-architecture.md`](cbt-architecture.md).
+For the component/control-plane, network, storage, checkpoint, and failure-boundary model behind the workflow, see the [modular CBT knowledgebase](cbt/README.md), starting with [`cbt-architecture.md`](cbt-architecture.md). The [chaos-test design](cbt/10-chaos-test-design.md) page maps lifecycle boundaries to injection and verification points.
 
 ## What the demo proves
 

@@ -7,6 +7,8 @@
 
 Evidence-type legend: **OBSERVED** (seen live on <target-host> this session) · **SOURCE** (read directly from script/manifest/CRD/log text) · **DOCUMENTED** (Krkn docs) · **INFERRED** (reasoned, not directly observed) · **UNKNOWN**.
 
+Begin with the [modular CBT knowledgebase](../docs/cbt/README.md), especially [10. Chaos-test design](../docs/cbt/10-chaos-test-design.md) and [11. Cloud05 live-audit evidence](../docs/cbt/11-cloud05-audit.md). This plan is the detailed scenario/matrix reference.
+
 ---
 
 ## A. Discovered CBT Architecture
@@ -29,7 +31,7 @@ Evidence-type legend: **OBSERVED** (seen live on <target-host> this session) · 
 | `rootdisk.qcow2` overlay | The actual CBT dirty-bitmap-bearing file. QEMU's blockdev chain is `libvirt-3-storage` (raw `disk.img` on the `vm-cbt-root` DataVolume PVC, backing) + `libvirt-2-storage`=`/var/run/kubevirt-private/libvirt/qemu/cbt/rootdisk.qcow2` (qcow2 format layer, **on the persistent-state PVC, not the root disk PVC**) | OBSERVED: full `qemu-kvm` command line in `virt-launcher` compute container log, `-blockdev` args |
 | `VirtualMachineBackupTracker hello-tracker` | Anchors `.status.latestCheckpoint.name`, the checkpoint the next incremental backup diffs against | SOURCE + OBSERVED |
 | `VirtualMachineBackup hello-full` / `hello-incremental` | Backup request/result CRs | SOURCE + OBSERVED |
-| `hello-restore-verify` pod | Repo-supplied (not KubeVirt-native) helper that reconstructs the guest disk from the two backup PVCs via `qemu-img rebase/convert` + `btrfs restore`, and is the only real data-correctness check in the pipeline | SOURCE (`scripts/restore-lib.sh`) |
+| `hello-restore-verify` pod | Repo-supplied (not KubeVirt-native) helper that reconstructs the guest disk from the two backup PVCs via `qemu-img rebase/convert`, loop devices, and a read-only ext4 mount, and is the only real data-correctness check in the pipeline | SOURCE (`scripts/restore-lib.sh`, `manifests/restore-verify-pod.yaml`) |
 
 **Correction of a prior assumption (see §I):** the CBT/checkpoint state is **not** purely in-memory QEMU state. It is a qcow2 overlay file living on a dedicated per-VMI persistent PVC (`persistent-state-for-vm-cbt-demo-*`), independent of both the VM's root-disk PVC and the virt-launcher pod's own lifecycle.
 **Evidence Type:** OBSERVED (blockdev args + volume mounts).
@@ -111,7 +113,7 @@ Timeline reconstructed from `virt-launcher` compute-container logs and cluster e
 
 - **SOURCE**: the explicit log line naming the base checkpoint (`"Generating incremental backup ... from checkpoint: hello-full-..."`).
 - **SOURCE**: `virsh checkpoint-list --tree` shows a real parent→child checkpoint tree, not two independent checkpoints.
-- **SOURCE** (`scripts/vm-cbt-restore-test.sh` + `restore-lib.sh`): the repo's own Tier-B check rebases the incremental qcow2 onto the full qcow2 via `qemu-img rebase`, converts both to raw, and reads the guest file via `btrfs restore`, asserting: (a) the full-only restore's SHA-256 matches the hash captured live from the guest *before* the incremental mutation, and does **not** contain the marker line; (b) the full+incremental restore's SHA-256 matches the hash captured *after* the mutation, and **does** contain the marker line. This is real data-level proof, not just CR-field trust.
+- **SOURCE** (`scripts/vm-cbt-restore-test.sh` + `restore-lib.sh`): the repo's own Tier-B check rebases the incremental qcow2 onto the full qcow2 via `qemu-img rebase`, converts both to raw, loop-mounts the ext4 root filesystem read-only, and reads the guest file. It asserts: (a) the full-only restore's SHA-256 matches the hash captured live from the guest *before* the incremental mutation, and does **not** contain the marker line; (b) the full+incremental restore's SHA-256 matches the hash captured *after* the mutation, and **does** contain the marker line. This is real data-level proof, not just CR-field trust.
 - **Gap (INFERRED, not exercised by this repo's scripts):** nothing in the pipeline asserts the incremental qcow2's `backing_file`/cluster-allocation count independently — i.e., nothing distinguishes "true CBT delta" from "incidentally-correct full re-copy" except that the artifact sizes differ enough to be practically distinguishable. This matches a gap already flagged in the pre-existing `cbt-verification-report.md` (see §I).
 
 ---
