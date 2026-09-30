@@ -1,33 +1,42 @@
 #!/usr/bin/env bash
 # Reproduces scenario 09-node-stop-start-during-copy.
-# See scenario-spec.md §3/§4 for the injection command and timing condition this implements.
-# TODO: fill in once validated against the live cluster (see chaos-plan.md and scenario-spec.md TODOs).
+# Resolve the VM's current node before starting krknctl, then use the native
+# live-copy log trigger. This script deliberately requires BMC values at run
+# time; credentials are never stored in the repository or printed.
 set -euo pipefail
 
-NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../trigger-common.sh
+source "$SCRIPT_DIR/../trigger-common.sh"
 
-echo "TODO: resolve the current virt-launcher pod name and hosting node in ${NAMESPACE}" >&2
-# virt_launcher_pod=$(oc get pod -n "${NAMESPACE}" -l kubevirt.io=virt-launcher -o jsonpath='{.items[0].metadata.name}')
-# node_name=$(oc get pod "${virt_launcher_pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.nodeName}')
-
-echo "TODO: poll virt-launcher compute container logs for the deterministic 'Backup started' condition" >&2
-# oc logs -f -n "${NAMESPACE}" "${virt_launcher_pod}" -c compute \
-#   | grep -m1 "Backup started"
-
-# NEEDS VALIDATION: this scenario requires real bare-metal BMC/IPMI credentials for the target node
-# (<target-host> is confirmed BareMetal platform, so --cloud-type bm is required, which in turn requires
-# --bmc-user/--bmc-password/--bmc-address). Do not hardcode credentials here — source them from your
-# secrets-management process at run time.
-KUBECONFIG_PATH="${KUBECONFIG_PATH:?set to the krknctl-side path/copy of the cluster kubeconfig, e.g. /path/to/cluster/kubeconfig on <target-host>}"
-BMC_USER="${BMC_USER:?set to the IPMI/BMC username for the target node, from your secrets store}"
-BMC_PASSWORD="${BMC_PASSWORD:?set to the IPMI/BMC password for the target node, from your secrets store}"
-BMC_ADDRESS="${BMC_ADDRESS:?set to the IPMI/BMC address for the target node, from your secrets store}"
+RUN_NAME="${RUN_NAME:?set RUN_NAME to the exact make e2e NAME value}"
+TARGET_BACKUP="${TARGET_BACKUP:-full}"
+chaos_set_run_names
+chaos_require_tools
+chaos_require_krknctl
+NODE_NAME="${NODE_NAME:-$(chaos_resolve_node)}"
+BMC_USER="${BMC_USER:?set BMC_USER from the approved secrets store}"
+BMC_PASSWORD="${BMC_PASSWORD:?set BMC_PASSWORD from the approved secrets store}"
+BMC_ADDRESS="${BMC_ADDRESS:?set BMC_ADDRESS from the approved secrets store}"
+NODE_TIMEOUT="${NODE_TIMEOUT:-180}"
+NODE_SELECTOR_KEY="${NODE_SELECTOR_KEY:-kubernetes.io/hostname}"
+NODE_DURATION="${NODE_DURATION:-120}"
+trigger_command="$(chaos_backup_started_trigger "$NAMESPACE" "$VM_NAME" "$TARGET_BACKUP_NAME")"
+printf '[scenario-09] node-stop/start target resolved for VM %s; node=%s; BMC values supplied via environment\n' \
+  "$VM_NAME" "$NODE_NAME" >&2
 
 krknctl run node-scenarios \
   --action node_stop_start_scenario \
-  --node-name "${node_name}" \
+  --label-selector "${NODE_SELECTOR_KEY}=${NODE_NAME}" \
   --cloud-type bm \
-  --bmc-user "${BMC_USER}" \
-  --bmc-password "${BMC_PASSWORD}" \
-  --bmc-address "${BMC_ADDRESS}" \
-  --kubeconfig "${KUBECONFIG_PATH}"
+  --bmc-user "$BMC_USER" \
+  --bmc-password "$BMC_PASSWORD" \
+  --bmc-address "$BMC_ADDRESS" \
+  --timeout "$NODE_TIMEOUT" \
+  --duration "$NODE_DURATION" \
+  --trigger-command "$trigger_command" \
+  --trigger-expected-rc 0 \
+  --triggers-interval "$TRIGGERS_INTERVAL" \
+  --triggers-timeout "$TRIGGERS_TIMEOUT" \
+  --triggers-on-timeout fail \
+  --kubeconfig "$KUBECONFIG_PATH"

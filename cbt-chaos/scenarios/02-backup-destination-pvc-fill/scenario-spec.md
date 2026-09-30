@@ -16,8 +16,8 @@ lets `Done=True` be reached over a truncated file — the "Backup destination ca
 **Primary (krknctl):**
 
 Validated against `krknctl describe pvc-scenarios` / `krknctl run pvc-scenarios --help` (real scenario
-tag is `pvc-scenarios`, not `pvc_scenarios`). Both target PVCs confirmed live on <target-host> in `vm-cbt-demo`:
-`hello-full-output` and `hello-incremental-output` (both `1489Gi`, `cbt-demo-hpp` StorageClass, `Bound`).
+tag is `pvc-scenarios`, not `pvc_scenarios`. The reusable trigger derives
+`vm-backup-pvc-<RUN_NAME>` or `vm-incremental-pvc-<RUN_NAME>` in `vm-cbt-demo`.
 `--namespace` is a required flag with no default.
 
 ```bash
@@ -27,9 +27,13 @@ krknctl run pvc-scenarios \
   --fill-percentage 95 \
   --duration 60 \
   --kubeconfig /path/to/cluster/kubeconfig
-```
 
-Swap `--pvc-name hello-incremental-output` for the incremental-backup variant of this scenario.
+```
+`chaos-trigger.sh` also passes `--trigger-command`, `--triggers-interval`,
+`--triggers-timeout`, and `--triggers-on-timeout fail`; these flags keep a missed
+boundary from becoming a false-positive successful chaos run.
+
+Set `TARGET_BACKUP=incremental` to select the incremental PVC; `TARGET_PVC` can override the derived name.
 
 **Secondary (oc, only if krknctl cannot do this):**
 ```
@@ -47,9 +51,11 @@ Swap `--pvc-name hello-incremental-output` for the incremental-backup variant of
 **Deterministic condition:** same as scenario 01 — virt-launcher log shows `"Backup started"` for the
 target backup, `Done` not yet `True`.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc logs -f <virt-launcher-pod> -c compute | grep -m1 "Backup started"` for the
-target backup name, then fires the `krknctl run pvc_scenarios` command from §3.
+**How we watch for it:** `chaos-trigger.sh` starts krknctl before E2E and uses
+krknctl's native `--trigger-command` to query the target virt-launcher compute log for
+the target backup's `"Backup started"` line while `Done` is still not `True`. This is
+the exact in-container live-copy signal; the large profile is recommended because the
+measured krknctl startup cost is otherwise material relative to the fast backend.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

@@ -1,0 +1,105 @@
+# 01. CBT overview
+
+## Learning goal
+
+After reading this page, you should know the difference between a VM, a backup request, a checkpoint, a full image, and an incremental overlay.
+
+## What CBT means here
+
+Changed Block Tracking records which virtual-disk blocks changed after a checkpoint. The guest file `hello.txt` is only test data that causes disk changes; CBT tracks the virtual disk, not that filename.
+
+The feature is implemented by KubeVirt's alpha `backup.kubevirt.io/v1alpha1` APIs. The repository provides orchestration and verification around KubeVirt; it is not the backup engine.
+
+- A **full** backup writes a standalone qcow2 image.
+- An **incremental** backup writes a qcow2 overlay relative to a prior checkpoint.
+- A **tracker** stores the VM relationship and latest checkpoint name.
+- A restore requires the full base plus the required incremental chain.
+- KubeVirt does not provide a native restore API for this feature; this repository supplies a verification restore path.
+
+## The simplest mental model
+
+```text
+RUNNING VM DISK
+      |
+      |  first backup creates a baseline checkpoint
+      v
+  FULL IMAGE  ------------------------------+
+      |                                      |
+      | guest changes                        | restore base
+      v                                      v
+INCREMENTAL OVERLAY  --rebase onto full-->  RESTORED DISK
+      |
+      +-- tracker now points at the incremental checkpoint
+```
+
+## System architecture: ASCII view
+
+```text
+                         control plane
++----------------+       +-------------------+
+| operator host  |------>| OpenShift API     |
+| make / oc / jq |       | CRDs, PVCs, pods  |
++--------+-------+       +----+----+----+----+
+         |                    |    |    |
+         | port-forward       |    |    +--> CDI import/clone
+         v                    |    +-------> HPP/CSI storage
++----------------+            +-----------> virt-controller
+| VM Service     |                         |
+| TCP/22         |                         v
++--------+-------+                 +-------------------+
+         |                         | virt-launcher    |
+         v                         | compute container |
++----------------+                 | libvirt + QEMU    |
+| Debian guest   |<--virtio--------+---------+---------+
+| SSH + agent    |                           |
++----------------+                           |
+                                             |
+                   +-------------------------+------------------+
+                   |                                            |
+             root disk PVC                         persistent-state PVC
+             raw backing disk                       CBT qcow2 overlay
+                   |                                            |
+                   +----------------------+---------------------+
+                                          |
+                           hotplug destination PVC
+                           full image or incremental overlay
+```
+
+## Repository workflow: ASCII view
+
+```text
+make e2e
+   |
+   +--> preflight (read-only checks)
+   |
+   +--> vm-setup
+   |      +--> import/reuse Debian golden image
+   |      +--> create VM, root DataVolume, SSH Service
+   |      +--> wait Ready and CBT=Enabled
+   |      +--> write + sync initial hello.txt; save full hash
+   |
+   +--> vm-backup
+   |      +--> create full destination PVC
+   |      +--> create tracker
+   |      +--> create Full VirtualMachineBackup
+   |      +--> wait Done; tracker gets full checkpoint
+   |
+   +--> vm-cbt-backup
+   |      +--> wait tracker == full checkpoint
+   |      +--> mutate + sync hello.txt; save incremental hash
+   |      +--> create incremental destination PVC and backup
+   |      +--> wait Done; tracker gets incremental checkpoint
+   |
+   +--> vm-cbt-verify
+          +--> verify CBT, types, Done, checkpoints, tracker
+          +--> rebase/convert backup images and hash restored files
+          +--> write report/<run>/report.json
+```
+
+## Control plane versus data plane
+
+**Control plane:** API objects, controller reconciliation, PVC binding, hotplug lifecycle, status conditions, tracker updates, and events.
+
+**Data plane:** QEMU/libvirt reads the active VM disk chain and writes qcow2 data to the hotplugged destination PVC. The guest keeps running during the live block-copy window.
+
+The full and incremental sequence details are in [05. Full backup](05-full-backup.md) and [06. Incremental backup](06-incremental-backup.md).

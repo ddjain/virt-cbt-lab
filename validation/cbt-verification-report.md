@@ -1,6 +1,7 @@
 # CBT Backup Pipeline Verification Report
 
 **Generated:** 2026-09-29  
+> **Historical notice:** this report predates the repository's restore-verification implementation. Its “missing” restore, filesystem, and guest-content checks are no longer gaps in the current `make e2e` path; see [`docs/restore-verification.md`](../docs/restore-verification.md) and [`docs/cbt-architecture.md`](../docs/cbt-architecture.md).
 **Test Environment:** RedHat OpenShift KubeVirt on Scale Lab (<target-host>)  
 **Repository:** /path/to/cbt-setup  
 

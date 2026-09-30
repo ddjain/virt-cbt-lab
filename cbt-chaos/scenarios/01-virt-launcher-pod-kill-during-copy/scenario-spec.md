@@ -14,8 +14,7 @@ reached over an incomplete/corrupt artifact.
 
 ## 3. Chaos Injection
 
-**Primary (krknctl) — capability-validated, but not used for the timing-critical kill:**
-
+**Primary timing path (`chaos-trigger-v2.sh`, krknctl native trigger):**
 Validated against `krknctl describe pod-scenarios` / `krknctl run pod-scenarios --help` (real scenario
 tag is `pod-scenarios`, not `pod_disruption_scenarios`). Real virt-launcher pod observed on <target-host>:
 `virt-launcher-vm-cbt-demo-rg6tj` in `vm-cbt-demo` — use `--name-pattern` rather than the exact pod name
@@ -27,9 +26,15 @@ krknctl run pod-scenarios \
   --name-pattern virt-launcher-vm-cbt-demo- \
   --disruption-count 1 \
   --kubeconfig /path/to/cluster/kubeconfig
-```
 
-**Actual injection used by `chaos-trigger.sh` (oc, justified fallback):**
+```
+`chaos-trigger-v2.sh` starts krknctl before E2E and adds
+`--trigger-k8s-api-version backup.kubevirt.io/v1alpha1`,
+`--trigger-k8s-kind VirtualMachineBackup`, the run-specific backup name, and
+`--triggers-on-timeout fail`. The native trigger fires at CR creation and the
+already-running krkn process then deletes the matching virt-launcher pod.
+
+**Historical precision fallback used by `chaos-trigger.sh` (oc):**
 ```bash
 oc delete pod "$pod_name" -n "$NAMESPACE" --wait=false
 ```
@@ -59,23 +64,18 @@ oc delete pod "$pod_name" -n "$NAMESPACE" --wait=false
 
 **Deterministic condition:** the target `VirtualMachineBackup` object is created in the namespace.
 
-**How we watch for it:** krknctl has no built-in event/trigger flag (confirmed against the krknctl docs
-in `/Users/darjain/projects/krkn-chaos/website/content/en/docs/krknctl/` — only
-`--detached`/`--dry-run`/`--kubeconfig`/`--alerts-profile`/`--metrics-profile` and the
-`graph`/`random`/`query-status` subcommands exist, no `--trigger`). `chaos-trigger.sh` originally polled
-`oc logs -f <virt-launcher-pod> -c compute | grep -m1 "Backup started"` combined with a `Done` status
-check, each iteration issuing sequential `oc get pod` / `oc get vmbackup` / `oc logs` calls. On the
-observed cluster backend the full backup goes from creation to `Done=True` in ~5s regardless of guest
-payload size (the backup mechanism is CSI/storage-snapshot based, not a byte-proportional copy), and the
-polling loop's per-iteration oc round-trips added ~10s of detection lag — confirmed by a live run
-(`chaos01-0930-1013`) where the kill landed 10s after `Done=True`, hitting the VM during the unrelated
-next workflow step instead of the live-copy window. `chaos-trigger.sh` now runs a single long-lived
-`oc get vmbackup -n <ns> -w --no-headers` watch and, the instant the target backup's name appears in the
-watch stream, issues the `oc delete pod` from §3 directly (a second live run, `chaos01-0930-1021`, showed
-this watch-based detection alone is fast enough — the remaining problem was krknctl's own startup cost,
-not detection latency; see §3's justification). This is the earliest cluster-observable signal available
-with standard tooling; there is no guarantee it lands inside the
-live-copy window on a backend this fast, only that it is the tightest achievable bound.
+**How we watch for it:** The reusable v2 script launches krknctl before E2E,
+absorbing its measured 5-9s startup cost while vm-setup runs. Its native
+Kubernetes trigger polls the run-specific `VirtualMachineBackup` name every
+0.5s; once the object exists, the same krkn process selects the
+`virt-launcher-vm-<RUN_NAME>-*` pod and deletes it. `--triggers-on-timeout fail`
+prevents a missed object from being reported as a successful no-op.
+
+The older `chaos-trigger.sh` retains the direct `oc get vmbackup -w` plus
+`oc delete pod` fallback for cases where krknctl is unavailable or a direct
+sub-second kill is required. Its fallback is documented because invoking
+krknctl only after detection misses this backend's measured ~5s full / ~3s
+incremental lifecycle.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

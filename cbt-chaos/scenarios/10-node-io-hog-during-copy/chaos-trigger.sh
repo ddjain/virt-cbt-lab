@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 # Reproduces scenario 10-node-io-hog-during-copy.
-# See scenario-spec.md §3/§4 for the injection command and timing condition this implements.
-# TODO: fill in once validated against the live cluster (see chaos-plan.md and scenario-spec.md TODOs).
+# Resolve the HPP/virt-launcher node before starting krknctl and use its native
+# trigger-command against the exact "Backup started" compute-log marker. This
+# is the coarse node-wide comparison for scenario 06, not a replacement for it.
 set -euo pipefail
 
-NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../trigger-common.sh
+source "$SCRIPT_DIR/../trigger-common.sh"
 
-echo "TODO: resolve the current virt-launcher pod name and hosting (HPP) node in ${NAMESPACE}" >&2
-# virt_launcher_pod=$(oc get pod -n "${NAMESPACE}" -l kubevirt.io=virt-launcher -o jsonpath='{.items[0].metadata.name}')
-# node_name=$(oc get pod "${virt_launcher_pod}" -n "${NAMESPACE}" -o jsonpath='{.spec.nodeName}')
-
-echo "TODO: poll virt-launcher compute container logs for the deterministic 'Backup started' condition" >&2
-# oc logs -f -n "${NAMESPACE}" "${virt_launcher_pod}" -c compute \
-#   | grep -m1 "Backup started"
-
-KUBECONFIG_PATH="${KUBECONFIG_PATH:?set to the krknctl-side path/copy of the cluster kubeconfig, e.g. /path/to/cluster/kubeconfig on <target-host>}"
+RUN_NAME="${RUN_NAME:?set RUN_NAME to the exact make e2e NAME value}"
+TARGET_BACKUP="${TARGET_BACKUP:-full}"
+chaos_set_run_names
+chaos_require_tools
+chaos_require_krknctl
+NODE_NAME="${NODE_NAME:-$(chaos_resolve_node)}"
+CHAOS_DURATION="${CHAOS_DURATION:-30}"
+NODE_SELECTOR_KEY="${NODE_SELECTOR_KEY:-kubernetes.io/hostname}"
+trigger_command="$(chaos_backup_started_trigger "$NAMESPACE" "$VM_NAME" "$TARGET_BACKUP_NAME")"
+printf '[scenario-10] applying node IO hog to %s after %s live-copy starts\n' \
+  "$NODE_NAME" "$TARGET_BACKUP_NAME" >&2
 
 krknctl run node-io-hog \
-  --namespace "${NAMESPACE}" \
-  --node-selector "kubernetes.io/hostname=${node_name}" \
-  --chaos-duration 30 \
-  --kubeconfig "${KUBECONFIG_PATH}"
+  --namespace "$NAMESPACE" \
+  --node-selector "${NODE_SELECTOR_KEY}=${NODE_NAME}" \
+  --chaos-duration "$CHAOS_DURATION" \
+  --trigger-command "$trigger_command" \
+  --trigger-expected-rc 0 \
+  --triggers-interval "$TRIGGERS_INTERVAL" \
+  --triggers-timeout "$TRIGGERS_TIMEOUT" \
+  --triggers-on-timeout fail \
+  --kubeconfig "$KUBECONFIG_PATH"

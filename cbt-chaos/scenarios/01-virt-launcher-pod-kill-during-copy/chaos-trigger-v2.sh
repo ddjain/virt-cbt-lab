@@ -68,5 +68,5 @@ krknctl run pod-scenarios \
   --trigger-k8s-condition "$TRIGGER_K8S_CONDITION" \
   --triggers-interval "$TRIGGERS_INTERVAL" \
   --triggers-timeout "$TRIGGERS_TIMEOUT" \
-  --triggers-on-timeout skip \
+  --triggers-on-timeout fail \
   --kubeconfig "$KUBECONFIG_PATH"

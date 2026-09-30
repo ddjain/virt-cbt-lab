@@ -47,11 +47,11 @@ krknctl run kubevirt-outage \
 **Deterministic condition:** `VirtualMachineBackupTracker.status.latestCheckpoint.name` equals the full
 backup's checkpoint name, and no incremental `VirtualMachineBackup` CR exists yet.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc get vmbackuptracker hello-tracker -n vm-cbt-demo -o
-jsonpath='{.status.latestCheckpoint.name}'` until it matches the known full-backup checkpoint name and
-confirms no incremental `VirtualMachineBackup` object exists yet, then fires the `krknctl run
-kubevirt_vm_outage` command from §3.
+**How we watch for it:** `chaos-trigger.sh` starts krknctl before E2E and uses
+krknctl's native `--trigger-command` to require a non-empty
+`vm-tracker-<RUN_NAME>.status.latestCheckpoint.name` while
+`vm-incremental-<RUN_NAME>` is still absent. This absorbs startup latency before
+the between-backups window and fails on trigger timeout.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

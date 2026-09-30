@@ -1,14 +1,15 @@
 # KubeVirt CBT VM backup demo
 
-This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Debian VM, changes a guest file, takes a full backup, changes the file again, takes an incremental backup, and verifies the API state.
+This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. It creates a Debian VM, changes a guest file, takes a full backup, changes the file again, takes an incremental backup, and verifies both the API state and reconstructed guest data.
 
-The workflow is a demonstration, not a production backup policy. It uses fixed resource names and a local/RWO storage class.
+The workflow is a demonstration, not a production backup policy. Each run uses run-derived resource names in a shared namespace and local/RWO storage.
 
 ## Architecture and workflow
 
 ```text
 vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 ```
+For the component, network, storage, checkpoint, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
 - `vm-setup.sh` imports the cached Debian golden image (once), then creates the namespace, VM, DataVolume, and SSH service; it writes `hello.txt` and checks that CBT is enabled.
@@ -16,7 +17,7 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`, then merges every stage's fragment into the run's `report.json`.
 - `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and incremental backup PVCs and verifies its actual data — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and how to independently cross-check it.
-- `clean-all.sh` removes the demo namespace and only the guest key marked as workflow-managed.
+- `clean-all.sh` removes workflow-managed resources from the shared namespace and only the guest key marked as workflow-managed.
 
 Each run also writes a structured JSON report to `report/run_<UTC timestamp>/` — see [Run report](#run-report) below.
 
@@ -133,7 +134,7 @@ To track when the full and incremental backups actually start/finish (and their 
 make monitor VM=vm-foo
 ```
 
-It only reads `vmbackup` status (no cluster changes) and exits once both backups reach `Done=True`.
+It only reads `vmbackup` status (no cluster changes), prints the API-recorded creation-to-`Done` duration and terminal reason, and exits non-zero if either backup has a terminal failure reason.
 
 The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
 
@@ -217,7 +218,7 @@ Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to
 
 ## Known limitations
 
-- Resource names and namespace are fixed; concurrent runs require separate copies with deliberate manifest/script changes.
+- Resource names are derived from a per-run ID, but all runs share the configured namespace and local/RWO storage; `make clean-all` removes every workflow-managed run in that namespace. One checkout's `state/` and report/hash files are shared, so serialize workflows per checkout or use separate repository copies for concurrent runs.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
 - The demo uses local/RWO disks (5 GiB root, 5 GiB full-backup PVC, 3 GiB incremental-backup PVC) and is not production storage or disaster-recovery guidance. The root/full-backup sizes must track the Debian golden image's size, cached once in `vm-cbt-images` and outside `clean-all`'s scope.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.

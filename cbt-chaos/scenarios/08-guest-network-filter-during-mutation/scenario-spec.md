@@ -53,12 +53,11 @@ krknctl run vmi-network-filter \
 **Deterministic condition:** `guest_ssh` in `common.sh` is about to be invoked for the post-full-backup
 guest mutation (i.e. immediately before the append-marker-line step runs).
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4). Since
-this condition is driven by the pipeline script's own execution order rather than a cluster-observable
-state, `chaos-trigger.sh` should be invoked from a wrapper around the pipeline's guest-mutation step
-(or by watching for the `oc port-forward` process `vm-cbt-backup.sh`/`common.sh` spins up for the guest
-SSH session) immediately before that step runs, then fire the `krknctl run vmi-network-filter` command
-from §3.
+**How we watch for it:** `chaos-trigger.sh` starts krknctl before E2E and uses its
+native `--trigger-command` to wait for the full backup's `Done=True` condition.
+The workflow's next deterministic step is the post-full guest mutation, so the
+30-second ingress filter covers the `guest_ssh` append/retry path without
+claiming to be a backup-copy trigger.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

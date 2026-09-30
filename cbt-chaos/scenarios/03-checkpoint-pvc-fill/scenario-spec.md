@@ -17,17 +17,15 @@ identified in the prior 2026-09-29 plan and is the highest-novelty untested fail
 **Primary (krknctl):**
 
 Validated against `krknctl describe pvc-scenarios` / `krknctl run pvc-scenarios --help` (real scenario
-tag is `pvc-scenarios`). Live PVC name observed on <target-host>: `persistent-state-for-vm-cbt-demo-mcp88`
-(`1489Gi`, `cbt-demo-hpp` StorageClass, `Bound`) — **the `-mcp88` hash suffix is generated per VMI
-create/restart and must be re-resolved before each run**, e.g.:
-```bash
-oc get pvc -n vm-cbt-demo -o name | grep persistent-state-for-vm-cbt-demo
-```
+tag is `pvc-scenarios`. `chaos-trigger.sh` resolves the checkpoint PVC from the
+target virt-launcher pod's `persistent-state-for-*` volume, so the generated suffix
+is never hardcoded.
+The target backup is selected with `TARGET_BACKUP=full|incremental`.
 
 ```bash
 krknctl run pvc-scenarios \
   --namespace vm-cbt-demo \
-  --pvc-name persistent-state-for-vm-cbt-demo-mcp88 \
+  --pvc-name <resolved-checkpoint-pvc> \
   --fill-percentage 95 \
   --duration 60 \
   --kubeconfig /path/to/cluster/kubeconfig
@@ -49,9 +47,10 @@ krknctl run pvc-scenarios \
 **Deterministic condition:** `VirtualMachineBackup` created and
 `conditions[?(@.type=="Progressing")].status==True`, i.e. a checkpoint write is in flight.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc get vmbackup <name> -n vm-cbt-demo -o jsonpath='{.status.conditions[?(@.type=="Progressing")].status}'`
-until it reads `True`, then fires the `krknctl run pvc_scenarios` command from §3.
+**How we watch for it:** `chaos-trigger.sh` resolves the current checkpoint PVC
+before starting krknctl, then uses krknctl's native `--trigger-command` to wait for
+the target backup's `Progressing=True` condition. Timeout behavior is `fail`, not
+silent skip.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

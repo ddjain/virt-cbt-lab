@@ -1,6 +1,7 @@
 # KubeVirt CBT VM backup workflow
 
 This guide explains the repository's `make e2e` demonstration: create a VM, write and hash `hello.txt`, take a full backup, append data, take an incremental backup, and verify the CBT result.
+For the component/control-plane, network, storage, checkpoint, and failure-boundary model behind the workflow, see [`docs/cbt-architecture.md`](cbt-architecture.md).
 
 ## What the demo proves
 
@@ -178,7 +179,7 @@ make e2e
 make e2e
 ```
 
-Each invocation creates its own isolated VM/disk/backup/tracker set in the same namespace; nothing needs to be torn down in between. Run `make clean-all` any time to remove every run's resources from the namespace (it finds them by the `app.kubernetes.io/managed-by=virt-cbt-lab` label, so it works correctly with any number of concurrent run sets).
+Each invocation creates its own isolated VM/disk/backup/tracker set in the same namespace; nothing needs to be torn down in between. Run these sequences sequentially from one checkout: `state/run-id`, `state/report-id`, and the guest-hash files are shared local state and concurrent invocations can cross-wire a report. Use separate repository copies for concurrent runs. Run `make clean-all` any time to remove every run's resources from the namespace (it finds them by the `app.kubernetes.io/managed-by=virt-cbt-lab` label).
 
 ## Cleanup
 

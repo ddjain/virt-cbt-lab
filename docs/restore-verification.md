@@ -10,6 +10,7 @@ It gives the full chain of commands and the YAML applied at each stage so you
 can reproduce every step by hand with `oc` and cross-check the automated
 result independently, the same way `validation/e2e-validation-summary-2026-09-29.md`
 independently re-checked the earlier (pre-restore) verification steps.
+The current workflow derives resource names from a run ID. The short names used in some historical command/output examples below are illustrative; for a live run substitute `vm-backup-<run-id>`, `vm-incremental-<run-id>`, `vm-backup-pvc-<run-id>`, `vm-incremental-pvc-<run-id>`, and `vm-restore-verify-<run-id>`. See [`cbt-architecture.md`](cbt-architecture.md) for the current component and storage model.
 
 ## Why this needs a custom approach (read this first)
 
@@ -178,7 +179,7 @@ oc logs pod/hello-restore-verify -n vm-cbt-demo
 ```
 
 Full rendered pod manifest for reference (`manifests/restore-verify-pod.yaml`,
-placeholders already substituted for this demo's fixed resource names):
+placeholders already substituted for an illustrative run):
 
 ```yaml
 apiVersion: v1
