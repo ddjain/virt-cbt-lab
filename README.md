@@ -68,11 +68,19 @@ Supported variables:
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `util-linux`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `GUEST_DATA_SIZE_MB` | No | Size (MiB) of the random payload written to `hello.txt` at setup. Default: `64`. |
 | `GUEST_INCREMENTAL_DATA_SIZE_MB` | No | Size (MiB) of the random payload appended to `hello.txt` before the incremental backup. Default: `32`. |
-| `MANIFEST_VARIANT` | No | `default` (5Gi/5Gi/3Gi PVCs) or `large` (bigger root disk and backup PVCs, for chaos-testing scenarios that need a longer backup-copy window). Default: `default`. |
+| `MANIFEST_VARIANT` | No | `odf` (6Gi/6Gi/4Gi PVCs backed by ODF/Ceph), `default` (5Gi/5Gi/3Gi PVCs on `cbt-demo-hpp`, for clusters without ODF), `large` (bigger root disk and backup PVCs on `cbt-demo-hpp`, for chaos-testing scenarios that need a longer backup-copy window), or `large-odf` (same large sizing, scaled up, on ODF/Ceph). Default: `odf`. |
+
+### ODF-backed variant (default)
+
+`make e2e` defaults to `MANIFEST_VARIANT=odf`, running against `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same shape as the plain demo manifests, but the root disk and both backup PVCs use the `ocs-storagecluster-ceph-rbd` StorageClass instead of `cbt-demo-hpp`, sized 6Gi/6Gi/4Gi instead of 5Gi/5Gi/3Gi. The larger sizing is required, not cosmetic: CDI's clone-time filesystem-overhead reservation inflates the actual root disk past 5Gi, and Ceph RBD enforces PVC capacity strictly, so a flat 5Gi backup-target PVC fails the full backup with `No space left on device` (HPP doesn't enforce capacity as strictly, so the same undersizing is latent there instead of failing). This requires ODF/Ceph already deployed on the cluster (see `docs/odf-setup-plan.md`); `./preflight` checks for `ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp` for this variant. The golden Debian image cache (`manifests/debian-image.yaml`) still lives on `cbt-demo-hpp` regardless of variant, and CDI clones from it into whichever StorageClass the variant selects. The single-node HPP pool is left untouched either way.
+
+### `default` variant (clusters without ODF)
+
+Set `MANIFEST_VARIANT=default` to run against the plain `manifests/vm.yaml`, `manifests/full-backup.yaml`, and `manifests/incremental-backup.yaml` on `cbt-demo-hpp` (5Gi/5Gi/3Gi PVCs), for clusters that don't have ODF deployed.
 
 ### Large-disk variant (chaos testing)
 
-Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) instead of the default demo manifests. This is purely opt-in and does not change default `make e2e` behavior; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage (`cbt-demo-hpp`).
+Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp` instead of the default demo manifests; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage. Set `MANIFEST_VARIANT=large-odf` for the same sizing intent on ODF/Ceph instead — `manifests/vm-large-odf.yaml` (48Gi root disk), `manifests/full-backup-large-odf.yaml` (48Gi PVC), and `manifests/incremental-backup-large-odf.yaml` (30Gi PVC), scaled up with the same capacity margin as the `odf` variant.
 
 Also set `GUEST_DATA_SIZE_MB=8192` and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` — measured on cbt-demo-hpp, this combination produced a ~28s full backup and a ~16s incremental backup (both `Done` conditions timed via `scripts/monitor.sh`). At the default 64/32 MiB payloads, the large manifests still finish in a few seconds, since the copy is fully page-cache-absorbed at that scale; the backing node needs several hundred GB of real disk I/O before it stops being cache-absorbed, so pushing the payload size is what actually produces the delay, not the PVC size alone.
 
