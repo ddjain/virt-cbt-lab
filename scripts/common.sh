@@ -39,6 +39,29 @@ GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
 # shellcheck disable=SC2034
 GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
 
+# Manifest variant to use for the vm/full-backup/incremental-backup
+# resources. "default" is the small/fast demo sizing; "large" swaps in
+# manifests/vm-large.yaml, manifests/full-backup-large.yaml, and
+# manifests/incremental-backup-large.yaml for chaos-testing scenarios that
+# need a sustained, disk-bound backup-copy window (see cbt-chaos/chaos-plan.md).
+# shellcheck disable=SC2034
+MANIFEST_VARIANT="${MANIFEST_VARIANT:-default}"
+if [[ "$MANIFEST_VARIANT" != "default" && "$MANIFEST_VARIANT" != "large" ]]; then
+  printf 'MANIFEST_VARIANT must be "default" or "large" (got: %s)\n' "$MANIFEST_VARIANT" >&2
+  exit 1
+fi
+
+# Resolves a manifest base name (e.g. "vm", "full-backup") to the actual
+# manifest path for the current MANIFEST_VARIANT.
+manifest_path() {
+  local base_name="$1"
+  if [[ "$MANIFEST_VARIANT" == "large" ]]; then
+    printf '%s/manifests/%s-large.yaml' "$ROOT_DIR" "$base_name"
+  else
+    printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
+  fi
+}
+
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   export KUBECONFIG="$KUBECONFIG_PATH"
 fi

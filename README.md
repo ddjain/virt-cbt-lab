@@ -67,6 +67,13 @@ Supported variables:
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img` and `util-linux`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `GUEST_DATA_SIZE_MB` | No | Size (MiB) of the random payload written to `hello.txt` at setup. Default: `64`. |
 | `GUEST_INCREMENTAL_DATA_SIZE_MB` | No | Size (MiB) of the random payload appended to `hello.txt` before the incremental backup. Default: `32`. |
+| `MANIFEST_VARIANT` | No | `default` (5Gi/5Gi/3Gi PVCs) or `large` (bigger root disk and backup PVCs, for chaos-testing scenarios that need a longer backup-copy window). Default: `default`. |
+
+### Large-disk variant (chaos testing)
+
+Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) instead of the default demo manifests. This is purely opt-in and does not change default `make e2e` behavior; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage (`cbt-demo-hpp`).
+
+Also set `GUEST_DATA_SIZE_MB=8192` and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` — measured on cbt-demo-hpp, this combination produced a ~28s full backup and a ~16s incremental backup (both `Done` conditions timed via `scripts/monitor.sh`). At the default 64/32 MiB payloads, the large manifests still finish in a few seconds, since the copy is fully page-cache-absorbed at that scale; the backing node needs several hundred GB of real disk I/O before it stops being cache-absorbed, so pushing the payload size is what actually produces the delay, not the PVC size alone.
 
 
 ## Preflight
@@ -119,6 +126,14 @@ make vm-backup
 make vm-cbt-backup
 make vm-cbt-verify
 ```
+
+To track when the full and incremental backups actually start/finish (and their duration) while `make e2e NAME=foo` is running, run this in another terminal for the same run:
+
+```sh
+make monitor VM=vm-foo
+```
+
+It only reads `vmbackup` status (no cluster changes) and exits once both backups reach `Done=True`.
 
 The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
 

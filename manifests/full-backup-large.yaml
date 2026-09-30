@@ -1,0 +1,51 @@
+# LARGE VARIANT — opt-in via MANIFEST_VARIANT=large (see .env.example).
+# Sized for chaos-testing scenarios needing a sustained (>=15s), disk-bound
+# backup-copy window rather than the fast small-demo path in full-backup.yaml.
+# Not a replacement for the default demo sizing; keep structurally identical
+# to full-backup.yaml (only sizes differ) so scripts/vm-backup.sh's sed
+# pipeline works unchanged. See cbt-chaos/chaos-plan.md for the motivating
+# scenario.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __FULL_BACKUP_PVC__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  storageClassName: cbt-demo-hpp
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 40Gi
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackupTracker
+metadata:
+  name: __TRACKER_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: __VM_NAME__
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackup
+metadata:
+  name: __FULL_BACKUP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: backup.kubevirt.io
+    kind: VirtualMachineBackupTracker
+    name: __TRACKER_NAME__
+  pvcName: __FULL_BACKUP_PVC__

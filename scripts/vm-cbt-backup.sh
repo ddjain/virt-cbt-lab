@@ -55,7 +55,7 @@ workflow_action "Print the new guest file SHA-256 and record it as the expected 
 # is taken, so the incremental backup misses part of the delta.
 guest_mutation_command="
 if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
-  head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 -w0 >> ~/hello.txt
+  head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 >> ~/hello.txt
   printf '\n' >> ~/hello.txt
   printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
@@ -83,7 +83,7 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$ROOT_DIR/manifests/incremental-backup.yaml" | oc_cmd apply -f -
+  "$(manifest_path incremental-backup)" | oc_cmd apply -f -
 workflow_success "Incremental backup request $INCREMENTAL_BACKUP_NAME submitted from tracker $TRACKER_NAME"
 
 workflow_step "4/5 Wait for incremental backup completion"
