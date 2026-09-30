@@ -31,15 +31,16 @@ krknctl run pod-scenarios \
   --kubeconfig /path/to/cluster/kubeconfig
 ```
 
-**Secondary (oc, only if krknctl cannot do this):**
+**Secondary (oc, justified fallback):**
 ```
-# Not needed — pod-scenarios covers a direct pod kill and supports regex name-pattern matching.
+# `hp-volume-*` is shorter-lived than the measured krknctl startup path.
+# chaos-trigger.sh resolves the exact pod by its target PVC and uses:
+oc delete pod "$attachment_pod" -n "$NAMESPACE" --wait=false
 ```
 
-> `--kubeconfig` must point at `/path/to/cluster/kubeconfig` on <target-host>; `krknctl` is not installed on <target-host>
-> itself (confirmed), so run this from a host with `krknctl` and a securely-transferred kubeconfig copy,
-> or install `krknctl` on <target-host> directly. Because the `hp-volume-*` pod is so short-lived, the polling
-> loop in `chaos-trigger.sh` §4 must be tight (sub-second) or this scenario may simply miss the window.
+> krknctl remains the primary command for normal pod disruptions, but this
+> boundary is too short to launch it after detection. The fallback is limited
+> to the exact target attachment pod and confirms deletion before exiting.
 
 > krknctl is first priority. Fall back to `oc` only when documented and justified above.
 
@@ -48,10 +49,10 @@ krknctl run pod-scenarios \
 **Deterministic condition:** `VirtualMachineBackup` CR created and an `hp-volume-*` attachment pod
 exists for the target PVC but is not yet `Running`/`VolumeMountedToPod`.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc get pod -n vm-cbt-demo -l ... --field-selector status.phase!=Running` (or
-watches `oc get events` for the attachment pod's `SuccessfulCreate` event without a following
-`VolumeMountedToPod`), then fires the `krknctl run pod_disruption_scenarios` command from §3.
+**How we watch for it:** `chaos-trigger.sh` uses a tight read-only `oc get pod -o json`
+poll loop to identify the non-Running `hp-volume-*` pod carrying the run's target
+PVC, then issues the documented direct delete fallback. This avoids a second
+krknctl startup after the event and fails if the delete is not confirmed.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

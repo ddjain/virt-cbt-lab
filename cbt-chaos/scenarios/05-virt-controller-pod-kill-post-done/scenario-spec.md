@@ -51,10 +51,12 @@ krknctl run pod-scenarios \
 **Deterministic condition:** `VirtualMachineBackup.status.conditions[?(@.type=="Done")].status` just
 transitioned to `True` (the first observed transition, not a later poll).
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc get vmbackup <name> -n vm-cbt-demo -o
-jsonpath='{.status.conditions[?(@.type=="Done")].status}'` in a tight loop and fires the `krknctl run
-pod_disruption_scenarios` command from §3 on the very first read of `True`.
+**How we watch for it:** `chaos-trigger-v2.sh` starts krknctl before E2E and uses
+its native `--trigger-command` to wait for the first `Done=True` read on the
+run's full or incremental backup. `--triggers-on-timeout fail` prevents a
+missed event from being reported as a successful no-op. The original
+`chaos-trigger.sh` remains as the historical just-in-time implementation used
+by the 05ctrl-0930-1134 report.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 
@@ -76,6 +78,7 @@ Control-plane correctness scenario, not guest-data correctness — no Tier-B res
 ## 7. Reproducibility
 
 All commands from §3 and the watch logic from §4 must be captured in
-`cbt-chaos/scenarios/05-virt-controller-pod-kill-post-done/chaos-trigger.sh` so the scenario can be
-re-run identically in the future. This spec describes intent; the script is the executable source of
-truth for the exact invocation.
+`cbt-chaos/scenarios/05-virt-controller-pod-kill-post-done/chaos-trigger.sh` or its
+versioned replacement `chaos-trigger-v2.sh` so the scenario can be re-run identically in the
+future. This spec describes intent; the active trigger script is the executable source of truth for
+the exact invocation.

@@ -17,15 +17,14 @@ failure, to test whether a slow-but-not-failed copy lets that race produce a rea
 **Primary (krknctl):**
 
 Validated against `krknctl describe storage-throttle` / `krknctl run storage-throttle --help` (real
-scenario tag is `storage-throttle`, not `storage_throttle_scenarios`; `--duration` is a **string** with
-unit suffix, e.g. `30s`, not a bare number; `--namespace` is required with default `default`). Live PVC
-confirmed on <target-host>: `hello-incremental-output` in `vm-cbt-demo`. This scenario auto-resolves the
-mounting pod from `--pvc-name` via a privileged helper pod that applies cgroup throttling.
+scenario tag is `storage-throttle`, not `storage_throttle_scenarios`; `--duration` is a string
+with a unit suffix such as `30s`. The reusable trigger derives
+`vm-incremental-pvc-<RUN_NAME>` and resolves the target pod from that PVC.
 
 ```bash
 krknctl run storage-throttle \
   --namespace vm-cbt-demo \
-  --pvc-name hello-incremental-output \
+  --pvc-name vm-incremental-pvc-<RUN_NAME> \
   --throttle-type iops \
   --write-iops 5 \
   --duration 30s \
@@ -50,9 +49,11 @@ krknctl run storage-throttle \
 **Deterministic condition:** virt-launcher log shows `"Backup started"` for the incremental backup
 name, `Done` not yet `True`.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc logs -f <virt-launcher-pod> -c compute | grep -m1 "Backup started"` for the
-incremental backup name, then fires the `krknctl run storage_throttle_scenarios` command from §3.
+**How we watch for it:** `chaos-trigger.sh` starts krknctl before E2E and uses
+krknctl's native `--trigger-command` to read the target virt-launcher compute log
+for the incremental backup's `"Backup started"` line while `Done` is not `True`.
+The trigger timeout is fail-closed, so a missed live-copy boundary is not reported
+as a successful throttle run.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

@@ -46,10 +46,10 @@ krknctl run node-io-hog \
 **Deterministic condition:** same as scenario 01 — virt-launcher log shows `"Backup started"` for the
 target backup, `Done` not yet `True`.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc logs -f <virt-launcher-pod> -c compute | grep -m1 "Backup started"` for the
-target backup name, resolves the HPP-hosting node name, then fires the `krknctl run hog_scenarios`
-command from §3.
+**How we watch for it:** `chaos-trigger.sh` resolves the HPP/virt-launcher node
+before starting krknctl and uses krknctl's native `--trigger-command` to read
+the target compute log for `"Backup started"` while `Done` is not `True`.
+Timeout is fail-closed, and the script uses the exact `node-io-hog` tag.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 

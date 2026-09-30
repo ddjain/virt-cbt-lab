@@ -34,6 +34,7 @@ declare -A backup_label=(
 )
 declare -A reported_created=()
 declare -A reported_done=()
+failed_backup=0
 
 workflow_step "Watching $NAMESPACE for run $RUN_ID"
 workflow_action "Tracking ${backup_label[$FULL_BACKUP_NAME]} ($FULL_BACKUP_NAME) and ${backup_label[$INCREMENTAL_BACKUP_NAME]} ($INCREMENTAL_BACKUP_NAME)"
@@ -85,6 +86,7 @@ poll_backup() {
 
   reported_done[$backup_name]="$done_time"
   if backup_done_reason_is_failure "$done_reason"; then
+    failed_backup=1
     printf '  ✗ %s (%s) failed after %ss [measured: lastTransitionTime %s - creationTimestamp %s] (reason: %s)\n' \
       "$label" "$backup_name" "$duration_seconds" "$done_time" "$created" "$done_reason" >&2
   else
@@ -106,5 +108,10 @@ while :; do
   fi
   sleep "$POLL_INTERVAL_SECONDS"
 done
+
+if ((failed_backup)); then
+  printf 'One or more backups reached Done=True with a terminal failure reason; see the lines above.\n' >&2
+  exit 1
+fi
 
 workflow_success "Both backups reached Done=True for run $RUN_ID"

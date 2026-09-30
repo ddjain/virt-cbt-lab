@@ -15,20 +15,21 @@ same node's local hostpath storage (`chaos-plan.md` §D).
 
 ## 3. Chaos Injection
 
-**Primary (krknctl): NEEDS VALIDATION (missing credentials, not missing syntax)**
+**Primary (krknctl; credentials required at run time):**
 
-Validated against `krknctl describe node-scenarios` / `krknctl run node-scenarios --help` (real scenario
-tag is `node-scenarios`; `--action node_stop_start_scenario` is confirmed as the actual default enum
-value). Live node hosting virt-launcher confirmed on <target-host>: `<target-node>`. **Critically**,
-`oc get infrastructure cluster -o jsonpath='{.status.platform}'` returns `BareMetal` — this is a
-Scale Lab bare-metal cluster, not a cloud VM cluster, so `--cloud-type` must be `bm`, which in turn
-requires real IPMI/BMC credentials (`--bmc-user`, `--bmc-password`, `--bmc-address`) that are **not**
-available to this investigation and must not be fabricated:
+Validated against `krknctl describe node-scenarios` / `krknctl run node-scenarios --help` (real
+scenario tag is `node-scenarios`; `--action node_stop_start_scenario` and
+`--cloud-type bm` are valid. The reusable script resolves the virt-launcher
+node and targets it with the discriminating
+`--label-selector kubernetes.io/hostname=<target-node>` because this krknctl
+version rejects the `--node-name` validator even though help advertises it.
+Bare-metal stop/start still requires real BMC credentials supplied only through
+the environment:
 
 ```bash
 krknctl run node-scenarios \
   --action node_stop_start_scenario \
-  --node-name <target-node> \
+  --label-selector kubernetes.io/hostname=<target-node> \
   --cloud-type bm \
   --bmc-user <REQUIRES OPERATOR-SUPPLIED IPMI CREDENTIAL — DO NOT COMMIT> \
   --bmc-password <REQUIRES OPERATOR-SUPPLIED IPMI CREDENTIAL — DO NOT COMMIT> \
@@ -55,10 +56,10 @@ krknctl run node-scenarios \
 **Deterministic condition:** same as scenario 01 — virt-launcher log shows `"Backup started"` for the
 target backup, `Done` not yet `True`.
 
-**How we watch for it:** no krknctl `--trigger` mechanism exists (confirmed, see scenario 01 §4).
-`chaos-trigger.sh` polls `oc logs -f <virt-launcher-pod> -c compute | grep -m1 "Backup started"` for the
-target backup name, resolves the hosting node name via `oc get pod ... -o
-jsonpath='{.spec.nodeName}'`, then fires the `krknctl run node_scenarios` command from §3.
+**How we watch for it:** `chaos-trigger.sh` resolves the target node before
+starting krknctl, then uses krknctl's native `--trigger-command` to read the
+target virt-launcher compute log for `"Backup started"` while `Done` is not
+`True`. Trigger timeout is fail-closed. The BMC credentials remain runtime-only.
 
 ## 5. Expected Behavior / Pass-Fail Criteria
 
