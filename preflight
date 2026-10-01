@@ -72,6 +72,10 @@ check_command() {
   [[ -n "$version" ]] && result PASS "$name is available ($version)" || result PASS "$name is available"
 }
 load_dotenv_defaults "$ROOT_DIR/.env"
+VM_OS="${VM_OS:-debian}"
+WINDOWS_ISO_PATH="${WINDOWS_ISO_PATH:-}"
+WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
+if [[ -z "$VM_OS" ]]; then VM_OS=debian; fi
 
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
@@ -81,7 +85,11 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 check_repository() {
   section "Repository"
   [[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
-  for file in scripts/common.sh scripts/dotenv.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml; do
+  local files=(scripts/common.sh scripts/dotenv.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
+  if [[ "$VM_OS" == windows ]]; then
+    files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-incremental-backup.yaml manifests/windows-restore-verify-pod.yaml)
+  fi
+  for file in "${files[@]}"; do
     [[ -f "$ROOT_DIR/$file" ]] && result PASS "$file found" || result FAIL "$file is missing"
   done
 }
@@ -91,10 +99,15 @@ check_cli_tools() {
   check_command bash "install Bash 3.2 or newer"
   check_command make "install make"
   check_command oc "install the OpenShift CLI (oc)"
-  check_command ssh "install an OpenSSH client"
-  check_command ssh-keygen "install OpenSSH client tools"
+  if [[ "$VM_OS" == debian ]]; then
+    check_command ssh "install an OpenSSH client"
+    check_command ssh-keygen "install OpenSSH client tools"
+  else
+    check_command python3 "install Python 3 (answer-file rendering and validation)"
+    check_command curl "install curl (Windows ISO upload)"
+  fi
   check_command jq "install jq (used to build/merge the per-run JSON report)"
-  for command_name in sed mktemp grep sleep kill cat mkdir rm rmdir chmod awk stat; do
+  for command_name in sed mktemp grep sleep kill cat mkdir rm rmdir chmod awk stat tail tr date od; do
     check_command "$command_name" "install the command or restore the standard OS utilities"
   done
   if command -v rsync >/dev/null 2>&1; then
@@ -159,15 +172,44 @@ check_cluster_capabilities() {
       result FAIL "required CRD $crd is unavailable"
     fi
   done
-  local demo_storage_class
-  case "${MANIFEST_VARIANT:-odf}" in
-    odf | large-odf) demo_storage_class="ocs-storagecluster-ceph-rbd" ;;
-    *) demo_storage_class="cbt-demo-hpp" ;;
-  esac
-  if oc get storageclass "$demo_storage_class" >/dev/null 2>"$TMP_DIR/oc-error"; then
-    result PASS "storage class $demo_storage_class is available"
+  if [[ "$VM_OS" == windows ]]; then
+    local storage_class
+    for storage_class in cbt-demo-hpp ocs-storagecluster-ceph-rbd-virtualization ocs-storagecluster-ceph-rbd; do
+      if oc get storageclass "$storage_class" >/dev/null 2>"$TMP_DIR/oc-error"; then
+        result PASS "storage class $storage_class is available"
+      else
+        result FAIL "storage class $storage_class is unavailable"
+      fi
+    done
+    if ! oc get datasource windows-server-2022 -n vm-cbt-images >/dev/null 2>"$TMP_DIR/oc-error"; then
+      local iso_phase
+      iso_phase="$(oc get dv windows-iso -n vm-cbt-images -o 'jsonpath={.status.phase}' 2>"$TMP_DIR/oc-error" || true)"
+      if [[ "$iso_phase" == Succeeded ]]; then
+        result PASS "Windows installer ISO is already staged in vm-cbt-images/windows-iso"
+      else
+        if [[ -n "$WINDOWS_ISO_PATH" && -r "$WINDOWS_ISO_PATH" ]]; then
+          result PASS "Windows Server ISO is readable for first-time golden-image creation"
+        else
+          result FAIL "WINDOWS_ISO_PATH must identify a readable Windows Server 2022 ISO when windows-iso is not Succeeded"
+        fi
+        if oc get route cdi-uploadproxy -n openshift-cnv >/dev/null 2>"$TMP_DIR/oc-error"; then
+          result PASS "CDI uploadproxy route is available for first-time golden-image creation"
+        else
+          result FAIL "CDI uploadproxy route is unavailable"
+        fi
+      fi
+    fi
   else
-    result FAIL "storage class $demo_storage_class is unavailable"
+    local demo_storage_class
+    case "${MANIFEST_VARIANT:-odf}" in
+      odf | large-odf) demo_storage_class="ocs-storagecluster-ceph-rbd" ;;
+      *) demo_storage_class="cbt-demo-hpp" ;;
+    esac
+    if oc get storageclass "$demo_storage_class" >/dev/null 2>"$TMP_DIR/oc-error"; then
+      result PASS "storage class $demo_storage_class is available"
+    else
+      result FAIL "storage class $demo_storage_class is unavailable"
+    fi
   fi
 
   if feature_gates="$(oc get kubevirt -A -o 'jsonpath={range .items[*]}{.spec.configuration.developerConfiguration.featureGates}{"\n"}{end}' 2>"$TMP_DIR/oc-error")" &&
@@ -181,17 +223,47 @@ check_cluster_capabilities() {
   # field, while vm-setup.sh and vm-cbt-verify.sh validate actual CBT state.
   # cbt-demo=enabled remains the label supplied by manifests/vm.yaml.
 
-  for permission in 'create namespaces' 'create virtualmachines' 'create virtualmachinebackups' 'delete namespaces'; do
-    local verb="${permission%% *}" resource="${permission#* }"
-    if oc auth can-i "$verb" "$resource" >/dev/null 2>"$TMP_DIR/oc-error"; then
-      result PASS "permission to $verb $resource is available"
-    else
-      result FAIL "permission to $verb $resource is missing"
-    fi
-  done
+  if [[ "$VM_OS" == windows ]]; then
+    local permission
+    for permission in \
+      'create namespaces' 'create virtualmachines' 'create virtualmachinebackups' \
+      'create virtualmachinebackuptrackers' 'create secrets' 'create rolebindings' \
+      'create datavolumes' 'create datasources' 'create uploadtokenrequests' \
+      'create pods' 'delete virtualmachines' 'delete datavolumes' 'delete secrets' \
+      'delete uploadtokenrequests' 'delete pods' 'patch virtualmachines' 'patch datavolumes'; do
+      local verb="${permission%% *}" resource="${permission#* }"
+      if oc auth can-i "$verb" "$resource" >/dev/null 2>"$TMP_DIR/oc-error"; then
+        result PASS "permission to $verb $resource is available"
+      else
+        result FAIL "permission to $verb $resource is missing"
+      fi
+    done
+  else
+    for permission in 'create namespaces' 'create virtualmachines' 'create virtualmachinebackups' 'delete namespaces'; do
+      local verb="${permission%% *}" resource="${permission#* }"
+      if oc auth can-i "$verb" "$resource" >/dev/null 2>"$TMP_DIR/oc-error"; then
+        result PASS "permission to $verb $resource is available"
+      else
+        result FAIL "permission to $verb $resource is missing"
+      fi
+    done
+  fi
 }
 
 check_guest_ssh() {
+  if [[ "$VM_OS" == windows ]]; then
+    section "Windows VM"
+    if [[ -n "$WINDOWS_ADMIN_PASSWORD_FILE" && -f "$WINDOWS_ADMIN_PASSWORD_FILE" && -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
+      result PASS "Windows admin password file is readable"
+    else
+      result FAIL "WINDOWS_ADMIN_PASSWORD_FILE must name a readable local password file"
+    fi
+    if oc get datasource windows-server-2022 -n vm-cbt-images >/dev/null 2>"$TMP_DIR/oc-error"; then
+      result PASS "cached Windows golden DataSource is ready"
+    fi
+    return
+  fi
+
   section "VM/SSH"
   if [[ -f "$GUEST_KEY" && -r "$GUEST_KEY" ]]; then
     result PASS "guest private key is readable"

@@ -1,0 +1,37 @@
+# Windows golden-image plumbing, cached in the same namespace as
+# debian-image.yaml (vm-cbt-images) so clean-all.sh (which only deletes
+# $NAMESPACE) never removes it. Applied once by
+# scripts/windows-golden-image-setup.sh; the installer VM section is deleted
+# again by that same script once the golden image and DataSource exist.
+#
+# The ISO is staged as a Filesystem-mode PVC (via CDI's upload flow), not the
+# ocs-storagecluster-ceph-rbd-virtualization Block-mode PVC docs/windows-cbt-plan.md
+# originally described: KubeVirt's cdrom disk conversion always builds a
+# qemu "file"-backed disk (relying on a regular file's real stat() size) even
+# when the source PVC is Block-mode, and a Block PVC has no such file --
+# virt-launcher logs "No disk capacity" for it and OVMF's SATA/AHCI boot
+# probe reports the CD-ROM as "Not Found" (confirmed empirically: switching
+# this PVC to Filesystem mode on cbt-demo-hpp fixed the boot failure).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vm-cbt-images
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: windows-iso
+  namespace: vm-cbt-images
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    upload: {}
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 6Gi
+    storageClassName: cbt-demo-hpp
+    volumeMode: Filesystem

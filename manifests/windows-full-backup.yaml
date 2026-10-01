@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __FULL_BACKUP_PVC__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  storageClassName: ocs-storagecluster-ceph-rbd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 48Gi
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackupTracker
+metadata:
+  name: __TRACKER_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: __VM_NAME__
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackup
+metadata:
+  name: __FULL_BACKUP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: backup.kubevirt.io
+    kind: VirtualMachineBackupTracker
+    name: __TRACKER_NAME__
+  pvcName: __FULL_BACKUP_PVC__

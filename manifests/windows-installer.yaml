@@ -1,0 +1,92 @@
+# Temporary Windows Server 2022 installer VM used only to produce the
+# windows-golden clone source; deleted by
+# scripts/windows-golden-image-setup.sh once sysprep completes and the clone
+# finishes. __SYSPREP_SECRET__ holds a runtime-generated autounattend.xml
+# (never committed; contains the Administrator password from
+# WINDOWS_ADMIN_PASSWORD_FILE) and is deleted along with this VM.
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: windows-installer
+  namespace: vm-cbt-images
+  labels:
+    cbt-demo-image-builder: windows
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: windows-installer-disk
+      spec:
+        source:
+          blank: {}
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 40Gi
+          storageClassName: ocs-storagecluster-ceph-rbd-virtualization
+          volumeMode: Block
+  template:
+    metadata:
+      labels:
+        cbt-demo-image-builder: windows
+    spec:
+      evictionStrategy: None
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        resources:
+          requests:
+            memory: 8Gi
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        devices:
+          disks:
+            - name: rootdisk
+              bootOrder: 2
+              disk:
+                bus: sata
+            - name: installermedia
+              bootOrder: 1
+              cdrom:
+                bus: sata
+                readonly: true
+            - name: virtiodrivers
+              cdrom:
+                bus: sata
+                readonly: true
+            - name: sysprep
+              cdrom:
+                bus: sata
+                readonly: true
+          channels:
+            - name: org.qemu.guest_agent.0
+              channel:
+                target:
+                  name: org.qemu.guest_agent.0
+                  type: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: windows-installer-disk
+        - name: installermedia
+          persistentVolumeClaim:
+            claimName: windows-iso
+        - name: virtiodrivers
+          containerDisk:
+            image: "__VIRTIO_IMAGE__"
+        - name: sysprep
+          sysprep:
+            secret:
+              name: __SYSPREP_SECRET__

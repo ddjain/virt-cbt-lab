@@ -6,7 +6,7 @@ load_dotenv_defaults() {
   [[ -r "$file" ]] || return 0
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*(KUBECONFIG_PATH|GUEST_KEY|REMOTE_HOST|REMOTE_DIR)[[:space:]]*= ]] || continue
+    [[ "$line" =~ ^[[:space:]]*(KUBECONFIG_PATH|GUEST_KEY|REMOTE_HOST|REMOTE_DIR|VM_OS|WINDOWS_ISO_PATH|WINDOWS_ADMIN_PASSWORD_FILE)[[:space:]]*= ]] || continue
     key="${BASH_REMATCH[1]}"
     value="${line#*=}"
     value="${value##[[:space:]]}"

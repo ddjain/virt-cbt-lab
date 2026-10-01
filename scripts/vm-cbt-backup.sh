@@ -3,7 +3,9 @@ set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="vm-cbt-backup"
-require_command ssh
+if [[ "$VM_OS" == debian ]]; then
+  require_command ssh
+fi
 load_run_id
 load_report_id
 
@@ -48,26 +50,66 @@ wait_for_full_checkpoint_in_tracker "$full_checkpoint"
 workflow_success "Full backup $FULL_BACKUP_NAME is complete as $full_backup_type; tracker checkpoint recorded"
 
 workflow_step "2/5 Modify guest data after the full checkpoint"
-workflow_action "Port-forward service $SSH_SERVICE and append a ${GUEST_INCREMENTAL_DATA_SIZE_MB}MiB payload plus the idempotent CBT test line to ~/hello.txt"
-workflow_action "Print the new guest file SHA-256 and record it as the expected incremental-backup content"
-# `sync` before the incremental backup runs: without it, the appended data
-# can still be sitting in the guest's page cache when the external snapshot
-# is taken, so the incremental backup misses part of the delta.
-guest_mutation_command="
+if [[ "$VM_OS" == windows ]]; then
+  # shellcheck source=scripts/windows-guest-agent.sh
+  source "$ROOT_DIR/scripts/windows-guest-agent.sh"
+  workflow_action "QEMU Guest Agent PowerShell: append ${GUEST_INCREMENTAL_DATA_SIZE_MB}MiB and the idempotent marker to C:\\cbt-data\\hello.txt"
+  windows_mutation_command="\$ErrorActionPreference = 'Stop'
+\$path = 'C:\cbt-data\hello.txt'
+\$marker = '$CBT_INCREMENTAL_MARKER_LINE'
+if (-not (Select-String -LiteralPath \$path -SimpleMatch -Pattern \$marker -Quiet)) {
+  \$stream = [System.IO.File]::Open(\$path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+  \$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    [long]\$remaining = [long]${GUEST_INCREMENTAL_DATA_SIZE_MB} * 1048576
+    [byte[]]\$buffer = New-Object byte[] 786432
+    while (\$remaining -gt 0) {
+      \$count = [int][Math]::Min(\$buffer.Length, \$remaining)
+      \$rng.GetBytes(\$buffer)
+      \$line = [System.Text.Encoding]::ASCII.GetBytes([Convert]::ToBase64String(\$buffer, 0, \$count) + [Environment]::NewLine)
+      \$stream.Write(\$line, 0, \$line.Length)
+      \$remaining -= \$count
+    }
+    \$markerBytes = [System.Text.Encoding]::ASCII.GetBytes([Environment]::NewLine + \$marker + [Environment]::NewLine)
+    \$stream.Write(\$markerBytes, 0, \$markerBytes.Length)
+    \$stream.Flush(\$true)
+  } finally {
+    \$rng.Dispose()
+    \$stream.Dispose()
+  }
+}
+\$hash = (Get-FileHash -LiteralPath \$path -Algorithm SHA256).Hash.ToLowerInvariant()
+\$size = (Get-Item -LiteralPath \$path).Length
+Write-Output ('SHA256=' + \$hash)
+Write-Output ('SIZE_BYTES=' + \$size)"
+  guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_mutation_command")"
+  guest_hash="$(sed -n 's/^SHA256=//p' <<<"$guest_output" | tr -d '\r' | tail -n1 | tr '[:upper:]' '[:lower:]')"
+  guest_size_bytes="$(sed -n 's/^SIZE_BYTES=//p' <<<"$guest_output" | tr -d '\r' | tail -n1)"
+  if ! [[ "$guest_hash" =~ ^[[:xdigit:]]{64}$ && "$guest_size_bytes" =~ ^[0-9]+$ ]]; then
+    printf 'QEMU Guest Agent did not return a valid Windows guest file hash and size.\n' >&2
+    exit 1
+  fi
+else
+  workflow_action "Port-forward service $SSH_SERVICE and append a ${GUEST_INCREMENTAL_DATA_SIZE_MB}MiB payload plus the idempotent CBT test line to ~/hello.txt"
+  # `sync` before the incremental backup runs: without it, the appended data
+  # can still be sitting in the guest's page cache when the external snapshot
+  # is taken, so the incremental backup misses part of the delta.
+  guest_mutation_command="
 if ! grep -Fqx \"$CBT_INCREMENTAL_MARKER_LINE\" ~/hello.txt; then
   head -c ${GUEST_INCREMENTAL_DATA_SIZE_MB}M /dev/urandom | base64 >> ~/hello.txt
-  printf '\n' >> ~/hello.txt
-  printf '%s\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
+  printf '\\n' >> ~/hello.txt
+  printf '%s\\n' \"$CBT_INCREMENTAL_MARKER_LINE\" >> ~/hello.txt
 fi
 sync
 sha256sum ~/hello.txt
 stat -c 'SIZE_BYTES=%s' ~/hello.txt
 "
-guest_output="$(guest_ssh "$guest_mutation_command")"
+  guest_output="$(guest_ssh "$guest_mutation_command")"
+  guest_hash_line="$(printf '%s\n' "$guest_output" | grep -v '^SIZE_BYTES=')"
+  guest_size_bytes="$(printf '%s\n' "$guest_output" | sed -n 's/^SIZE_BYTES=//p')"
+  guest_hash="$(printf '%s' "$guest_hash_line" | extract_sha256)"
+fi
 printf '%s\n' "$guest_output"
-guest_hash_line="$(printf '%s\n' "$guest_output" | grep -v '^SIZE_BYTES=')"
-guest_size_bytes="$(printf '%s\n' "$guest_output" | sed -n 's/^SIZE_BYTES=//p')"
-guest_hash="$(printf '%s' "$guest_hash_line" | extract_sha256)"
 write_state_file "incremental-backup.sha256" "$guest_hash"
 guest_captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 workflow_success "Guest data changed after checkpoint $full_checkpoint; expected incremental-backup hash recorded in $STATE_DIR"

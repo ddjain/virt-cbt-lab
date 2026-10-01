@@ -31,7 +31,7 @@ The target server needs:
 - The `ocs-storagecluster-ceph-rbd` virtualization storage class for the default `MANIFEST_VARIANT=odf` (see `docs/odf-setup-plan.md`), or `cbt-demo-hpp` with `MANIFEST_VARIANT=default`/`large`.
 - Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org`, so `vm-setup.sh` can import the Debian golden image into `vm-cbt-images` the first time it runs.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq` (builds/merges the per-run JSON report), and access to the local kubeconfig.
-- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
+- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -108,7 +108,7 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 The append is idempotent for retries: the same line is not appended twice.
 
-**ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against `cloud05`: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.
+**ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against the target ODF cluster: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.
 
 **Large-disk variant.** Setting `MANIFEST_VARIANT=large` swaps in `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp`, structurally identical to the plain manifests apart from sizes. `MANIFEST_VARIANT=large-odf` gives the same sizing intent on ODF/Ceph — `manifests/vm-large-odf.yaml` (48Gi), `manifests/full-backup-large-odf.yaml` (48Gi), `manifests/incremental-backup-large-odf.yaml` (30Gi) — scaled up with the same capacity margin as the `odf` variant, for the same reason (CDI overhead + Ceph RBD's strict capacity enforcement). Both are opt-in and do not change default `make e2e` behavior beyond what `MANIFEST_VARIANT` selects.
 
@@ -189,7 +189,17 @@ Each invocation creates its own isolated VM/disk/backup/tracker set in the same 
 make clean-all
 ```
 
-`scripts/clean-all.sh` does **not** delete the namespace. It deletes every VM, DataVolume, VirtualMachineBackup, VirtualMachineBackupTracker, PVC, Service, and Pod labeled `app.kubernetes.io/managed-by=virt-cbt-lab` in `$NAMESPACE`, across all run IDs, and waits for the PVs backing the deleted PVCs to be reclaimed. Unrelated resources in the same namespace are left untouched. It removes the guest SSH key only when the workflow's ownership marker exists, and clears local run state (`state/`). It does **not** uninstall KubeVirt/OpenShift Virtualization or delete the shared `cbt-demo-hpp` storage class and its backing storage.
+`scripts/clean-all.sh` does **not** delete the namespace. It deletes run-labeled VMs, DataVolumes, backups, trackers, PVCs, services, pods, and Windows OOBE Secrets from `$NAMESPACE`, waits for managed PV reclamation, removes only the workflow-owned Debian SSH key, and clears local `state/`. Reports and shared golden images remain. Unrelated namespace resources are preserved.
+
+## Windows VM setup and CBT profile
+
+Run `make windows-vm-setup` first to provision one Windows Server 2022 VM and initialize `C:\cbt-data\hello.txt` over QEMU Guest Agent. If `windows-server-2022` is not cached, setup installs Windows from the Evaluation ISO, installs Python 3.12.4 and the file-writer/SQLite-writer/HTTP-server workloads, registers their SYSTEM startup task, verifies them, removes generated test data, syspreps the disk, and publishes the reusable DataSource in `vm-cbt-images`. The runtime clone is then checked for startup workload continuity before the CBT file is initialized. This is separate from the Debian default and does not require SSH access to Windows.
+
+`WINDOWS_ADMIN_PASSWORD_FILE` must point to a readable, gitignored password
+file on the execution host for the one-time image build and every runtime
+clone; each clone uses it to create a run-scoped OOBE Secret.
+
+After the single-VM setup is validated, run `make e2e VM_OS=windows NAME=windows-cbt-1` for the full Windows CBT workflow. It reuses the existing generic full-backup, tracker, incremental-backup, report, and verification stages; Windows-specific logic covers OOBE, guest mutation, and NTFS restore inspection. The Windows profile requires the ODF virtualization Block class for VM disks and the ODF Filesystem class for backup PVCs. Follow [`docs/windows-server-2022-setup-runbook.md`](windows-server-2022-setup-runbook.md) for the end-to-end setup procedure; this document remains the exact repository workflow reference.
 
 ## Troubleshooting signals
 

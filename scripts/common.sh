@@ -31,6 +31,7 @@ RUN_LABEL_SELECTOR="$RUN_LABEL_MANAGED_BY_KEY=$RUN_LABEL_MANAGED_BY_VALUE"
 CBT_INCREMENTAL_MARKER_LINE="This line was added after the full backup."
 # shellcheck disable=SC2034
 GUEST_HELLO_FILE="/home/$GUEST_USER/hello.txt"
+WINDOWS_GUEST_HELLO_FILE='C:\cbt-data\hello.txt'
 # Sizes (MiB) of the random payload written to the guest file at setup and
 # appended before the incremental backup, so CBT tracks a real block delta
 # instead of a single text line.
@@ -38,6 +39,17 @@ GUEST_HELLO_FILE="/home/$GUEST_USER/hello.txt"
 GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
 # shellcheck disable=SC2034
 GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
+
+# Guest profile. Debian remains the default for backwards compatibility.
+# shellcheck disable=SC2034
+VM_OS="${VM_OS:-debian}"
+case "$VM_OS" in
+  debian | windows) ;;
+  *)
+    printf 'VM_OS must be "debian" or "windows" (got: %s)\n' "$VM_OS" >&2
+    exit 1
+    ;;
+esac
 
 # Manifest variant to use for the vm/full-backup/incremental-backup
 # resources. "odf" (the default) swaps in manifests/vm-odf.yaml,
@@ -61,11 +73,12 @@ case "$MANIFEST_VARIANT" in
     ;;
 esac
 
-# Resolves a manifest base name (e.g. "vm", "full-backup") to the actual
-# manifest path for the current MANIFEST_VARIANT.
+# Resolves a manifest base name to the selected guest profile/size variant.
 manifest_path() {
   local base_name="$1"
-  if [[ "$MANIFEST_VARIANT" == "default" ]]; then
+  if [[ "$VM_OS" == windows ]]; then
+    printf '%s/manifests/windows-%s.yaml' "$ROOT_DIR" "$base_name"
+  elif [[ "$MANIFEST_VARIANT" == "default" ]]; then
     printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
   else
     printf '%s/manifests/%s-%s.yaml' "$ROOT_DIR" "$base_name" "$MANIFEST_VARIANT"

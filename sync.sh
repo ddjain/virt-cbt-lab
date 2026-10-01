@@ -5,7 +5,8 @@ usage() {
   cat <<'USAGE'
 Usage: ./sync.sh [--pull-reports]
 
-Without flags: push the repository to REMOTE_HOST:REMOTE_DIR (default).
+Without flags: push the repository working tree to REMOTE_HOST:REMOTE_DIR.
+The push excludes .env files, local credentials, and generated artifacts.
 --pull-reports: pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/
                 (read-only on the remote; never touches REMOTE_DIR).
 USAGE
@@ -65,12 +66,43 @@ ssh "$REMOTE_HOST" "mkdir -p -- $quoted_remote_dir"
 printf '  ✓ Remote destination is ready.\n' >&2
 
 SYNC_STEP="repository synchronization"
-printf '[sync 2/2] Copy repository files and Git metadata while excluding local secrets.\n' >&2
-printf '  → rsync repository and .git to %s:%s (excluding .env, dotenv variants, and logs)\n' \
+printf '[sync 2/2] Copy working files while excluding local credentials, generated data, and tooling state.\n' >&2
+printf '  → rsync working files to %s:%s (credentials, environment, caches, and .git excluded)\n' \
   "$REMOTE_HOST" "$REMOTE_DIR" >&2
 rsync -a --human-readable --itemize-changes \
   --exclude '/.env' \
+  --include '/.env.example' \
   --exclude '/.env.*' \
   --exclude '*.log' \
+  --exclude '.windows-admin-password' \
+  --exclude 'kubeconfig' \
+  --exclude '*.kubeconfig' \
+  --exclude '.kube/' \
+  --exclude '/.git/' \
+  --exclude '/.DS_Store' \
+  --exclude '/.idea/' \
+  --exclude '/.vscode/' \
+  --exclude '/.agents/' \
+  --exclude '/.claude/' \
+  --exclude '/.pi/' \
+  --exclude '/.serena/' \
+  --exclude '/.omp/' \
+  --exclude '/skills-lock.json' \
+  --exclude '/vm-cbt-demo/' \
+  --exclude '/cbt-chaos/scenarios/*/runs/' \
+  --exclude '*.pem' \
+  --exclude '*.key' \
+  --exclude '*.p12' \
+  --exclude '*.pfx' \
+  --exclude 'id_rsa*' \
+  --exclude 'id_ed25519*' \
+  --exclude '*.iso' \
+  --exclude '/keys/' \
+  --exclude '/state/' \
+  --exclude '/report/' \
+  --exclude '/logs/' \
+  --exclude '/screenshot/' \
+  --exclude '/tmp/' \
+  --exclude '/tmp-*/' \
   "$ROOT_DIR/" "$REMOTE_HOST:$REMOTE_DIR/"
 printf '  ✓ Repository synchronization complete.\n' >&2
