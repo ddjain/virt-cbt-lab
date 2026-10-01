@@ -10,7 +10,10 @@ MANAGED_RESOURCE_KINDS=(vm dv vmbackup vmbackuptracker pod pvc service secret)
 
 workflow_step "1/3 Delete virt-cbt-lab managed resources in namespace $NAMESPACE"
 workflow_action "Recording PVCs labeled $RUN_LABEL_SELECTOR before deletion (for PV reclamation tracking)"
-mapfile -t managed_pvc_names < <(
+managed_pvc_names=()
+while IFS= read -r pvc_name; do
+  [[ -n "$pvc_name" ]] && managed_pvc_names+=("$pvc_name")
+done < <(
   oc_cmd get pvc -n "$NAMESPACE" -l "$RUN_LABEL_SELECTOR" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
 )

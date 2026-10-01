@@ -47,10 +47,14 @@ fi
 
 
 TMP_ANSWER_FILE=
+TMP_CURL_CONFIG=
 cleanup() {
   trap - EXIT INT TERM
   if [[ -n "$TMP_ANSWER_FILE" && -f "$TMP_ANSWER_FILE" ]]; then
     rm -f "$TMP_ANSWER_FILE"
+  fi
+  if [[ -n "$TMP_CURL_CONFIG" && -f "$TMP_CURL_CONFIG" ]]; then
+    rm -f "$TMP_CURL_CONFIG"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -96,10 +100,13 @@ if [[ "$iso_phase" != "Succeeded" ]]; then
   # A successful upload can still end the connection with a 502 (the
   # uploadserver pod tears down immediately after finishing) — the
   # DataVolume's own Succeeded phase, checked below, is the real signal.
+  TMP_CURL_CONFIG="$(mktemp)"
+  chmod 600 "$TMP_CURL_CONFIG"
+  printf 'header = "Authorization: Bearer %s"\n' "$upload_token" > "$TMP_CURL_CONFIG"
   curl -sS -k \
+    --config "$TMP_CURL_CONFIG" \
     -X POST \
     -T "$WINDOWS_ISO_PATH" \
-    -H "Authorization: Bearer $upload_token" \
     "https://$upload_host/v1beta1/upload" || true
   printf '\n' >&2
 
@@ -237,6 +244,8 @@ else
 fi
 workflow_action "oc wait vmi/windows-installer -n $WINDOWS_IMAGES_NAMESPACE --for=condition=AgentConnected --timeout=45m"
 oc_cmd wait vmi/windows-installer -n "$WINDOWS_IMAGES_NAMESPACE" --for=condition=AgentConnected --timeout=45m
+workflow_action "Probe the QEMU Guest Agent socket before guest operations"
+wait_for_guest_agent windows-installer "$WINDOWS_IMAGES_NAMESPACE"
 workflow_success "QEMU Guest Agent is responding inside the installer VM"
 
 # shellcheck source=scripts/windows-guest-agent.sh
