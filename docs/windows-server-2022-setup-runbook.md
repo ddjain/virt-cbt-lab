@@ -99,7 +99,13 @@ The initial-install file is `autounattend.xml`. Runtime clones need the distinct
 
 ### 3.3 Install and verify guest software/workloads
 
-After the guest agent connects, `scripts/windows-golden-image-setup.sh`
+After the guest agent connects, the workflow probes the QEMU agent socket
+before starting guest operations. `AgentConnected=True` is a VMI condition,
+while the agent socket can still be settling during Windows boot; the probe
+closes that readiness gap. During `guest-exec-status` polling, transient agent
+command failures are retried within the existing command timeout.
+
+`scripts/windows-golden-image-setup.sh`
 sources the helper and performs PowerShell guest operations:
 `scripts/windows-guest-agent.sh` locates the VMI's virt-launcher pod, invokes
 `virsh qemu-agent-command` in its `compute` container, transfers temporary

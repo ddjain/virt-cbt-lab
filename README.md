@@ -84,6 +84,7 @@ Set `MANIFEST_VARIANT=default` to run against the plain `manifests/vm.yaml`, `ma
 ## Windows VM setup
 
 `make windows-vm-setup` is the single-VM setup step before running a Windows backup workflow. It runs the Windows preflight, builds the cached Windows Server 2022 golden image if missing, clones a run-scoped VM from `vm-cbt-images/windows-server-2022`, applies a run-scoped OOBE Secret, and waits for CBT and QEMU Guest Agent readiness. The reusable image contains Python 3.12.4 plus file-writer, SQLite-writer, and HTTP-server workloads, started by the `StartWorkloads` SYSTEM startup task. Image creation verifies the workloads, then removes generated log/database data before sysprep. Each runtime clone verifies the startup task, file/SQLite writes, HTTP on port 8080, and three Python processes before initializing `C:\cbt-data\hello.txt`.
+The Windows VM template disables eviction-driven migration for the demo because a migration can interrupt the QEMU Guest Agent while a guest command is running. Runtime startup verification probes the agent socket and retries once if the guest agent drops during the initial Windows boot window.
 
 `WINDOWS_ADMIN_PASSWORD_FILE` must name a readable, local, gitignored password file for the initial image build and every runtime clone; the file must contain exactly one non-empty UTF-8 password line, with no variable-name prefix, quotes, username, or additional lines. Each clone uses it to create a run-scoped OOBE Secret. Set `WINDOWS_ISO_PATH` only if DataVolume `vm-cbt-images/windows-iso` is not already `Succeeded`; the builder reuses a completed ISO upload. `make windows-vm-setup` builds the golden-image cache automatically when needed; `make windows-golden-image` runs that one-time step by itself. The ISO is staged on `cbt-demo-hpp` as a Filesystem PVC because KubeVirt's CD-ROM needs a file-backed volume; the Windows VM disk uses the ODF virtualization Block class. See [`docs/windows-server-2022-setup-runbook.md`](docs/windows-server-2022-setup-runbook.md) for the chronological procedure.
 The installer guest also needs outbound HTTPS access to `www.python.org` to install Python 3.12.4.
@@ -237,7 +238,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 ## Run report
 
-Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`, independent of the resource-naming `RUN_ID`) and later stages append JSON fragments under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges them into `report/<REPORT_ID>/report.json` and collects logs from the run's own VM and restore pod.
+Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a `<run-id>` suffix is added only if another report starts in the same second) and later stages append JSON fragments under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges them into `report/<REPORT_ID>/report.json` and collects logs from the run's own VM and restore pod.
 
 `report.json` contains, per run:
 - `os_profile`: `debian` or `windows`.

@@ -85,6 +85,8 @@ sed \
   "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f -
 workflow_success "Windows VM resources applied in namespace $NAMESPACE"
 
+# shellcheck source=scripts/windows-guest-agent.sh
+source "$ROOT_DIR/scripts/windows-guest-agent.sh"
 workflow_step "4/5 Wait for Windows readiness and confirm CBT and Guest Agent"
 workflow_action "Wait up to 60m for VM/$VM_NAME to reach Ready after OOBE"
 oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=60m >/dev/null
@@ -96,15 +98,24 @@ if [[ "$cbt_state" != Enabled ]]; then
 fi
 workflow_action "Wait for VMI/$VM_NAME QEMU Guest Agent connection"
 oc_cmd wait "vmi/$VM_NAME" -n "$NAMESPACE" --for=condition=AgentConnected --timeout=15m >/dev/null
+workflow_action "Probe the QEMU Guest Agent socket before guest operations"
+wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
 workflow_success "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
 
-# shellcheck source=scripts/windows-guest-agent.sh
-source "$ROOT_DIR/scripts/windows-guest-agent.sh"
 workflow_step "5/5 Verify startup workloads and initialize C:\\cbt-data\\hello.txt"
 workflow_action "Verify Python 3.12.4, file/SQLite writes, HTTP 8080, and the SYSTEM startup task on this clone"
-guest_exec_script "$VM_NAME" "$NAMESPACE" \
+if ! guest_exec_script "$VM_NAME" "$NAMESPACE" \
   "$ROOT_DIR/scripts/windows-workload-verify.ps1" \
-  'C:\Windows\Temp\cbt-workload-verify.ps1'
+  'C:\Windows\Temp\cbt-workload-verify.ps1'; then
+  workflow_action "Retry workload verification after the transient Windows guest-agent failure"
+  wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
+  guest_exec_script "$VM_NAME" "$NAMESPACE" \
+    "$ROOT_DIR/scripts/windows-workload-verify.ps1" \
+    'C:\Windows\Temp\cbt-workload-verify.ps1'
+fi
+
+workflow_action "Probe the QEMU Guest Agent socket before guest-file initialization"
+wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
 
 workflow_action "Use QEMU Guest Agent PowerShell to write a ${GUEST_DATA_SIZE_MB}MiB bounded random payload and flush it to disk"
 windows_setup_command="\$ErrorActionPreference = 'Stop'

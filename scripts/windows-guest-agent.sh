@@ -2,8 +2,14 @@
 # QEMU Guest Agent command transport for the Windows guest. Commands are
 # invoked directly through PowerShell; no SSH service or guest password login
 # is needed after OOBE.
+# Guest-agent connection state can lag the VMI AgentConnected condition during
+# Windows boot. Probe the QEMU socket before issuing guest-file/guest-exec
+# operations, and keep status polling alive across a transient disconnect.
+GUEST_AGENT_READY_INTERVAL=2
+GUEST_AGENT_READY_ATTEMPTS=30
 # shellcheck disable=SC2034
 GUEST_EXEC_POLL_INTERVAL=2
+# shellcheck disable=SC2034
 GUEST_EXEC_POLL_ATTEMPTS=150 # ~5 minutes per command
 
 require_command jq
@@ -33,6 +39,28 @@ qemu_agent_command() {
   domain="${namespace}_${vmi_name}"
   oc_cmd exec -n "$namespace" "$pod" -c compute -- \
     virsh --quiet qemu-agent-command "$domain" "$qmp_json" --timeout 30
+}
+
+guest_agent_probe() {
+  local vmi_name="$1" namespace="$2"
+  qemu_agent_command "$vmi_name" "$namespace" '{"execute":"guest-ping"}' >/dev/null 2>&1
+}
+
+wait_for_guest_agent() {
+  local vmi_name="$1" namespace="$2" attempt
+  for ((attempt = 1; attempt <= GUEST_AGENT_READY_ATTEMPTS; attempt++)); do
+    if guest_agent_probe "$vmi_name" "$namespace"; then
+      return 0
+    fi
+    if (( attempt == 1 || attempt % 5 == 0 )); then
+      printf 'QEMU Guest Agent socket is not ready for %s/%s (attempt %d/%d); retrying.\n' \
+        "$namespace" "$vmi_name" "$attempt" "$GUEST_AGENT_READY_ATTEMPTS" >&2
+    fi
+    sleep "$GUEST_AGENT_READY_INTERVAL"
+  done
+  printf 'QEMU Guest Agent socket did not become ready for %s/%s after %d attempts.\n' \
+    "$namespace" "$vmi_name" "$GUEST_AGENT_READY_ATTEMPTS" >&2
+  return 1
 }
 guest_file_write() {
   local vmi_name="$1" namespace="$2" guest_path="$3" contents="$4"
@@ -89,8 +117,8 @@ guest_exec_start() {
     '{execute:"guest-exec",arguments:{path:"powershell.exe",arg:["-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-Command",$command],"capture-output":true}}')"
   exec_reply="$(qemu_agent_command "$vmi_name" "$namespace" "$exec_request")"
   pid="$(printf '%s' "$exec_reply" | jq -r '.return.pid // empty')"
-  if [[ -z "$pid" ]]; then
-    printf 'guest-exec did not return a pid. Reply: %s\n' "$exec_reply" >&2
+  if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
+    printf 'guest-exec did not return a numeric pid. Reply: %s\n' "$exec_reply" >&2
     return 1
   fi
   printf '%s' "$pid"
@@ -100,19 +128,26 @@ guest_exec_start() {
 # sysprep shut down Windows without requiring the guest agent to stay online.
 guest_exec_wait() {
   local vmi_name="$1" namespace="$2" pid="$3"
-  local status_request status_reply exited=false exitcode out_b64 err_b64 attempt
+  local status_request status_reply='' exited=false exitcode out_b64 err_b64 attempt
   status_request="$(jq -nc --argjson pid "$pid" \
     '{execute:"guest-exec-status",arguments:{pid:$pid}}')"
   for ((attempt = 1; attempt <= GUEST_EXEC_POLL_ATTEMPTS; attempt++)); do
-    status_reply="$(qemu_agent_command "$vmi_name" "$namespace" "$status_request")"
-    exited="$(printf '%s' "$status_reply" | jq -r '.return.exited // false')"
-    if [[ "$exited" == true ]]; then
-      break
+    if status_reply="$(qemu_agent_command "$vmi_name" "$namespace" "$status_request" 2>/dev/null)"; then
+      exited="$(printf '%s' "$status_reply" | jq -r '.return.exited // false')"
+      if [[ "$exited" == true ]]; then
+        break
+      fi
+    else
+      exited=false
+      if (( attempt == 1 || attempt % 5 == 0 )); then
+        printf 'QEMU Guest Agent status query failed for pid %s (attempt %d/%d); retrying.\n' \
+          "$pid" "$attempt" "$GUEST_EXEC_POLL_ATTEMPTS" >&2
+      fi
     fi
     sleep "$GUEST_EXEC_POLL_INTERVAL"
   done
   if [[ "$exited" != true ]]; then
-    printf 'guest-exec timed out waiting for pid %s to exit.\n' "$pid" >&2
+    printf 'guest-exec timed out waiting for pid %s to exit; the QEMU Guest Agent may have disconnected.\n' "$pid" >&2
     return 1
   fi
   exitcode="$(printf '%s' "$status_reply" | jq -r '.return.exitcode // -1')"

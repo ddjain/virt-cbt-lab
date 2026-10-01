@@ -73,6 +73,21 @@ case "$MANIFEST_VARIANT" in
     ;;
 esac
 
+validate_positive_integer() {
+  local variable_name="$1" value="$2"
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s must be a positive integer (got: %s)\n' "$variable_name" "$value" >&2
+    exit 1
+  fi
+}
+
+if ! [[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || ((${#NAMESPACE} > 63)); then
+  printf 'NAMESPACE must be a DNS-1123 namespace name of at most 63 characters (got: %s)\n' "$NAMESPACE" >&2
+  exit 1
+fi
+validate_positive_integer GUEST_DATA_SIZE_MB "$GUEST_DATA_SIZE_MB"
+validate_positive_integer GUEST_INCREMENTAL_DATA_SIZE_MB "$GUEST_INCREMENTAL_DATA_SIZE_MB"
+
 # Resolves a manifest base name to the selected guest profile/size variant.
 manifest_path() {
   local base_name="$1"
@@ -171,10 +186,26 @@ new_run_id() {
   if [[ -n "${RUN_ID:-}" ]]; then
     # NAME (passed through `make e2e NAME=foo`) must be DNS-1123-safe since
     # it flows straight into Kubernetes resource names.
-    if ! [[ "$RUN_ID" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-      printf '[vm-cbt] NAME must be lowercase alphanumeric with internal hyphens (got: %s).\n' "$RUN_ID" >&2
+    if ! [[ "$RUN_ID" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+       ((${#RUN_ID} > 40)); then
+      printf '[vm-cbt] NAME must be lowercase alphanumeric with internal hyphens and at most 40 characters (got: %s).\n' "$RUN_ID" >&2
       exit 1
     fi
+    set_resource_names
+    local resource kind
+    for resource in \
+      "$VM_NAME:vm" "$DV_NAME:dv" "$SSH_SERVICE:service" \
+      "$TRACKER_NAME:vmbackuptracker" "$FULL_BACKUP_NAME:vmbackup" \
+      "$FULL_BACKUP_PVC_NAME:pvc" "$INCREMENTAL_BACKUP_NAME:vmbackup" \
+      "$INCREMENTAL_BACKUP_PVC_NAME:pvc"; do
+      kind="${resource##*:}"
+      resource="${resource%:*}"
+      if oc_cmd get "$kind" "$resource" -n "$NAMESPACE" >/dev/null 2>&1; then
+        printf '[vm-cbt] Run ID %s already owns or conflicts with %s/%s in namespace %s; choose another NAME or clean the existing run.\n' \
+          "$RUN_ID" "$kind" "$resource" "$NAMESPACE" >&2
+        exit 1
+      fi
+    done
     printf '[vm-cbt] Using assigned run ID: %s\n' "$RUN_ID" >&2
   else
     local adjective noun tag
@@ -185,9 +216,9 @@ new_run_id() {
     tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
     RUN_ID="${adjective}-${noun}-${tag}"
     printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
+    set_resource_names
   fi
   printf '%s' "$RUN_ID" > "$RUN_ID_FILE"
-  set_resource_names
 }
 
 # Load the run ID persisted by new_run_id (or an explicitly exported RUN_ID)
@@ -203,20 +234,20 @@ load_run_id() {
   set_resource_names
 }
 
-# Generate one new report ID (UTC timestamp, human-sortable) and persist it
-# so every later script invocation in the same E2E run appends to the same
-# report/<REPORT_ID>/ directory. Kept separate from RUN_ID so the fixed
-# Kubernetes resource-naming contract never changes.
+# Generate one new report ID (UTC timestamp, with a run-ID suffix only when
+# another report started in the same second already exists) and persist it so
+# every later script invocation in the same E2E run appends to the same report.
 new_report_id() {
   mkdir -p "$STATE_DIR"
   REPORT_ID="run_$(date -u +%Y%m%dT%H%M%SZ)"
+  if [[ -e "$REPORT_ROOT_DIR/$REPORT_ID" ]]; then
+    REPORT_ID="${REPORT_ID}_${RUN_ID}"
+  fi
   printf '%s' "$REPORT_ID" > "$REPORT_ID_FILE"
   REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
   mkdir -p "$REPORT_DIR/fragments"
   printf '[vm-cbt] New report ID: %s\n' "$REPORT_ID" >&2
 }
-
-# Load the report ID persisted by new_report_id for scripts that must append
 # to an already-created run's report.
 load_report_id() {
   if [[ -z "${REPORT_ID:-}" ]]; then

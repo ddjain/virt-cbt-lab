@@ -37,6 +37,7 @@ spec:
         app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
         virt-cbt-lab/run-id: __RUN_ID__
     spec:
+      evictionStrategy: None
       domain:
         cpu:
           cores: 4
