@@ -1,0 +1,83 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: __VM_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    cbt-demo: enabled
+    app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+    virt-cbt-lab/run-id: __RUN_ID__
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: __DV_NAME__
+        labels:
+          app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+          virt-cbt-lab/run-id: __RUN_ID__
+        annotations:
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: windows-server-2022
+          namespace: vm-cbt-images
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 40Gi
+          storageClassName: ocs-storagecluster-ceph-rbd-virtualization
+          volumeMode: Block
+  template:
+    metadata:
+      labels:
+        cbt-demo: enabled
+        app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+        virt-cbt-lab/run-id: __RUN_ID__
+    spec:
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        resources:
+          requests:
+            memory: 8Gi
+        machine:
+          type: q35
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: sata
+            - name: sysprep
+              cdrom:
+                bus: sata
+                readonly: true
+          channels:
+            - name: org.qemu.guest_agent.0
+              channel:
+                target:
+                  name: org.qemu.guest_agent.0
+                  type: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: __DV_NAME__
+        - name: sysprep
+          sysprep:
+            secret:
+              name: __OOBE_SECRET__

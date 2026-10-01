@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    cbt-demo-restore-verify: "true"
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: full-backup
+      persistentVolumeClaim:
+        claimName: __FULL_PVC__
+        readOnly: true
+    - name: incremental-backup
+      persistentVolumeClaim:
+        claimName: __INCREMENTAL_PVC__
+        readOnly: true
+    - name: work
+      emptyDir: {}
+    - name: host-dev
+      hostPath:
+        path: /dev
+        type: Directory
+  containers:
+    - name: restore-verify
+      image: __HELPER_IMAGE__
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: full-backup
+          mountPath: /backups/full
+          readOnly: true
+        - name: incremental-backup
+          mountPath: /backups/incremental
+          readOnly: true
+        - name: work
+          mountPath: /work
+        - name: host-dev
+          mountPath: /dev
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -euo pipefail
+
+          # The Windows guest path is C:\cbt-data\hello.txt.  Once the
+          # NTFS volume is mounted, ntfs-3g/ntfs3 exposes it here.
+          hello_file="/cbt-data/hello.txt"
+          marker_line="__MARKER_LINE__"
+          active_loop=""
+          active_mount=""
+
+          cleanup_mount_and_loop() {
+            if [[ -n "${active_mount:-}" ]]; then
+              umount "$active_mount" >/dev/null 2>&1 || true
+              active_mount=""
+            fi
+            if [[ -n "${active_loop:-}" ]]; then
+              losetup -d "$active_loop" >/dev/null 2>&1 || true
+              active_loop=""
+            fi
+          }
+
+          cleanup() {
+            local status=$?
+            trap - EXIT
+            set +e
+            cleanup_mount_and_loop
+            exit "$status"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          full_qcow2="$(find /backups/full -type f -iname '*.qcow2' -print -quit 2>/dev/null || true)"
+          incremental_qcow2="$(find /backups/incremental -type f -iname '*.qcow2' -print -quit 2>/dev/null || true)"
+          if [[ -z "$full_qcow2" || ! -r "$full_qcow2" ]]; then
+            printf 'ERROR: no readable qcow2 image found under /backups/full\n' >&2
+            exit 1
+          fi
+          if [[ -z "$incremental_qcow2" || ! -r "$incremental_qcow2" ]]; then
+            printf 'ERROR: no readable qcow2 image found under /backups/incremental\n' >&2
+            exit 1
+          fi
+
+          if ! qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw; then
+            printf 'ERROR: failed to convert the full qcow2 image to raw\n' >&2
+            exit 1
+          fi
+
+          cp "$incremental_qcow2" /work/incremental.qcow2
+          if ! qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2; then
+            printf 'ERROR: failed to rebase the incremental qcow2 image onto the full image\n' >&2
+            exit 1
+          fi
+          if ! qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw; then
+            printf 'ERROR: failed to convert the rebased incremental image to raw\n' >&2
+            exit 1
+          fi
+
+          extract_ntfs_file() {
+            trap cleanup EXIT
+            local raw_image="$1" output_file="$2"
+            local loop_dev partition partition_size=0
+            local candidate size fstype type mounted_file mount_dir
+
+            if [[ ! -r "$raw_image" ]]; then
+              printf 'ERROR: raw restore image is missing or unreadable: %s\n' "$raw_image" >&2
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "$output_file")"
+            mount_dir="${output_file}.mount"
+            mkdir -p "$mount_dir"
+            loop_dev="$(losetup -fP --show "$raw_image")" || {
+              printf 'ERROR: could not attach raw restore image with losetup: %s\n' "$raw_image" >&2
+              exit 1
+            }
+            active_loop="$loop_dev"
+            udevadm settle --timeout=5 >/dev/null 2>&1 || sleep 1
+
+            # Read only non-empty lsblk columns here. An empty FSTYPE field
+            # collapses under shell IFS and would shift TYPE out of position.
+            # blkid supplies the filesystem type when lsblk has not populated it.
+            while read -r candidate size type; do
+              [[ "$type" == "part" ]] || continue
+              fstype="$(lsblk -no FSTYPE "$candidate" 2>/dev/null || true)"
+              if [[ "${fstype,,}" != ntfs* ]]; then
+                fstype="$(blkid -o value -s TYPE "$candidate" 2>/dev/null || true)"
+              fi
+              [[ "${fstype,,}" == ntfs* ]] || continue
+              if [[ -z "${partition:-}" || "$size" -gt "$partition_size" ]]; then
+                partition="$candidate"
+                partition_size="$size"
+              fi
+            done < <(lsblk -bpnro NAME,SIZE,TYPE "$loop_dev" 2>/dev/null || true)
+
+            if [[ -z "${partition:-}" ]]; then
+              printf 'ERROR: no NTFS partition found in raw restore image: %s\n' "$raw_image" >&2
+              exit 1
+            fi
+
+            # ntfs3 is preferred when the node kernel provides it; fall back
+            # to the userspace ntfs-3g driver from the helper image.
+            active_mount="$mount_dir"
+            if ! mount -t ntfs3 -o ro "$partition" "$mount_dir"; then
+              if ! ntfs-3g -o ro "$partition" "$mount_dir"; then
+                printf 'ERROR: could not mount NTFS partition read-only: %s\n' "$partition" >&2
+                exit 1
+              fi
+            fi
+
+            mounted_file="$mount_dir$hello_file"
+            if [[ ! -f "$mounted_file" ]]; then
+              printf 'ERROR: target file %s is missing from NTFS restore %s\n' "$hello_file" "$raw_image" >&2
+              exit 1
+            fi
+            # cat copies the original bytes; marker line normalization is
+            # intentionally done later, only for marker detection.
+            if ! cat "$mounted_file" > "$output_file"; then
+              printf 'ERROR: could not read target file %s from %s\n' "$hello_file" "$raw_image" >&2
+              exit 1
+            fi
+            cleanup_mount_and_loop
+            printf '%s\n' "$output_file"
+          }
+
+          has_marker() {
+            local file="$1" line
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              # PowerShell may write CRLF; remove only that line terminator
+              # for comparison and never modify the bytes being hashed.
+              line="${line%$'\r'}"
+              [[ "$line" == "$marker_line" ]] && return 0
+            done < "$file"
+            return 1
+          }
+
+          full_hello_path="$(extract_ntfs_file /work/full.raw /work/full-extract/hello.txt)"
+          combined_hello_path="$(extract_ntfs_file /work/combined.raw /work/combined-extract/hello.txt)"
+          full_hash="$(sha256sum "$full_hello_path" | awk '{print $1}')"
+          combined_hash="$(sha256sum "$combined_hello_path" | awk '{print $1}')"
+
+          full_has_marker=no
+          has_marker "$full_hello_path" && full_has_marker=yes
+          combined_has_marker=no
+          has_marker "$combined_hello_path" && combined_has_marker=yes
+
+          printf 'FULL_HASH=%s\n' "$full_hash"
+          printf 'COMBINED_HASH=%s\n' "$combined_hash"
+          printf 'FULL_HAS_MARKER=%s\n' "$full_has_marker"
+          printf 'COMBINED_HAS_MARKER=%s\n' "$combined_has_marker"

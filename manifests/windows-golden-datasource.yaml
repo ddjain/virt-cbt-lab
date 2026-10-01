@@ -1,0 +1,52 @@
+# Applied once by scripts/windows-golden-image-setup.sh after sysprep
+# completes and the installer VM is stopped: clones its root disk into the
+# cached windows-golden image and publishes the windows-server-2022
+# DataSource, mirroring manifests/debian-image.yaml's debian DataSource.
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: windows-golden
+  namespace: vm-cbt-images
+  annotations:
+    cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+spec:
+  source:
+    pvc:
+      name: windows-installer-disk
+      namespace: vm-cbt-images
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 40Gi
+    storageClassName: ocs-storagecluster-ceph-rbd-virtualization
+    volumeMode: Block
+---
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataSource
+metadata:
+  name: windows-server-2022
+  namespace: vm-cbt-images
+spec:
+  source:
+    pvc:
+      name: windows-golden
+      namespace: vm-cbt-images
+---
+# Grants vm-cbt-demo's default service account permission to clone from this
+# namespace, mirroring debian-image.yaml's vm-cbt-demo-clone-source binding
+# (idempotent if that RoleBinding already exists — same name, same subject).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-cbt-demo-clone-source
+  namespace: vm-cbt-images
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: __NAMESPACE__
+roleRef:
+  kind: ClusterRole
+  name: cdi.kubevirt.io:clone-sourcer
+  apiGroup: rbac.authorization.k8s.io

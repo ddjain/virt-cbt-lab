@@ -6,7 +6,7 @@ WORKFLOW_NAME="clean-all"
 
 # Every resource kind an E2E run can create directly (VM/DataVolume owned
 # child resources like the root PVC cascade-delete with the VM).
-MANAGED_RESOURCE_KINDS=(vm dv vmbackup vmbackuptracker pod pvc service)
+MANAGED_RESOURCE_KINDS=(vm dv vmbackup vmbackuptracker pod pvc service secret)
 
 workflow_step "1/3 Delete virt-cbt-lab managed resources in namespace $NAMESPACE"
 workflow_action "Recording PVCs labeled $RUN_LABEL_SELECTOR before deletion (for PV reclamation tracking)"

@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.windows-admin-password
 *.pem
 *.key
 *.p12
@@ -22,6 +23,7 @@ vm-cbt-demo/
 logs/
 tmp/
 tmp-*/
+/screenshot/
 # CBT generated run artifacts
 /cbt-chaos/scenarios/*/runs/
 
