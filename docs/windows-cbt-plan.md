@@ -66,7 +66,7 @@ Use the existing `vm-cbt-images` cache namespace so the Windows image survives `
 
 ### ISO staging (implemented; Filesystem PVC supersedes the original Block-PVC plan)
 
-The target environment has ODF Block storage, but KubeVirt's CD-ROM conversion requires a regular file-backed volume. A Block-mode ISO PVC produced `"No disk capacity"` and UEFI reported the DVD as `Not Found`, despite a verified upload. The tested fix is a **Filesystem-mode** DataVolume on `cbt-demo-hpp`, which provides the regular `disk.img` file expected by the CD-ROM. See [`windows-golden-image-progress.md`](windows-golden-image-progress.md).
+The target environment has ODF Block storage, but KubeVirt's CD-ROM conversion requires a regular file-backed volume. A Block-mode ISO PVC produced `"No disk capacity"` and UEFI reported the DVD as `Not Found`, despite a verified upload. The tested fix is a **Filesystem-mode** DataVolume on `cbt-demo-hpp`, which provides the regular `disk.img` file expected by the CD-ROM. See [`windows-server-2022-setup-runbook.md`](windows-server-2022-setup-runbook.md) for the procedure and troubleshooting details.
 
 Implemented as `manifests/windows-image.yaml` + `scripts/windows-golden-image-setup.sh`:
 
