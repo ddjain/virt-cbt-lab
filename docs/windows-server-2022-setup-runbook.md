@@ -30,8 +30,31 @@ Run Make targets on a host with the target kubeconfig and the repository checkou
 Copy `.env.example` to `.env`, then configure:
 
 - `WINDOWS_ADMIN_PASSWORD_FILE`: readable, gitignored file containing one non-empty password line. Required for the first image build **and every runtime clone**, because each clone needs an unattended OOBE Secret. Keep the file mode restricted; never put the password in `.env`, manifests, command-line arguments, or logs.
+
 - `WINDOWS_ISO_PATH`: local path to a Windows Server 2022 Evaluation ISO, required only if `vm-cbt-images/windows-iso` is not already `Succeeded`. The ISO is about 5.04 GB; keep it outside Git and the repository sync payload.
 - `RESTORE_HELPER_IMAGE`: for full E2E restore verification, a pushed image built from `images/restore-helper/Dockerfile`. It must provide `qemu-img`, `util-linux`, and `ntfs-3g`; the restore pod requires privileged access and a host `/dev` mount for loop devices.
+
+The password file is plain UTF-8 text with exactly one password and one
+trailing newline. Do not include `WINDOWS_ADMIN_PASSWORD=`, quotes, a username,
+or any additional lines. Create it without placing the password in shell
+history:
+
+```sh
+umask 077
+read -r -s -p "Windows Administrator password: " WINDOWS_ADMIN_PASSWORD
+printf '\n'
+printf '%s\n' "$WINDOWS_ADMIN_PASSWORD" > .windows-admin-password
+unset WINDOWS_ADMIN_PASSWORD
+```
+
+Set the matching path in `.env`:
+
+```text
+WINDOWS_ADMIN_PASSWORD_FILE=.windows-admin-password
+```
+
+The setup scripts reject an empty file or embedded newline characters and read
+the password without printing it.
 
 Do not reuse the historical setup's passwords, `hostpath-csi`, or `localblock-sc` assumptions. The password is rendered at runtime into a Kubernetes Secret; tracked answer-file templates contain placeholders only.
 
