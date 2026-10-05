@@ -21,15 +21,15 @@ Use the QEMU Guest Agent for Windows guest operations instead of SSH. This match
 
   ```text
   vm-setup
-    -> write/hash hello.txt
+    -> create baseline file workload and manifest
   vm-backup
     -> full backup + tracker checkpoint
   vm-cbt-backup
-    -> append data and marker
+    -> add incremental files and extend manifest
     -> incremental backup
   vm-cbt-verify
     -> API checks
-    -> qemu-img restore and guest-file hash checks
+    -> qemu-img restore and exact file-set manifest checks
   ```
 
 - Historical reference:
@@ -188,8 +188,9 @@ The Windows setup script should:
 6. Wait for QEMU Guest Agent connectivity.
 7. Verify Python 3.12.4, the `StartWorkloads` SYSTEM task, file writes, SQLite
    rows, HTTP 200 on `localhost:8080`, and three Python processes.
-8. Use PowerShell through QEMU Guest Agent to create `C:\cbt-data\hello.txt`.
-9. Record its SHA-256 and size in the existing state/report format.
+8. Use PowerShell through QEMU Guest Agent to create the baseline workload in
+   `C:\cbt-data\workload`.
+9. Record every relative path, size, and SHA-256 in the run's workload manifest.
 
 ## Phase 4: Full and incremental backup flow
 
@@ -207,24 +208,19 @@ Require `Done=True`, inspect the terminal reason, require `.status.type == Full`
 
 ### Guest mutation
 
-Add a Windows guest-agent helper. Do not duplicate generic backup orchestration.
+The existing Windows guest-agent stage adds the deterministic file set. It reuses the generic backup orchestration rather than duplicating it.
 
-The PowerShell mutation should:
+The CBT workload is separate from the startup file/SQLite/HTTP services and is
+created under `C:\cbt-data\workload`. Create M new files after the full
+checkpoint using the same deterministic naming/content rules and inclusive
+per-file size range as the baseline. Flush guest writes and extend
+`report/<REPORT_ID>/workload-manifest.json` with their sizes and hashes before
+requesting the incremental backup.
 
-1. Check whether the marker already exists.
-2. Append a payload to `C:\cbt-data\hello.txt`.
-3. Append the exact marker:
-
-   ```text
-   This line was added after the full backup.
-   ```
-
-4. Flush the Windows volume.
-5. Calculate the post-mutation SHA-256.
-6. Record the hash and file size.
-7. Remain idempotent if retried.
-
-Generate payload data in bounded PowerShell chunks rather than relying on Linux tools such as `/dev/urandom`, `base64`, `sync`, or `sha256sum`.
+Retries retain an existing addition only when its size and SHA-256 match the
+deterministic payload, create missing additions, and fail on unexpected names or
+changed contents. The manifest records baseline and combined file counts,
+payload-byte totals, per-file SHA-256 values, and canonical hashes.
 
 ### Incremental backup
 
@@ -258,19 +254,19 @@ The Windows restore helper must:
 1. Attach each raw image with `losetup -P`.
 2. Select the largest NTFS partition.
 3. Mount it read-only using `ntfs3` or `ntfs-3g`.
-4. Read `cbt-data/hello.txt`.
-5. Calculate hashes for the full-only and full-plus-incremental restores.
-6. Confirm the marker is absent from the full-only restore.
-7. Confirm the marker is present in the combined restore.
-8. Unmount and detach loop devices using cleanup traps.
+4. Inventory regular files under `cbt-data/workload`.
+5. Compare count, total payload bytes, and the canonical file manifest against
+   the baseline for the full restore and N+M combined manifest for the combined
+   restore.
+6. Unmount and detach loop devices using cleanup traps.
 
 The NTFS helper parses only non-empty `lsblk` columns (`NAME,SIZE,TYPE`) and
 queries filesystem type separately with `lsblk`/`blkid`; reading an empty
 `FSTYPE` column in a shell `read` tuple can shift `TYPE` and hide NTFS.
 
-The helper image includes `ntfs-3g` for Windows restore mounts; keep the ext4 path intact for Debian.
-
-PowerShell-created files may contain CRLF line endings. Normalize line endings only for marker detection; hash comparisons must use the original bytes.
+The helper image includes `ntfs-3g` for Windows restore mounts; keep the ext4
+path intact for Debian. The manifest hashes file bytes as stored; it does not
+normalize line endings.
 
 ## Planned repository changes
 
@@ -348,8 +344,8 @@ Run from the workstation or admin host configured with the target kubeconfig:
 
 1. Transfer and hash the ISO if the `windows-server-2022` DataSource is absent.
 2. Stage the ISO as a Filesystem PVC and confirm `disk.img` is present.
-3. Run `make windows-vm-setup`; it builds the cache if needed, installs and syspreps Windows, then creates one runtime VM and initializes `C:\cbt-data\hello.txt`.
-4. Confirm CBT is `Enabled`, the QEMU Guest Agent is connected, and the guest file hash is recorded.
+3. Run `make windows-vm-setup`; it builds the cache if needed, installs and syspreps Windows, then creates one runtime VM and initializes the baseline file workload.
+4. Confirm CBT is `Enabled`, the QEMU Guest Agent is connected, and the baseline manifest is recorded.
 
 ### E2E validation
 
@@ -372,11 +368,9 @@ Acceptance criteria:
 - incremental backup reports `type=Incremental`, `Done=True`;
 - checkpoints are present and distinct;
 - tracker equals the incremental checkpoint;
-- full-only restore hash equals the pre-mutation hash;
-- full-only restore lacks the marker;
-- combined restore hash equals the post-mutation hash;
-- combined restore contains the marker;
-- `report.json` records the Windows profile, hashes, checkpoints, and restore checks.
+- full-only restore count and manifest match the N-file baseline;
+- combined restore count and manifest match the N+M file set;
+- `report.json` records workload counts, byte totals, manifest hashes, checkpoints, and restore checks.
 
 ### Cleanup validation
 

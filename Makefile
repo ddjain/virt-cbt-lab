@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 -include .env
 
-export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_DATA_SIZE_MB GUEST_INCREMENTAL_DATA_SIZE_MB MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS
+export KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS
 
 ifeq ($(strip $(VM_OS)),)
 VM_OS := debian
@@ -18,14 +18,17 @@ endif
 # Optional fixed run name instead of the default random one.
 NAME ?=
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e help
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync help
 
 preflight:
 	@printf '[make] [1/1] Preflight: check local tools and cluster access for VM_OS=%s (read-only).\n' "$(VM_OS)"
 	@./preflight
 
+sync:
+	@./sync.sh
+
 vm-setup:
-	@printf '[make] [1/1] VM setup (%s): create the CBT-enabled VM and initialize guest data.\n' "$(VM_OS)"
+	@printf '[make] [1/1] VM setup (%s): create the CBT-enabled VM and initialize the baseline file workload.\n' "$(VM_OS)"
 	@./$(VM_SETUP_SCRIPT)
 
 vm-backup:
@@ -79,9 +82,9 @@ windows-e2e:
 help:
 	@printf '%s\n' \
 	  'make preflight           Check the local tools and cluster prerequisites for VM_OS (read-only).' \
-	  'make vm-setup            Create the selected guest VM and write/hash its hello.txt file.' \
+	  'make vm-setup            Create the selected guest VM and its baseline deterministic file workload.' \
 	  'make vm-backup           Take the full VM backup.' \
-	  'make vm-cbt-backup       Append to hello.txt, print its hash, and take an incremental backup.' \
+	  'make vm-cbt-backup       Add deterministic workload files and take an incremental backup.' \
 	  'make vm-cbt-verify       Verify CBT and full/incremental backup status, then run the restore test.' \
 	  'make vm-cbt-restore-test Reconstruct the guest disk from the backups and verify its data (runs within vm-cbt-verify).' \
 	  'make vm-cbt-demo         Run the complete workflow.' \
@@ -90,9 +93,8 @@ help:
 	  'make monitor VM=vm-foo   Watch the full/incremental backups for a run (read-only); run alongside make e2e NAME=foo.' \
 	  'make e2e VM_OS=windows   Run the Windows Server 2022 CBT E2E profile.' \
 	  'make windows-e2e        Alias for make e2e VM_OS=windows.' \
-	  'make windows-vm-setup   Clone a Windows VM, verify startup workloads, and initialize C:\cbt-data\hello.txt.' \
-	  'make windows-golden-image  One-time: install Windows, configure workloads, and cache the golden DataSource.' \
-	  'sync.sh                  Copy the repository to REMOTE_HOST:REMOTE_DIR.' \
-	  'sync.sh --pull-reports   Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
+	  'make windows-vm-setup   Clone a Windows VM, verify startup workloads, and initialize the baseline file workload.' \
+	  'make sync               Copy working files to REMOTE_HOST:REMOTE_DIR using sync.sh.' \
+	  'sync.sh --pull-reports  Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
 	  'Prerequisites: OpenShift Virtualization, CBT APIs, and profile-specific storage classes (Windows requires ODF).'

@@ -26,19 +26,21 @@ RUN_LABEL_MANAGED_BY_VALUE="virt-cbt-lab"
 RUN_LABEL_RUN_ID_KEY="virt-cbt-lab/run-id"
 # shellcheck disable=SC2034
 RUN_LABEL_SELECTOR="$RUN_LABEL_MANAGED_BY_KEY=$RUN_LABEL_MANAGED_BY_VALUE"
-# Guest mutation used to prove the incremental backup carries real changes.
+# Workload directories are exclusive to the CBT file-set verification.
 # shellcheck disable=SC2034
-CBT_INCREMENTAL_MARKER_LINE="This line was added after the full backup."
+LINUX_GUEST_WORKLOAD_DIR="/home/$GUEST_USER/cbt-workload"
 # shellcheck disable=SC2034
-GUEST_HELLO_FILE="/home/$GUEST_USER/hello.txt"
-WINDOWS_GUEST_HELLO_FILE='C:\cbt-data\hello.txt'
-# Sizes (MiB) of the random payload written to the guest file at setup and
-# appended before the incremental backup, so CBT tracks a real block delta
-# instead of a single text line.
+WINDOWS_GUEST_WORKLOAD_DIR='C:\cbt-data\workload'
+# Guest setup/mutation file counts and inclusive whole-MiB payload range.
+# Default deterministic assignments total 55 MiB baseline and 33 MiB incremental.
 # shellcheck disable=SC2034
-GUEST_DATA_SIZE_MB="${GUEST_DATA_SIZE_MB:-64}"
+GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
 # shellcheck disable=SC2034
-GUEST_INCREMENTAL_DATA_SIZE_MB="${GUEST_INCREMENTAL_DATA_SIZE_MB:-32}"
+GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
+# shellcheck disable=SC2034
+GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
+# shellcheck disable=SC2034
+GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
 
 # Guest profile. Debian remains the default for backwards compatibility.
 # shellcheck disable=SC2034
@@ -50,6 +52,15 @@ case "$VM_OS" in
     exit 1
     ;;
 esac
+# shellcheck disable=SC2034
+if [[ "$VM_OS" == windows ]]; then
+  GUEST_WORKLOAD_DIR="$WINDOWS_GUEST_WORKLOAD_DIR"
+  RESTORE_WORKLOAD_MOUNT_DIR="/cbt-data/workload"
+else
+  GUEST_WORKLOAD_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+  RESTORE_WORKLOAD_MOUNT_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+fi
+
 
 # Manifest variant to use for the vm/full-backup/incremental-backup
 # resources. "odf" (the default) swaps in manifests/vm-odf.yaml,
@@ -85,8 +96,15 @@ if ! [[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || ((${#NAMESPACE} > 
   printf 'NAMESPACE must be a DNS-1123 namespace name of at most 63 characters (got: %s)\n' "$NAMESPACE" >&2
   exit 1
 fi
-validate_positive_integer GUEST_DATA_SIZE_MB "$GUEST_DATA_SIZE_MB"
-validate_positive_integer GUEST_INCREMENTAL_DATA_SIZE_MB "$GUEST_INCREMENTAL_DATA_SIZE_MB"
+validate_positive_integer GUEST_BASE_FILE_COUNT "$GUEST_BASE_FILE_COUNT"
+validate_positive_integer GUEST_INCREMENTAL_FILE_COUNT "$GUEST_INCREMENTAL_FILE_COUNT"
+validate_positive_integer GUEST_FILE_SIZE_MIN_MIB "$GUEST_FILE_SIZE_MIN_MIB"
+validate_positive_integer GUEST_FILE_SIZE_MAX_MIB "$GUEST_FILE_SIZE_MAX_MIB"
+if ((GUEST_FILE_SIZE_MAX_MIB < GUEST_FILE_SIZE_MIN_MIB)); then
+  printf 'GUEST_FILE_SIZE_MAX_MIB must be at least GUEST_FILE_SIZE_MIN_MIB (got %s < %s).\n' \
+    "$GUEST_FILE_SIZE_MAX_MIB" "$GUEST_FILE_SIZE_MIN_MIB" >&2
+  exit 1
+fi
 
 # Resolves a manifest base name to the selected guest profile/size variant.
 manifest_path() {

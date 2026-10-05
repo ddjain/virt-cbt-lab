@@ -12,9 +12,9 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 For the component, network, storage, checkpoint, source-code, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
-- `vm-setup.sh` imports the cached Debian image and creates a Debian VM with SSH; `windows-vm-setup.sh` reuses the Windows golden DataSource, attaches a run-scoped OOBE Secret, and initializes `C:\cbt-data\hello.txt` through QEMU Guest Agent.
+- `vm-setup.sh` imports the cached Debian image and creates a Debian VM with SSH; `windows-vm-setup.sh` reuses the Windows golden DataSource, attaches a run-scoped OOBE Secret, and initializes a run-scoped file workload through QEMU Guest Agent.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
-- `vm-cbt-backup.sh` waits for the tracker checkpoint, changes `hello.txt`, creates the incremental backup, and checks its type.
+- `vm-cbt-backup.sh` waits for the tracker checkpoint, adds new deterministic workload files, creates the incremental backup, and checks its type.
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`, then merges every stage's fragment into the run's `report.json`.
 - `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and incremental backup PVCs and verifies its actual data — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and how to independently cross-check it.
 - `clean-all.sh` removes workflow-managed resources, including per-run Windows OOBE Secrets, from the shared namespace and only the guest key marked as workflow-managed.
@@ -26,7 +26,7 @@ The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The clu
 ## Prerequisites
 
 Local tools:
-- Bash 3.2 or newer for the core workflow; `make monitor` requires Bash 4+ because it uses associative arrays. Also require Make, `oc`, and `jq`; Debian setup additionally requires `ssh` and `ssh-keygen`. Windows setup requires `python3`, and first-time golden-image creation also requires `curl`.
+- Bash 3.2 or newer for the core workflow; `make monitor` requires Bash 4+ because it uses associative arrays. Also require Make, `oc`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for workload manifests; Debian setup additionally requires `ssh` and `ssh-keygen`. Windows setup requires `python3`, and first-time golden-image creation also requires `curl`.
 - A readable kubeconfig and permission to create/delete the demo resources.
 
 Cluster resources:
@@ -63,12 +63,13 @@ Supported variables:
 |---|---:|---|
 | `KUBECONFIG_PATH` | No | Kubeconfig path; otherwise `KUBECONFIG` or the `oc` default is used. |
 | `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
-| `REMOTE_HOST` | For `sync.sh` | SSH host or alias used for synchronization. |
-| `REMOTE_DIR` | For `sync.sh` | Destination directory on that host. |
+| `REMOTE_HOST` | For `make sync` | SSH host or alias used for synchronization. |
+| `REMOTE_DIR` | For `make sync` | Destination directory on that host. |
 | `VM_OS` | No | Guest profile for `make e2e`: `debian` (default) or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
-| `GUEST_DATA_SIZE_MB` | No | Size (MiB) of the random payload written to the guest test file at setup. Default: `64`. |
-| `GUEST_INCREMENTAL_DATA_SIZE_MB` | No | Size (MiB) of the random payload appended before the incremental backup. Default: `32`. |
+| `GUEST_BASE_FILE_COUNT` | No | Number of deterministic files created before the full backup. Default: `8`. |
+| `GUEST_INCREMENTAL_FILE_COUNT` | No | Number of new files added before the incremental backup. Default: `4`. |
+| `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | Inclusive whole-MiB size range for each file. Defaults: `4` and `12`. The selected sizes and SHA-256 hashes are recorded in the run manifest. |
 | `MANIFEST_VARIANT` | No | Debian manifest set: `odf`, `default`, `large`, or `large-odf`; Windows uses fixed ODF storage sizing. Default: `odf`. |
 | `WINDOWS_ISO_PATH` | If the ISO is not already staged | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
 | `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Local, gitignored file containing the Administrator password; never committed or logged. |
@@ -83,7 +84,7 @@ Set `MANIFEST_VARIANT=default` to run against the plain `manifests/vm.yaml`, `ma
 
 ## Windows VM setup
 
-`make windows-vm-setup` is the single-VM setup step before running a Windows backup workflow. It runs the Windows preflight, builds the cached Windows Server 2022 golden image if missing, clones a run-scoped VM from `vm-cbt-images/windows-server-2022`, applies a run-scoped OOBE Secret, and waits for CBT and QEMU Guest Agent readiness. The reusable image contains Python 3.12.4 plus file-writer, SQLite-writer, and HTTP-server workloads, started by the `StartWorkloads` SYSTEM startup task. Image creation verifies the workloads, then removes generated log/database data before sysprep. Each runtime clone verifies the startup task, file/SQLite writes, HTTP on port 8080, and three Python processes before initializing `C:\cbt-data\hello.txt`.
+`make windows-vm-setup` is the single-VM setup step before running a Windows backup workflow. It runs the Windows preflight, builds the cached Windows Server 2022 golden image if missing, clones a run-scoped VM from `vm-cbt-images/windows-server-2022`, applies a run-scoped OOBE Secret, and waits for CBT and QEMU Guest Agent readiness. The reusable image contains Python 3.12.4 plus file-writer, SQLite-writer, and HTTP-server workloads, started by the `StartWorkloads` SYSTEM startup task. Image creation verifies the workloads, then removes generated log/database data before sysprep. Each runtime clone verifies the startup task, file/SQLite writes, HTTP on port 8080, and three Python processes before initializing its CBT workload under `C:\cbt-data\workload`.
 The Windows VM template disables eviction-driven migration for the demo because a migration can interrupt the QEMU Guest Agent while a guest command is running. Runtime startup verification probes the agent socket and retries once if the guest agent drops during the initial Windows boot window.
 
 `WINDOWS_ADMIN_PASSWORD_FILE` must name a readable, local, gitignored password file for the initial image build and every runtime clone; the file must contain exactly one non-empty UTF-8 password line, with no variable-name prefix, quotes, username, or additional lines. Each clone uses it to create a run-scoped OOBE Secret. Set `WINDOWS_ISO_PATH` only if DataVolume `vm-cbt-images/windows-iso` is not already `Succeeded`; the builder reuses a completed ISO upload. `make windows-vm-setup` builds the golden-image cache automatically when needed; `make windows-golden-image` runs that one-time step by itself. The ISO is staged on `cbt-demo-hpp` as a Filesystem PVC because KubeVirt's CD-ROM needs a file-backed volume; the Windows VM disk uses the ODF virtualization Block class. See [`docs/windows-server-2022-setup-runbook.md`](docs/windows-server-2022-setup-runbook.md) for the chronological procedure.
@@ -93,8 +94,7 @@ The installer guest also needs outbound HTTPS access to `www.python.org` to inst
 
 Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp` instead of the default demo manifests; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage. Set `MANIFEST_VARIANT=large-odf` for the same sizing intent on ODF/Ceph instead — `manifests/vm-large-odf.yaml` (48Gi root disk), `manifests/full-backup-large-odf.yaml` (48Gi PVC), and `manifests/incremental-backup-large-odf.yaml` (30Gi PVC), scaled up with the same capacity margin as the `odf` variant.
 
-Also set `GUEST_DATA_SIZE_MB=8192` and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` — measured on cbt-demo-hpp, this combination produced a ~28s full backup and a ~16s incremental backup (both `Done` conditions timed via `scripts/monitor.sh`). At the default 64/32 MiB payloads, the large manifests still finish in a few seconds, since the copy is fully page-cache-absorbed at that scale; the backing node needs several hundred GB of real disk I/O before it stops being cache-absorbed, so pushing the payload size is what actually produces the delay, not the PVC size alone.
-
+For a Debian chaos-test starting point, run `make e2e MANIFEST_VARIANT=large GUEST_BASE_FILE_COUNT=8 GUEST_INCREMENTAL_FILE_COUNT=11 GUEST_FILE_SIZE_MIN_MIB=512 GUEST_FILE_SIZE_MAX_MIB=1536`. The current deterministic file-name assignment totals 8511 MiB baseline and 12858 MiB incremental. These are payload totals, not timing measurements; confirm the actual window with `scripts/monitor.sh`. Do not assume this preset fits the Windows root disk without checking available capacity.
 
 ## Preflight
 
@@ -230,10 +230,11 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── manifests/            # Debian golden image, VM, full-backup, incremental-backup, and restore-verify pod resources
 ├── scripts/              # Workflow implementation and shared helpers
 │   ├── dotenv.sh         # Safe parser for supported .env values
-│   └── restore-lib.sh    # Restore-verification pod orchestration
-├── state/                # Guest hashes recorded at backup time (gitignored, created at runtime)
-├── report/               # Per-run JSON reports and run-owned pod logs (gitignored, created at runtime, survives clean-all)
-└── sync.sh               # Optional remote synchronization helper
+│   ├── restore-lib.sh    # Restore-verification pod orchestration
+│   └── workload-manifest.sh # Deterministic file plans and run manifests
+├── state/                # Transient run IDs (gitignored, created at runtime)
+├── report/               # Per-run manifests, JSON reports, and run-owned pod logs (gitignored; survives clean-all)
+└── sync.sh               # Remote synchronization helper, exposed as make sync
 ```
 
 ## Run report
@@ -242,10 +243,10 @@ Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a `<run-id>` suffi
 
 `report.json` contains, per run:
 - `os_profile`: `debian` or `windows`.
-- `guest.full_backup` / `guest.incremental_backup`: guest file path, size, SHA-256, and capture time for both backup points.
+- `guest.workload`: directory, per-file size range, baseline and incremental file counts, payload byte totals, and the path to the run's `workload-manifest.json`.
 - `backups.full` / `backups.incremental`: backup name, type, checkpoint name, backup PVC name/requested size/actual capacity, and (when available) the VM's recorded backup start/end timestamps and completion status.
 - `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
-- `verification.checks`: CBT/checkpoint/PVC checks plus full-only and full+incremental restore hash and marker checks.
+- `verification.checks`: CBT/checkpoint/PVC checks plus full-only and combined restore file counts, byte totals, and manifest-hash comparisons.
 - `logs`: relative paths to the collected `virt-launcher` and restore-pod logs.
 
 Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to remain as a debugging record across runs. Inspect it with `jq . report/run_*/report.json` or diff two runs' `report.json` files to compare outcomes. Log collection is best-effort and only covers pods the run itself creates (the VM's `virt-launcher` pod and the short-lived restore-verify pod); it does not collect cluster component logs (KubeVirt/CDI operators, node agents, etc.).

@@ -44,8 +44,21 @@ spec:
       args:
         - |
           set -euo pipefail
-          hello_file="__HELLO_FILE__"
-          marker_line="__MARKER_LINE__"
+          workload_dir="__WORKLOAD_DIR__"
+          active_loop=""
+          active_mount=""
+
+          cleanup_restore() {
+            local status=$?
+            trap - EXIT
+            set +e
+            if [[ -n "$active_mount" ]]; then umount "$active_mount" >/dev/null 2>&1; fi
+            if [[ -n "$active_loop" ]]; then losetup -d "$active_loop" >/dev/null 2>&1; fi
+            exit "$status"
+          }
+          trap cleanup_restore EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
 
           full_qcow2="$(find /backups/full -name '*.qcow2' | head -n1)"
           incremental_qcow2="$(find /backups/incremental -name '*.qcow2' | head -n1)"
@@ -60,61 +73,64 @@ spec:
           echo "FULL_QCOW2=$full_qcow2"
           echo "INCREMENTAL_QCOW2=$incremental_qcow2"
 
-          # Full backup alone: convert straight to raw.
           qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw
-
-          # Full + incremental: rebase the overlay onto the full image, then
-          # convert the reconstructed chain to raw.
           cp "$incremental_qcow2" /work/incremental.qcow2
           qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2
           qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw
 
-          # Extract the guest file by mounting the raw disk's ext4 root
-          # filesystem directly via a loop device (Debian's genericcloud
-          # image uses ext4, which every helper image can mount natively).
-          extract_hello_file() {
-            local raw_image="$1" out_dir="$2"
-            local loop_dev part mount_dir found
+          inspect_workload() {
+            local raw_image="$1" label="$2" loop_dev part mount_dir mounted_dir entries entry name size_bytes sha256 record
+            local file_count=0 total_bytes=0 manifest_rows=""
             loop_dev="$(losetup -fP --show "$raw_image")"
+            active_loop="$loop_dev"
             udevadm settle --timeout=5 2>/dev/null || sleep 1
-            # Skip the first line (the whole loop device itself), then pick
-            # the largest remaining partition (the root filesystem) rather
-            # than just the last one, since partition count/order can vary.
             part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
-            mount_dir="$out_dir/mnt"
+            if [[ -z "$part" ]]; then
+              echo "ERROR: could not find the ext4 root partition in $raw_image" >&2
+              return 1
+            fi
+            mount_dir="/work/${label,,}-mount"
             mkdir -p "$mount_dir"
             mount -o ro "$part" "$mount_dir"
-            found="$(find "$mount_dir" -type f -name "$(basename "$hello_file")" | head -n1)"
-            if [[ -n "$found" ]]; then
-              mkdir -p "$out_dir/extract"
-              cp "$found" "$out_dir/extract/"
-              found="$out_dir/extract/$(basename "$hello_file")"
+            active_mount="$mount_dir"
+            mounted_dir="$mount_dir$workload_dir"
+            if [[ ! -d "$mounted_dir" ]]; then
+              echo "ERROR: workload directory $workload_dir is missing from $label restore" >&2
+              return 1
             fi
+            entry="$(find "$mounted_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+            if [[ -n "$entry" ]]; then
+              echo "ERROR: unexpected non-file workload entry in $label restore: $entry" >&2
+              return 1
+            fi
+            entries="$(find "$mounted_dir" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)"
+            while IFS= read -r entry; do
+              [[ -n "$entry" ]] || continue
+              name="${entry##*/}"
+              if [[ ! "$name" =~ ^(base|incremental)-[0-9]{6}[.]dat$ ]]; then
+                echo "ERROR: unexpected workload filename in $label restore: $name" >&2
+                return 1
+              fi
+              size_bytes="$(stat -c '%s' "$entry")"
+              sha256="$(sha256sum "$entry" | awk '{print $1}')"
+              printf -v record '%s\t%s\t%s\n' "$name" "$size_bytes" "$sha256"
+              manifest_rows+="$record"
+              file_count=$((file_count + 1))
+              total_bytes=$((total_bytes + size_bytes))
+            done <<< "$entries"
+            if ((file_count == 0)); then
+              echo "ERROR: workload directory is empty in $label restore" >&2
+              return 1
+            fi
+            sha256="$(printf '%s' "$manifest_rows" | sha256sum | awk '{print $1}')"
             umount "$mount_dir"
+            active_mount=""
             losetup -d "$loop_dev"
-            printf '%s' "$found"
+            active_loop=""
+            printf '%s_WORKLOAD_FILE_COUNT=%s\n' "$label" "$file_count"
+            printf '%s_WORKLOAD_PAYLOAD_BYTES=%s\n' "$label" "$total_bytes"
+            printf '%s_WORKLOAD_MANIFEST_SHA256=%s\n' "$label" "$sha256"
           }
 
-          full_hello_path="$(extract_hello_file /work/full.raw /work/full-extract)"
-          combined_hello_path="$(extract_hello_file /work/combined.raw /work/combined-extract)"
-          if [[ -z "$full_hello_path" ]]; then
-            echo "ERROR: could not locate $hello_file in the full-only restore" >&2
-            exit 1
-          fi
-          if [[ -z "$combined_hello_path" ]]; then
-            echo "ERROR: could not locate $hello_file in the full+incremental restore" >&2
-            exit 1
-          fi
-
-          full_hash="$(sha256sum "$full_hello_path" | awk '{print $1}')"
-          combined_hash="$(sha256sum "$combined_hello_path" | awk '{print $1}')"
-
-          full_has_marker=no
-          if grep -Fqx "$marker_line" "$full_hello_path"; then full_has_marker=yes; fi
-          combined_has_marker=no
-          if grep -Fqx "$marker_line" "$combined_hello_path"; then combined_has_marker=yes; fi
-
-          echo "FULL_HASH=$full_hash"
-          echo "COMBINED_HASH=$combined_hash"
-          echo "FULL_HAS_MARKER=$full_has_marker"
-          echo "COMBINED_HAS_MARKER=$combined_has_marker"
+          inspect_workload /work/full.raw FULL
+          inspect_workload /work/combined.raw COMBINED

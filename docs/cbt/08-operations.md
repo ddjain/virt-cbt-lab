@@ -49,7 +49,7 @@ For a valid incremental result, check all of:
 - both checkpoint names are present and different;
 - tracker latest checkpoint equals the incremental checkpoint;
 - the Done reason is not a terminal `Backup has failed...` reason;
-- restore hashes and marker checks pass.
+- full-only and combined restore counts, payload bytes, and workload manifest hashes pass.
 
 ## Deep inspection for CBT and chaos tests
 

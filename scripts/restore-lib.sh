@@ -42,8 +42,7 @@ run_restore_verify_pod() {
     -e "s|__FULL_PVC__|$full_pvc|g" \
     -e "s|__INCREMENTAL_PVC__|$incremental_pvc|g" \
     -e "s|__HELPER_IMAGE__|$RESTORE_HELPER_IMAGE|g" \
-    -e "s|__HELLO_FILE__|$GUEST_HELLO_FILE|g" \
-    -e "s|__MARKER_LINE__|$CBT_INCREMENTAL_MARKER_LINE|g" \
+    -e "s|__WORKLOAD_DIR__|$RESTORE_WORKLOAD_MOUNT_DIR|g" \
     -e "s|__RUN_ID__|$RUN_ID|g" \
     -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
     -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \

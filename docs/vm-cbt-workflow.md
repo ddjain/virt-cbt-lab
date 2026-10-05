@@ -1,11 +1,11 @@
 # KubeVirt CBT VM backup workflow
 
-This guide explains the repository's `make e2e` demonstration: create a VM, write and hash `hello.txt`, take a full backup, append data, take an incremental backup, and verify the CBT result.
+This guide explains the repository's `make e2e` demonstration: create a VM, write a deterministic baseline file set and manifest, take a full backup, add files, take an incremental backup, and verify both restored file sets.
 For the component/control-plane, network, storage, checkpoint, and failure-boundary model behind the workflow, see the [modular CBT knowledgebase](cbt/README.md), starting with [`cbt-architecture.md`](cbt-architecture.md). The [chaos-test design](cbt/10-chaos-test-design.md) page maps lifecycle boundaries to injection and verification points.
 
 ## What the demo proves
 
-Changed Block Tracking (CBT) records changed virtual-disk blocks. The guest file is the workload used to cause a disk change; CBT operates on the VM disk, not on `hello.txt` by name.
+Changed Block Tracking (CBT) records changed virtual-disk blocks. The workload files cause disk changes; CBT operates on the VM disk, not on guest filenames.
 
 The demo proves the flow end to end by checking that:
 
@@ -30,7 +30,7 @@ The target server needs:
 - The `IncrementalBackup` feature gate.
 - The `ocs-storagecluster-ceph-rbd` virtualization storage class for the default `MANIFEST_VARIANT=odf` (see `docs/odf-setup-plan.md`), or `cbt-demo-hpp` with `MANIFEST_VARIANT=default`/`large`.
 - Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org`, so `vm-setup.sh` can import the Debian golden image into `vm-cbt-images` the first time it runs.
-- Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq` (builds/merges the per-run JSON report), and access to the local kubeconfig.
+- Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for the per-run workload manifest, plus access to the local kubeconfig.
 - For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
 
 Run the scripts on a server where the kubeconfig is available. Set
@@ -80,7 +80,7 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/run-id`, then applies `manifests/vm.yaml`, which creates namespace `$NAMESPACE` (if missing) and the run's VM (`vm-<run-id>`) and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
 4. Creates a root `DataVolume` from the `debian` `DataSource` — 6 GiB on `ocs-storagecluster-ceph-rbd` for the default `MANIFEST_VARIANT=odf`, or 5 GiB on `cbt-demo-hpp` under `MANIFEST_VARIANT=default`. This must stay larger than the golden image's size; a target smaller than the source fails the clone. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`. The golden image itself (`manifests/debian-image.yaml`) always stays on `cbt-demo-hpp` regardless of variant; CDI clones across StorageClasses without issue.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, writes `Hello from the VM CBT demo.` followed by a `GUEST_DATA_SIZE_MB` (default 64) MiB random payload to `/home/cbt-demo/hello.txt`, prints its SHA-256 hash, and records that hash to `state/full-backup.sha256` (this is the content the full backup will contain, since no guest mutation happens before `make vm-backup` runs). The larger payload gives CBT a realistic block delta to track rather than a single text line.
+6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file and records the baseline file list, sizes, and hashes in `report/<REPORT_ID>/workload-manifest.json` before the full backup.
 
 All later steps (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`) read the run ID back from `state/run-id` rather than generating a new one, so they operate on the same run's resources. Deleting or overwriting `state/run-id` between steps of one E2E run breaks the chain; `make clean-all` removes it along with the rest of the local run state.
 
@@ -102,17 +102,17 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 1. Confirms the full backup completed as `Full`.
 2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
-3. Appends a `GUEST_INCREMENTAL_DATA_SIZE_MB` (default 32) MiB random payload followed by `This line was added after the full backup.` to `hello.txt` if that exact line is not already present, prints the new SHA-256 hash, and records it to `state/incremental-backup.sha256` (the content the full+incremental restore must reproduce).
+3. Adds `GUEST_INCREMENTAL_FILE_COUNT` (default 4) new, deterministic files in the same directory, verifies that the baseline still matches the manifest, and extends that manifest with the added files. All writes are flushed before the incremental backup.
 4. Applies `manifests/incremental-backup.yaml`, creating the `vm-incremental-pvc-<run-id>` PVC (3 GiB, sized for the delta only) and `vm-incremental-<run-id>` backup, both labeled with the run's ownership labels. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
 
-The append is idempotent for retries: the same line is not appended twice.
+File names, sizes, and bytes are stable across retries. Existing incremental files are retained only if their sizes and hashes match the deterministic payload; missing files are created, and unexpected or changed files fail before the incremental backup.
 
 **ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against the target ODF cluster: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.
 
 **Large-disk variant.** Setting `MANIFEST_VARIANT=large` swaps in `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp`, structurally identical to the plain manifests apart from sizes. `MANIFEST_VARIANT=large-odf` gives the same sizing intent on ODF/Ceph — `manifests/vm-large-odf.yaml` (48Gi), `manifests/full-backup-large-odf.yaml` (48Gi), `manifests/incremental-backup-large-odf.yaml` (30Gi) — scaled up with the same capacity margin as the `odf` variant, for the same reason (CDI overhead + Ceph RBD's strict capacity enforcement). Both are opt-in and do not change default `make e2e` behavior beyond what `MANIFEST_VARIANT` selects.
 
-By itself, a bigger disk does not widen the live block-copy window (`cbt-chaos/chaos-plan.md`): a page-cache-absorbed copy on a node with hundreds of GB of free RAM finishes a 64/32 MiB payload in a few seconds regardless of PVC size. What actually widens the window is a correspondingly large `GUEST_DATA_SIZE_MB`/`GUEST_INCREMENTAL_DATA_SIZE_MB`. Measured with `scripts/monitor.sh` on cbt-demo-hpp: `GUEST_DATA_SIZE_MB=8192` gave a ~28s full backup, and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` gave a ~16s incremental backup — both comfortably past a 15s target for chaos scenarios to land mid-copy. Duration scaled roughly linearly with incremental payload size in the 4-12GiB range tested (4096→~6s, 8192→~11s, 12288→~16s), so further tuning can extrapolate from those points rather than guessing.
+By itself, a bigger disk does not widen the live block-copy window: a page-cache-absorbed copy can finish quickly regardless of PVC size. Increase the baseline/incremental file counts or size range to increase workload bytes, then measure the actual window with `scripts/monitor.sh`. The previous 64/32 MiB and 8192/12288 MiB timings came from the single-file workload and do not predict this file-set workload.
 
 ### 4. `make vm-cbt-verify`
 
@@ -124,32 +124,32 @@ By itself, a bigger disk does not widen the live block-copy window (`cbt-chaos/c
 - Non-empty, different checkpoint names.
 - `vm-tracker-<run-id>.status.latestCheckpoint.name` equal to the incremental backup checkpoint.
 
-It prints `CBT verification passed` only when every condition holds. The hashes printed by setup and incremental backup separately show that the guest file content changed.
+It prints `CBT verification passed` only when every condition holds. The restore verification then proves that the full and combined disks contain the expected file sets.
 
 ### 5. Restore verification (`scripts/vm-cbt-restore-test.sh`, runs as step 4/4 of `vm-cbt-verify`)
 
 This is the step that actually proves the backups contain correct, restorable data, rather than only checking backup/PVC status:
 
-1. Reads the expected hashes recorded in `state/full-backup.sha256` and `state/incremental-backup.sha256`.
+1. Reads and validates `report/<REPORT_ID>/workload-manifest.json`, including its canonical baseline and combined manifest hashes.
 2. Confirms both backup PVCs (`vm-backup-pvc-<run-id>`, `vm-incremental-pvc-<run-id>`) are `Bound`.
-3. Applies `manifests/restore-verify-pod.yaml` (with placeholders substituted, the same pattern `vm-setup.sh` uses for the SSH public key) as a short-lived pod that mounts both backup PVCs read-only, then:
+3. Applies the OS-appropriate restore pod with both backup PVCs mounted read-only, then:
    - `qemu-img convert` the full backup's qcow2 straight to raw (full-only restore).
    - `qemu-img rebase` the incremental qcow2 onto the full qcow2, then `qemu-img convert` the result to raw (full+incremental restore).
-   - Extracts `/home/cbt-demo/hello.txt` from each raw disk with `losetup` + a direct `mount -o ro` of its ext4 root filesystem (see `images/restore-helper/Dockerfile`).
-4. Deletes the pod (via a trap, on success or failure) and reads its logs for the two hashes and whether the incremental marker line is present in each.
-5. Asserts: the full-only restore matches `state/full-backup.sha256` and does **not** contain the incremental marker line; the full+incremental restore matches `state/incremental-backup.sha256` and **does** contain the marker line.
+   - Mounts each raw disk's root filesystem read-only and computes a sorted manifest of every regular file in the dedicated workload directory.
+4. Reports the restored file count, total payload bytes, and canonical manifest hash for both disks.
+5. Requires the full-only restore to match the N-file baseline manifest and the full-plus-incremental restore to match the N+M-file combined manifest. Count and byte totals are diagnostic checks; the manifest hash verifies paths, sizes, and per-file SHA-256 values.
 
-Any mismatch fails the step (exit 1) — a missing incremental delta, a stale/corrupt/empty restored disk, or a backup that silently drops data will all produce a hash or marker-line mismatch here rather than passing on PVC status alone. All checks in this step and in `vm-cbt-verify.sh`'s step 3/4 run to completion (they do not stop at the first failure), so a failing run's report shows every check's outcome, not just the first one.
+Any mismatch fails the step (exit 1): missing or extra files, changed file contents, stale/corrupt restores, or an unapplied incremental delta all produce a manifest mismatch rather than a pass based on PVC status alone. All checks in this step and in `vm-cbt-verify.sh` run to completion so the report shows each outcome.
 
 ## Run report
 
 `vm-setup.sh` also generates a `REPORT_ID` (`run_<UTC timestamp>`; a `<run-id>` suffix is added only if another report starts in the same second, kept separate from the resource-naming run ID) and persists it to `state/report-id`. Every later stage appends a JSON fragment to `report/<REPORT_ID>/fragments/`:
 
-- `vm-setup.sh` → `setup.json`: namespace, VM name, guest file path, and the full-backup guest hash/size (`size_bytes` and `size_mb`)/capture time.
+- `vm-setup.sh` → `setup.json`: namespace, VM name, workload directory, configured file-size range, and baseline count/bytes/manifest hash.
 - `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint, its PVC name/requested size/capacity, and the VM's recorded backup start/end timestamps and completion status (captured immediately after `Done=True`, since `status.changedBlockTracking.backupStatus` is overwritten by the next backup).
-- `vm-cbt-backup.sh` → `incremental-backup.json`: same shape as above, plus the incremental-backup guest hash/size (`size_bytes` and `size_mb`)/capture time.
+- `vm-cbt-backup.sh` → `incremental-backup.json`: added-file count/bytes/hash, combined count/bytes/hash, and incremental-backup metadata.
 - `vm-cbt-verify.sh` → `verify.json`: tracker name/latest checkpoint and the 5 CBT/checkpoint checks (each with a `passed` boolean). This stage also collects the VM's `virt-launcher` pod's full log to `report/<REPORT_ID>/logs/virt-launcher.log`.
-- `vm-cbt-restore-test.sh` → `restore-test.json`: the PVC-bound and hash/marker checks (each with a `passed` boolean). The restore-verify pod's full log is saved to `report/<REPORT_ID>/logs/restore-verify-pod.log`.
+- `vm-cbt-restore-test.sh` → `restore-test.json`: PVC-bound and full/combined count, byte-total, and manifest-hash checks. The restore-verify pod's full log is saved to `report/<REPORT_ID>/logs/restore-verify-pod.log`.
 
 `vm-cbt-verify.sh` merges every fragment (deep-merging objects, concatenating each stage's `checks` array) into `report/<REPORT_ID>/report.json`, adds `run_id`/`report_id`, sets `verification.overall_passed` from all checks across both scripts, and records a `logs` object pointing at the collected pod logs. `report/` is not touched by `make clean-all` — unlike `state/`, it is meant to persist as a debugging record across runs. Log collection is best-effort: if a pod is already gone, the workflow logs a warning and continues rather than failing the run.
 
@@ -193,7 +193,7 @@ make clean-all
 
 ## Windows VM setup and CBT profile
 
-Run `make windows-vm-setup` first to provision one Windows Server 2022 VM and initialize `C:\cbt-data\hello.txt` over QEMU Guest Agent. If `windows-server-2022` is not cached, setup installs Windows from the Evaluation ISO, installs Python 3.12.4 and the file-writer/SQLite-writer/HTTP-server workloads, registers their SYSTEM startup task, verifies them, removes generated test data, syspreps the disk, and publishes the reusable DataSource in `vm-cbt-images`. The runtime clone is then checked for startup workload continuity before the CBT file is initialized. This is separate from the Debian default and does not require SSH access to Windows.
+Run `make windows-vm-setup` first to provision one Windows Server 2022 VM and initialize its CBT workload under `C:\cbt-data\workload` through QEMU Guest Agent. If `windows-server-2022` is not cached, setup installs Windows from the Evaluation ISO, installs Python 3.12.4 and the file-writer/SQLite-writer/HTTP-server workloads, registers their SYSTEM startup task, verifies them, removes generated test data, syspreps the disk, and publishes the reusable DataSource in `vm-cbt-images`. The runtime clone is then checked for startup workload continuity before the CBT file set is initialized. This is separate from the Debian default and does not require SSH access to Windows.
 
 `WINDOWS_ADMIN_PASSWORD_FILE` must point to a readable, gitignored password
 file on the execution host for the one-time image build and every runtime
