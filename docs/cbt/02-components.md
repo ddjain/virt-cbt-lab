@@ -12,11 +12,11 @@
 | KubeVirt node | `virt-handler` | Node-local VMI/libvirt lifecycle and checkpoint-redefinition path |
 | KubeVirt runtime | `virt-launcher` `compute` container | Runs libvirt/QEMU and the in-process backup code |
 | Hypervisor | QEMU/KVM + libvirt | Maintains disk chain, checkpoints, and live block-copy |
-| Image management | CDI operator/controllers/importer/cloner | Imports Debian and clones each run's root disk |
+| Image management | CDI operator/controllers/importer/cloner | Imports Debian and clones run disks; RHEL 9 uses the cluster DataSource |
 | Storage | HPP CSI/provisioner and `cbt-demo-hpp` | Creates node-local RWO PVCs |
 | Networking | OVN-Kubernetes, Service, port-forward | Provides pod/VM network and guest SSH access |
-| Guest | Debian, SSH, qemu-guest-agent | Provides test workload, SSH mutation, and optional freeze/thaw |
-| Verification | restore-helper image and privileged pod | Reconstructs qcow2 chain and reads ext4 guest data |
+| Guest | Debian/RHEL 9 Linux, SSH, qemu-guest-agent | Provides test workload, SSH mutation, and optional freeze/thaw |
+| Verification | restore-helper image and privileged pod | Reconstructs qcow2 chain and reads ext4, XFS, or NTFS guest data |
 
 ## Live cloud05 reference snapshot
 

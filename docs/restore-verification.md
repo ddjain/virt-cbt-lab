@@ -9,13 +9,19 @@ KubeVirt's CBT incremental-backup API writes qcow2 artifacts but does not define
 - A `Full` backup writes a standalone qcow2 image.
 - An `Incremental` backup writes a qcow2 overlay based on the prior checkpoint.
 
-The workflow rebases the incremental overlay onto the full image, converts both the full-only and combined images to raw, then mounts the guest disk in a short-lived privileged pod. The pod mounts backup PVCs read-only and uses the node's `/dev` for loop devices. Debian restores mount ext4; Windows restores mount NTFS with `ntfs3` or `ntfs-3g`.
+The workflow rebases the incremental overlay onto the full image, converts both the full-only and combined images to raw, then mounts the guest disk in a short-lived privileged pod. The pod mounts backup PVCs read-only and uses the node's `/dev` for loop devices. Debian restores mount ext4, RHEL 9 restores mount XFS, and Windows restores mount NTFS with `ntfs3` or `ntfs-3g`.
+
+The restore pod creates no additional PVC: it mounts the existing full and
+incremental backup PVCs read-only. Its `/work` volume is an `emptyDir` for raw
+images and the temporary incremental copy; `/dev` is a hostPath for loop
+devices. The `emptyDir` has no `sizeLimit` in the current manifest, so its
+ephemeral-storage use is separate from the PVC budget.
 
 ## Workload and manifest contract
 
 The CBT workload is a dedicated, flat guest directory:
 
-- Debian: `/home/cbt-demo/cbt-workload`
+- Debian and RHEL 9: `/home/cbt-demo/cbt-workload`
 - Windows: `C:\cbt-data\workload`
 
 Setup creates `GUEST_BASE_FILE_COUNT` baseline files before the full backup. After the full checkpoint, the incremental step adds `GUEST_INCREMENTAL_FILE_COUNT` new files. Each file has a deterministic name and content, and a reproducibly selected whole-MiB size from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range. Defaults are 8 baseline files, 4 incremental files, and a 4–12 MiB size range.

@@ -19,7 +19,7 @@ cloud05 shell
    -> Service vm-ssh-<run>:22
    -> virt-launcher pod
    -> KubeVirt masquerade interface
-   -> Debian guest sshd:22
+   -> Linux guest sshd:22 (Debian/RHEL 9)
 
 C. Backup data path
 

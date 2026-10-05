@@ -55,7 +55,7 @@ VirtualMachineBackup vm-incremental-<run>
 ```mermaid
 sequenceDiagram
     participant S as vm-cbt-backup.sh
-    participant G as Debian guest
+    participant G as Linux guest (Debian/RHEL 9)
     participant A as OpenShift API
     participant T as tracker
     participant C as virt-controller

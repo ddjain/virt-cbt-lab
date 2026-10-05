@@ -1,6 +1,6 @@
 # KubeVirt CBT VM backup demo
 
-This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. The default workflow creates a Debian VM, changes a guest file, takes full and incremental backups, then verifies the API state and restored data. A Windows Server 2022 profile uses QEMU Guest Agent and a cached sysprepped image; `make windows-vm-setup` provisions one Windows VM and creates the backup test file before the Windows E2E profile is run.
+This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. The default workflow creates a Debian VM, writes a deterministic baseline file set, adds files, takes full and incremental backups, then verifies the API state and restored data. The `rhel9` profile uses the cluster-provided RHEL 9 DataSource with the same Linux SSH and restore workflow. A Windows Server 2022 profile uses QEMU Guest Agent and a cached sysprepped image; `make windows-vm-setup` provisions one Windows VM and creates the backup test file before the Windows E2E profile is run.
 
 The workflow is a demonstration, not a production backup policy. Each run uses run-derived resource names in a shared namespace and local/RWO storage.
 
@@ -12,7 +12,7 @@ vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
 For the component, network, storage, checkpoint, source-code, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
-- `vm-setup.sh` imports the cached Debian image and creates a Debian VM with SSH; `windows-vm-setup.sh` reuses the Windows golden DataSource, attaches a run-scoped OOBE Secret, and initializes a run-scoped file workload through QEMU Guest Agent.
+- `vm-setup.sh` imports the cached Debian image or clones the cluster-provided RHEL 9 DataSource, then creates a Linux VM with SSH; `windows-vm-setup.sh` reuses the Windows golden DataSource, attaches a run-scoped OOBE Secret, and initializes a run-scoped file workload through QEMU Guest Agent.
 - `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
 - `vm-cbt-backup.sh` waits for the tracker checkpoint, adds new deterministic workload files, creates the incremental backup, and checks its type.
 - `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`, then merges every stage's fragment into the run's `report.json`.
@@ -26,14 +26,14 @@ The VM manifest supplies the `cbt-demo=enabled` label used by this demo. The clu
 ## Prerequisites
 
 Local tools:
-- Bash 3.2 or newer for the core workflow; `make monitor` requires Bash 4+ because it uses associative arrays. Also require Make, `oc`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for workload manifests; Debian setup additionally requires `ssh` and `ssh-keygen`. Windows setup requires `python3`, and first-time golden-image creation also requires `curl`.
+- Bash 3.2 or newer for the core workflow; `make monitor` requires Bash 4+ because it uses associative arrays. Also require Make, `oc`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for workload manifests; Debian and RHEL 9 setup require `ssh` and `ssh-keygen`. Windows setup requires `python3`, and first-time golden-image creation also requires `curl`.
 - A readable kubeconfig and permission to create/delete the demo resources.
 
 Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
 - The `IncrementalBackup` feature gate.
-- Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for the RWO VM and backup PVCs. The root disk and full-backup PVC must exceed the cached Debian image size.
+- Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for the RWO VM and backup PVCs. RHEL 9 requires a ready `rhel9` DataSource in `openshift-virtualization-os-images`; it uses a 40Gi HPP or 48Gi ODF root/full-backup PVC and a 25Gi/30Gi incremental PVC.
 - Windows requires `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 40Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. These ODF classes are used by the Windows manifests.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
@@ -63,14 +63,14 @@ Supported variables:
 |---|---:|---|
 | `KUBECONFIG_PATH` | No | Kubeconfig path; otherwise `KUBECONFIG` or the `oc` default is used. |
 | `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
-| `REMOTE_HOST` | For `make sync` | SSH host or alias used for synchronization. |
-| `REMOTE_DIR` | For `make sync` | Destination directory on that host. |
-| `VM_OS` | No | Guest profile for `make e2e`: `debian` (default) or `windows`. |
+| `REMOTE_HOST` | For `make sync`/`make resync` | SSH host or alias used for synchronization. |
+| `REMOTE_DIR` | For `make sync`/`make resync` | Destination directory on that host. |
+| `VM_OS` | No | Guest profile for `make e2e`: `debian` (default), `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `GUEST_BASE_FILE_COUNT` | No | Number of deterministic files created before the full backup. Default: `8`. |
 | `GUEST_INCREMENTAL_FILE_COUNT` | No | Number of new files added before the incremental backup. Default: `4`. |
 | `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | Inclusive whole-MiB size range for each file. Defaults: `4` and `12`. The selected sizes and SHA-256 hashes are recorded in the run manifest. |
-| `MANIFEST_VARIANT` | No | Debian manifest set: `odf`, `default`, `large`, or `large-odf`; Windows uses fixed ODF storage sizing. Default: `odf`. |
+| `MANIFEST_VARIANT` | No | Debian sizing: `odf`, `default`, `large`, or `large-odf`; RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. Default: `odf`. |
 | `WINDOWS_ISO_PATH` | If the ISO is not already staged | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
 | `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Local, gitignored file containing the Administrator password; never committed or logged. |
 
@@ -107,7 +107,7 @@ Run the read-only readiness check directly, or let `make e2e` run it automatical
 `make e2e` stops before creating resources when preflight reports a failure. Use `make preflight` to invoke the same check explicitly.
 
 
-`preflight` selects prerequisites from `VM_OS`. Debian checks SSH tools and the guest key; Windows checks Python, the admin-password file, required ODF storage classes, and the local ISO path/upload route when the golden DataSource is missing. Both profiles check kubeconfig, cluster reachability, CBT/CDI APIs, feature gates, permissions, and repository files. It never installs tools or changes cluster resources.
+`preflight` selects prerequisites from `VM_OS`. Debian and RHEL 9 check SSH tools and the guest key; RHEL 9 also checks that the cluster `rhel9` DataSource exists and its source PVC is `Bound`. Windows checks Python, the admin-password file, required ODF storage classes, and the local ISO path/upload route when the golden DataSource is missing. All profiles check kubeconfig, cluster reachability, CBT/CDI APIs, feature gates, permissions, and repository files. It never installs tools or changes cluster resources.
 
 Each result is marked `PASS`, `WARN`, or `FAIL`. Warnings do not fail the check; any failure produces exit code `1` and `NOT READY`. Exit code `0` produces `READY`. Use `./preflight --verbose` for the same safe summary with an explicit note that command diagnostics are suppressed to avoid leaking credentials or kubeconfig data. Example:
 
@@ -131,6 +131,22 @@ Run the complete default Debian workflow:
 ```sh
 make e2e
 ```
+
+Run the RHEL 9 CBT profile using the cluster-provided `rhel9` DataSource:
+
+```sh
+make e2e VM_OS=rhel9
+```
+
+The RHEL 9 profile selects the large disk/backup manifests for the chosen storage backend so the root disk can clone the platform image.
+
+The measured `large-odf` RHEL 9 profile had a 51Gi root PVC (CDI expanded
+the 48Gi DataVolume request to a 50.88Gi PVC request), a 48Gi full-backup PVC,
+and a 30Gi incremental PVC. Those three claims total 129Gi of reported
+capacity; KubeVirt also creates a ~0.54Gi persistent-state claim, for ~129.42Gi
+of requested PVC storage (budget 130Gi). Restore verification adds no PVC;
+its `emptyDir` scratch uses node ephemeral storage. See
+[RHEL 9 storage footprint](docs/vm-cbt-workflow.md#rhel-9-storage-footprint).
 
 For Windows, first validate one VM and its backup test file:
 
@@ -227,14 +243,14 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── docs/                 # Detailed workflow and restore-verification documentation
 ├── images/
 │   └── restore-helper/   # Dockerfile for the restore-verification pod image
-├── manifests/            # Debian golden image, VM, full-backup, incremental-backup, and restore-verify pod resources
+├── manifests/            # Debian and RHEL 9 VM sources, backups, and restore verification resources
 ├── scripts/              # Workflow implementation and shared helpers
 │   ├── dotenv.sh         # Safe parser for supported .env values
 │   ├── restore-lib.sh    # Restore-verification pod orchestration
 │   └── workload-manifest.sh # Deterministic file plans and run manifests
 ├── state/                # Transient run IDs (gitignored, created at runtime)
 ├── report/               # Per-run manifests, JSON reports, and run-owned pod logs (gitignored; survives clean-all)
-└── sync.sh               # Remote synchronization helper, exposed as make sync
+└── sync.sh               # Remote synchronization helper, exposed as make sync and make resync
 ```
 
 ## Run report
@@ -242,7 +258,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a `<run-id>` suffix is added only if another report starts in the same second) and later stages append JSON fragments under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges them into `report/<REPORT_ID>/report.json` and collects logs from the run's own VM and restore pod.
 
 `report.json` contains, per run:
-- `os_profile`: `debian` or `windows`.
+- `os_profile`: `debian`, `rhel9`, or `windows`.
 - `guest.workload`: directory, per-file size range, baseline and incremental file counts, payload byte totals, and the path to the run's `workload-manifest.json`.
 - `backups.full` / `backups.incremental`: backup name, type, checkpoint name, backup PVC name/requested size/actual capacity, and (when available) the VM's recorded backup start/end timestamps and completion status.
 - `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
@@ -255,7 +271,7 @@ Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to
 
 - Resource names are derived from a per-run ID, but all runs share the configured namespace and local/RWO storage; `make clean-all` removes every workflow-managed run in that namespace. One checkout's `state/` and report/hash files are shared, so serialize workflows per checkout or use separate repository copies for concurrent runs.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- Debian uses small local/RWO disks and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. Both are demo configurations, not production storage or disaster-recovery guidance.
+- Debian uses small local/RWO disks, RHEL 9 uses a 40Gi/48Gi root disk and correspondingly sized backup PVCs, and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
-- `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian) or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod.
+- `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

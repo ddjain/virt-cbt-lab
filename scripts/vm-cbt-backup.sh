@@ -5,7 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 # shellcheck source=scripts/workload-manifest.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="vm-cbt-backup"
-if [[ "$VM_OS" == debian ]]; then
+if [[ "$VM_OS" != windows ]]; then
   require_command ssh
 fi
 load_run_id
@@ -95,7 +95,7 @@ foreach (\$entry in Get-ChildItem -LiteralPath \$directory -Force) {
   workflow_action "Read the mounted Windows guest workload and confirm its baseline manifest before changing it"
   before_guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_inventory_command")"
 else
-  workflow_action "Read the Debian guest workload and confirm its baseline manifest before changing it"
+  workflow_action "Read the Linux guest workload and confirm its baseline manifest before changing it"
   linux_inventory_command="
 set -euo pipefail
 workload_dir='$LINUX_GUEST_WORKLOAD_DIR'
@@ -272,7 +272,7 @@ guest_captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 workflow_success "Added $incremental_file_count files; the $combined_file_count-file manifest is $combined_manifest_sha256"
 
 workflow_step "3/5 Create the incremental backup request"
-workflow_action "oc apply -f manifests/incremental-backup.yaml (PVC $INCREMENTAL_BACKUP_PVC_NAME and backup $INCREMENTAL_BACKUP_NAME)"
+workflow_action "oc apply -f $(manifest_path incremental-backup) (PVC $INCREMENTAL_BACKUP_PVC_NAME and backup $INCREMENTAL_BACKUP_NAME)"
 sed \
   -e "s|__NAMESPACE__|$NAMESPACE|g" \
   -e "s|__TRACKER_NAME__|$TRACKER_NAME|g" \

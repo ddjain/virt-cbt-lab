@@ -28,10 +28,10 @@ The target server needs:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` backup APIs.
 - The `IncrementalBackup` feature gate.
-- The `ocs-storagecluster-ceph-rbd` virtualization storage class for the default `MANIFEST_VARIANT=odf` (see `docs/odf-setup-plan.md`), or `cbt-demo-hpp` with `MANIFEST_VARIANT=default`/`large`.
-- Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org`, so `vm-setup.sh` can import the Debian golden image into `vm-cbt-images` the first time it runs.
+- The `ocs-storagecluster-ceph-rbd` virtualization storage class for the default `MANIFEST_VARIANT=odf` (see `docs/odf-setup-plan.md`), or `cbt-demo-hpp` with `MANIFEST_VARIANT=default`/`large`. RHEL 9 maps these backend choices to the 40Gi HPP or 48Gi ODF manifests.
+- Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org` for the first Debian golden-image import. RHEL 9 instead requires the cluster-provided `rhel9` DataSource and a `Bound` source PVC in `openshift-virtualization-os-images`.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for the per-run workload manifest, plus access to the local kubeconfig.
-- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod this step runs.
+- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -75,10 +75,10 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 
 `scripts/vm-setup.sh`:
 
-1. Applies `manifests/debian-image.yaml` and waits for `DataVolume debian-golden` (namespace `vm-cbt-images`) to reach `Succeeded`. The first run imports the ~2 GiB Debian genericcloud qcow2 from `cloud.debian.org`; later runs see it already `Succeeded` and return immediately, since `vm-cbt-images` lives outside `clean-all`'s scope.
-2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
-3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/run-id`, then applies `manifests/vm.yaml`, which creates namespace `$NAMESPACE` (if missing) and the run's VM (`vm-<run-id>`) and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
-4. Creates a root `DataVolume` from the `debian` `DataSource` — 6 GiB on `ocs-storagecluster-ceph-rbd` for the default `MANIFEST_VARIANT=odf`, or 5 GiB on `cbt-demo-hpp` under `MANIFEST_VARIANT=default`. This must stay larger than the golden image's size; a target smaller than the source fails the clone. The VM has one vCPU, 2 GiB memory, pod networking, and cloud-init SSH access for `cbt-demo`. The golden image itself (`manifests/debian-image.yaml`) always stays on `cbt-demo-hpp` regardless of variant; CDI clones across StorageClasses without issue.
+1. For Debian, applies `manifests/debian-image.yaml` and waits for `DataVolume debian-golden` (namespace `vm-cbt-images`) to reach `Succeeded`. The first run imports the ~2 GiB Debian genericcloud qcow2 from `cloud.debian.org`; later runs reuse the cached image. For RHEL 9, setup reads the cluster-provided `rhel9` DataSource in `openshift-virtualization-os-images` and waits for its source PVC to be `Bound`; it does not import or modify that platform image.
+2. Ensures a dedicated guest SSH key exists locally on the target server. The public key is inserted into the Linux cloud-init user data; the private key stays at `GUEST_KEY` with mode `0600` (by default, repository-local `keys/id_ed25519`, which is gitignored).
+3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/run-id`, then applies the selected VM manifest. It creates namespace `$NAMESPACE` (if missing), the run's VM (`vm-<run-id>`), root disk, and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
+4. Creates a root `DataVolume` from the profile's DataSource. Debian uses the selected standard size (5Gi on `cbt-demo-hpp` or 6Gi on ODF). RHEL 9 maps HPP settings to the 40Gi `large` manifests and ODF settings to the 48Gi `large-odf` manifests, which are sized to clone the larger platform source. The target disk must still be at least as large as the source PVC. The VM has one vCPU, 2 GiB memory for the small Debian profile or 4 GiB for RHEL 9, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
 6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file and records the baseline file list, sizes, and hashes in `report/<REPORT_ID>/workload-manifest.json` before the full backup.
 
@@ -159,7 +159,7 @@ All workflow objects live in the shared, globally configured `$NAMESPACE` (defau
 
 | Resource | Name | Purpose |
 |---|---|---|
-| VirtualMachine | `vm-<run-id>` | Debian guest with CBT label |
+| VirtualMachine | `vm-<run-id>` | Debian or RHEL 9 guest with CBT label |
 | DataVolume/PVC | `vm-disk-<run-id>` | Persistent VM root disk |
 | Service | `vm-ssh-<run-id>` | Guest SSH access for the scripts |
 | VirtualMachineBackupTracker | `vm-tracker-<run-id>` | Stores the base/latest checkpoint |
@@ -171,7 +171,7 @@ All workflow objects live in the shared, globally configured `$NAMESPACE` (defau
 
 Every resource above is labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`; those labels, not the namespace, are the ownership mechanism `clean-all` uses. `vm-setup.sh` generates a new run ID at the start of every run; `vm-backup.sh`, `vm-cbt-backup.sh`, `vm-cbt-verify.sh`, and `vm-cbt-restore-test.sh` read the current one back from `state/run-id`.
 
-The Debian golden image (`DataVolume`/`DataSource` `debian-golden`/`debian`) lives in namespace `vm-cbt-images`, deliberately outside `$NAMESPACE`, so it survives `make clean-all` and is only downloaded once.
+The Debian golden image (`DataVolume`/`DataSource` `debian-golden`/`debian`) lives in namespace `vm-cbt-images`, deliberately outside `$NAMESPACE`, so it survives `make clean-all` and is downloaded only once. RHEL 9 uses the cluster-managed `rhel9` DataSource in `openshift-virtualization-os-images`; the workflow waits for its backing PVC and leaves it unchanged.
 
 ## Repeated runs without cleanup
 
@@ -189,7 +189,48 @@ Each invocation creates its own isolated VM/disk/backup/tracker set in the same 
 make clean-all
 ```
 
-`scripts/clean-all.sh` does **not** delete the namespace. It deletes run-labeled VMs, DataVolumes, backups, trackers, PVCs, services, pods, and Windows OOBE Secrets from `$NAMESPACE`, waits for managed PV reclamation, removes only the workflow-owned Debian SSH key, and clears local `state/`. Reports and shared golden images remain. Unrelated namespace resources are preserved.
+`scripts/clean-all.sh` does **not** delete the namespace. It deletes run-labeled VMs, DataVolumes, backups, trackers, PVCs, services, pods, and Windows OOBE Secrets from `$NAMESPACE`, waits for managed PV reclamation, removes only the workflow-owned guest SSH key, and clears local `state/`. Reports and shared golden images remain. Unrelated namespace resources are preserved.
+
+## RHEL 9 VM setup and CBT profile
+
+Run `make e2e VM_OS=rhel9` to use the cluster-provided `rhel9` DataSource. Preflight requires that DataSource and its source PVC to exist and be `Bound`; no local ISO or image import is needed. The Linux guest setup uses the `wheel` group and `sshd` service, while workload creation, SSH operations, incremental backups, and restore verification use the shared Linux path. The restored RHEL 9 root filesystem is XFS.
+
+For `MANIFEST_VARIANT=default` or `large`, RHEL 9 selects the 40Gi HPP VM/full-backup manifests and 25Gi incremental-backup PVC. For `odf` or `large-odf`, it selects the 48Gi ODF VM/full-backup manifests and 30Gi incremental-backup PVC. The larger root disk is required because the platform RHEL 9 source PVC does not fit the small Debian disk sizing; a source PVC larger than the selected root disk still cannot be cloned.
+
+### RHEL 9 storage footprint
+
+Reference measurement from a successful RHEL 9 E2E run on 2026-10-05. The
+configured `odf` variant resolved to `large-odf`.
+
+| PVC/resource | Declared request | Observed PVC request | Reported capacity |
+|---|---:|---:|---:|
+| VM root disk | 48Gi DataVolume | 54,631,984,006 bytes (~50.88Gi) | 51Gi |
+| Full backup | 48Gi | 48Gi | 48Gi |
+| Incremental backup | 30Gi | 30Gi | 30Gi |
+| KubeVirt persistent-state | KubeVirt-generated | 580,198,073 bytes (~0.54Gi) | 1489Gi (HPP backing PV) |
+| Restore verification | None | No additional PVC | — |
+
+The three workflow PVCs request 128.88Gi total and report 129Gi combined
+capacity. CDI filesystem-overhead reservation increased the root claim beyond
+the DataVolume's 48Gi request. KubeVirt's persistent-state PVC adds ~0.54Gi
+of requested storage, making the measured per-run PVC request total ~129.42Gi;
+round the planning budget up to 130Gi. The nominal root/full/incremental
+manifest requests sum to 126Gi and omit both overhead and persistent state.
+Do not count the persistent-state PVC's 1489Gi HPP status capacity as
+per-run consumption; HPP reports the backing-PV capacity.
+
+The platform `rhel9` DataSource uses a shared source PVC. In this measurement,
+that pre-existing PVC requested 34,144,990,004 bytes (~31.8Gi) and reported
+1489Gi capacity on HPP. It is not recreated for each run and is excluded from
+the per-run total; its reported capacity is the backing-PV capacity, not
+per-run data consumption.
+
+Restore verification creates no additional PVC. It mounts the full and
+incremental backup PVCs read-only, uses an `emptyDir` for reconstruction
+scratch, and mounts host `/dev` for loop devices. The scratch volume is
+ephemeral storage, has no `sizeLimit` in the current manifest, and is not
+included in the PVC total; peak scratch usage is not recorded by the run report.
+The measured restore passed with 8 baseline and 12 combined guest files.
 
 ## Windows VM setup and CBT profile
 
@@ -207,7 +248,8 @@ After the single-VM setup is validated, run `make e2e VM_OS=windows NAME=windows
 - Guest SSH retries indicate that the VM service or guest SSH daemon is not ready; inspect the local `oc port-forward` log and VM readiness.
 
 - `CBT is not enabled ...`: verify the cluster feature gate and that the VM has label `cbt-demo=enabled`.
-- Debian golden image import stuck or failing: check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
+- Debian golden-image import stuck or failing: check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
+- RHEL 9 DataSource missing or not ready: check `oc get datasource rhel9 -n openshift-virtualization-os-images` and the referenced PVC's phase; preflight reports either condition before creating demo resources.
 - PVC remains pending: verify `cbt-demo-hpp` is available and can provision local demo volumes.
 - `vm-incremental-<run-id> already exists`: two script invocations shared the same run ID (only possible if `RUN_ID` was manually exported); run `make vm-setup` to start a fresh run.
 - Incremental type is not `Incremental`: check that the full checkpoint reached the tracker and inspect the `VirtualMachineBackup` conditions and tracker status.

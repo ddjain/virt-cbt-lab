@@ -79,7 +79,7 @@ INCREMENTAL OVERLAY  --rebase onto full-->  RESTORED DISK
          |                         | virt-launcher    |
          v                         | compute container |
 +----------------+                 | libvirt + QEMU    |
-| Debian guest   |<--virtio--------+---------+---------+
+| Linux guest    |<--virtio--------+---------+---------+
 | SSH + agent    |                           |
 +----------------+                           |
                                              |
@@ -102,7 +102,7 @@ make e2e
    +--> preflight (read-only checks)
    |
    +--> vm-setup
-   |      +--> import/reuse Debian golden image
+   |      +--> prepare Debian cache or use cluster RHEL 9 DataSource
    |      +--> create VM, root DataVolume, SSH Service
    |      +--> wait Ready and CBT=Enabled
    |      +--> create baseline file set + manifest; sync guest writes

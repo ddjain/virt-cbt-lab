@@ -20,7 +20,7 @@ KubeVirt attempts guest filesystem freeze through qemu-guest-agent. The default 
 
 ## Restore
 
-There is no native KubeVirt restore API for this alpha feature. The repository's restore helper is a reference verification path, not a production restore controller. It requires a privileged pod and reads the demo's ext4 filesystem directly.
+There is no native KubeVirt restore API for this alpha feature. The repository's restore helper is a reference verification path, not a production restore controller. It requires a privileged pod and reads the demo's ext4 (Debian) or XFS (RHEL 9) filesystem directly.
 
 ## Current cloud05 topology limits
 

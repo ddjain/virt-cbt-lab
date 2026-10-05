@@ -91,6 +91,23 @@ The HPP PV may report the backing pool capacity rather than the request. Do not 
 
 A large PVC does not automatically create a long copy window. The measured large run used 8192 MiB initial guest data and 12288 MiB incremental data, producing approximately 29 seconds full and 15 seconds incremental copy durations.
 
+## RHEL 9 ODF PVC measurement
+
+A successful RHEL 9 `large-odf` run measured a 48Gi DataVolume request that
+expanded to a 54,631,984,006-byte root PVC request (~50.88Gi) with 51Gi
+reported capacity. The full-backup PVC was 48Gi and incremental-backup PVC
+30Gi: the three workflow claims requested 128.88Gi and reported 129Gi
+combined capacity. KubeVirt added a persistent-state claim requesting
+580,198,073 bytes (~0.54Gi); its 1489Gi HPP status capacity is backing-PV
+capacity, not per-run usage. Total measured per-run PVC requests were
+~129.42Gi (round to 130Gi).
+
+The shared `rhel9` source PVC requested ~31.8Gi and reported 1489Gi capacity
+on HPP; it predates the run and is excluded from the per-run total. Restore
+verification adds no PVC; it reuses both backup claims and uses `emptyDir`
+scratch plus host `/dev`. See the
+[RHEL 9 workflow storage details](../vm-cbt-workflow.md#rhel-9-storage-footprint).
+
 ## Hotplug lifecycle
 
 ```text
