@@ -15,7 +15,7 @@ A test passes only when both claims are checked. `Done=True`, an event, or an `I
 
 1. Use one repository checkout per workflow. The files under `state/` and `report/` are shared.
 2. Use a deterministic run name and record `RUN_ID`, VM, launcher pod, tracker, full backup, incremental backup, and PVC names.
-3. Prefer `MANIFEST_VARIANT=large`, `GUEST_DATA_SIZE_MB=8192`, and `GUEST_INCREMENTAL_DATA_SIZE_MB=12288` when the scenario needs a sustained copy window. Confirm the actual window from launcher logs; PVC size alone is not a timing control.
+3. Prefer `MANIFEST_VARIANT=large` with increased `GUEST_BASE_FILE_COUNT`, `GUEST_INCREMENTAL_FILE_COUNT`, or `GUEST_FILE_SIZE_MIN_MIB`/`GUEST_FILE_SIZE_MAX_MIB` when a scenario needs a sustained copy window. The old single-file timing measurements do not predict this workload; confirm the actual window with `scripts/monitor.sh`. PVC size alone is not a timing control.
 4. Confirm the VM reports `changedBlockTracking.state=Enabled`, the VMI is `Running`, and `AgentConnected=True` before testing guest-consistency behavior.
 5. Capture the baseline tracker and checkpoint tree:
 
@@ -141,10 +141,11 @@ The repository's restore helper verifies guest semantics. A CBT-specific chaos c
 
 Run the repository restore verification:
 
-- full-only image hash equals the hash captured before mutation and lacks the marker;
-- full-plus-incremental image hash equals the post-mutation hash and contains the marker.
+- the full-only image's file count and canonical manifest hash match the N-file baseline;
+- the combined image's file count and canonical manifest hash match the N+M file set.
 
-This reads the ext4 guest filesystem from reconstructed raw images. It does not boot a reconstructed VM and does not prove application-level consistency beyond the test file.
+The helper reads the guest filesystem from reconstructed raw images. It does
+not boot a reconstructed VM or prove application-level consistency.
 
 ## Expected result categories
 

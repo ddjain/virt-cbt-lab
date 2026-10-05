@@ -6,7 +6,7 @@ After reading this page, you should know the difference between a VM, a backup r
 
 ## What CBT means here
 
-Changed Block Tracking records which virtual-disk blocks changed after a checkpoint. The guest file `hello.txt` is only test data that causes disk changes; CBT tracks the virtual disk, not that filename.
+Changed Block Tracking records which virtual-disk blocks changed after a checkpoint. The deterministic guest file workload causes disk changes; CBT tracks the virtual disk, not any individual filename.
 
 The feature is implemented by KubeVirt's alpha `backup.kubevirt.io/v1alpha1` APIs. The repository provides orchestration and verification around KubeVirt; it is not the backup engine.
 
@@ -18,7 +18,7 @@ The feature is implemented by KubeVirt's alpha `backup.kubevirt.io/v1alpha1` API
 
 ## What is actually tracked
 
-CBT is not a file-level backup and it does not watch `hello.txt`. QEMU/libvirt maintains a checkpoint and dirty-block state for the virtual disk. In the live cloud05 VMI, the active chain was:
+CBT is not a file-level backup and does not watch the workload directory. QEMU/libvirt tracks checkpoint and dirty-block state for the entire virtual disk. In the live cloud05 VMI, the active chain was:
 
 ```text
 root PVC file:
@@ -105,7 +105,7 @@ make e2e
    |      +--> import/reuse Debian golden image
    |      +--> create VM, root DataVolume, SSH Service
    |      +--> wait Ready and CBT=Enabled
-   |      +--> write + sync initial hello.txt; save full hash
+   |      +--> create baseline file set + manifest; sync guest writes
    |
    +--> vm-backup
    |      +--> create full destination PVC
@@ -115,7 +115,7 @@ make e2e
    |
    +--> vm-cbt-backup
    |      +--> wait tracker == full checkpoint
-   |      +--> mutate + sync hello.txt; save incremental hash
+   |      +--> add incremental files; extend manifest and sync guest writes
    |      +--> create incremental destination PVC and backup
    |      +--> wait Done; tracker gets incremental checkpoint
    |

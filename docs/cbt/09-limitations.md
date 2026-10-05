@@ -30,16 +30,9 @@ The VMI status also reported `AgentConnected=True`, `LiveMigratable=False` with 
 
 ## Concurrency limitation discovered on cloud05
 
-Kubernetes resource names are run-derived, so completed runs can coexist in one namespace. A single repository checkout is still not safe for concurrent workflow processes because these files are shared:
+Kubernetes resource names are run-derived, so completed runs can coexist in one namespace. A single repository checkout is still not safe for concurrent workflow processes because `state/run-id`, `state/report-id`, and the active `report/<REPORT_ID>/` artifacts—including `workload-manifest.json` and report fragments—are shared.
 
-```text
-state/run-id
-state/report-id
-state/full-backup.sha256
-state/incremental-backup.sha256
-```
-
-A concurrent run can overwrite another run's IDs, hashes, and report fragments. The observed large-copy experiment produced a mixed report containing VM/backup objects from different run IDs and failed the full-only hash comparison for that reason. Serialize runs per checkout or use separate repository copies.
+A concurrent run can overwrite another run's IDs or manifest and mix report fragments from different run IDs. Serialize runs per checkout or use separate repository copies.
 
 ## Untested failure/recovery paths
 

@@ -11,11 +11,14 @@ The incremental backup captures disk blocks changed after the full checkpoint. T
 1. Confirms the full backup is `Done=True` and `type=Full`.
 2. Rejects a terminal failure reason.
 3. Waits until tracker `latestCheckpoint` exactly matches the full checkpoint.
-4. Mutates `hello.txt` through the temporary guest SSH path.
-5. Calls `sync` so the mutation is flushed before the snapshot/copy.
-6. Saves the post-mutation hash.
+4. Verifies the baseline workload directory against the run manifest.
+5. Adds M deterministic files, extends the manifest with their paths, sizes,
+   and SHA-256 values, and flushes guest writes before the incremental backup.
+6. After restore, the combined full-plus-incremental disk must match the
+   manifest containing N+M files.
 
-The marker line is idempotent so a retry does not append it twice.
+File names and sizes are stable across retries. The incremental disk remains a
+delta; the combined restored disk is the N+M file-set assertion target.
 
 ## How the base is selected
 
@@ -63,7 +66,7 @@ sequenceDiagram
     S->>A: Read full backup and checkpoint
     S->>T: Poll latestCheckpoint
     T-->>S: Full checkpoint available
-    S->>G: Append payload + marker; sync; hash file
+    S->>G: Add deterministic file set; flush and hash workload manifest
     S->>A: Apply incremental PVC and backup CR
     C->>T: Resolve VM and latest checkpoint
     C->>P: Attach incremental PVC

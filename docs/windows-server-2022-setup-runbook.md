@@ -163,7 +163,7 @@ The clone is sysprepped in OOBE state. Its run-scoped Secret supplies `unattend.
 The runtime OOBE template also applies `en-US` locale/UTC, hides interactive
 OOBE pages, and sets the built-in Administrator password from the Secret.
 
-It then uses PowerShell through QEMU Guest Agent to initialize `C:\cbt-data\hello.txt` with a text header and a bounded random payload (`GUEST_DATA_SIZE_MB`, default 64 MiB), flushes the file, and records its SHA-256/size in run state and the report. That file is the input for the full/incremental CBT comparison.
+After startup verification, PowerShell through QEMU Guest Agent creates `GUEST_BASE_FILE_COUNT` deterministic files under `C:\cbt-data\workload`. Each size is selected from the configured inclusive whole-MiB range. Setup records the file paths, byte sizes, and SHA-256 values in `report/<REPORT_ID>/workload-manifest.json`.
 
 ## 5. Run the Windows CBT E2E flow
 
@@ -177,11 +177,11 @@ The flow runs setup, full backup, incremental backup, and verification in order.
 
 ### 5.1 Full backup
 
-The full stage creates the run-labeled full-backup PVC, tracker, and backup object. For the Windows profile the full PVC is 48Gi on `ocs-storagecluster-ceph-rbd`. It waits for `Done=True`, requires `.status.type == Full`, records the checkpoint, and retains the expected guest-file hash.
+The full stage creates the run-labeled full-backup PVC, tracker, and backup object. For the Windows profile the full PVC is 48Gi on `ocs-storagecluster-ceph-rbd`. It waits for `Done=True`, requires `.status.type == Full`, and records the checkpoint. The baseline manifest remains the expected full-restore file set.
 
 ### 5.2 Mutate the guest and create the incremental backup
 
-The guest-agent helper appends a random payload (`GUEST_INCREMENTAL_DATA_SIZE_MB`, default 32 MiB) and the fixed marker line to `C:\cbt-data\hello.txt`. It flushes the file and records the new SHA-256. The incremental stage creates a 30Gi PVC and backup object on `ocs-storagecluster-ceph-rbd`, waits for `Done=True`, requires type `Incremental`, checks for a distinct checkpoint, and confirms the tracker has advanced to that checkpoint.
+After the full checkpoint, the guest-agent helper adds `GUEST_INCREMENTAL_FILE_COUNT` new deterministic files under `C:\cbt-data\workload`, using the same inclusive per-file size range. It flushes the writes, records each addition in the run manifest, and verifies the resulting file set. The incremental stage creates a 30Gi PVC and backup object on `ocs-storagecluster-ceph-rbd`, waits for `Done=True`, requires type `Incremental`, checks for a distinct checkpoint, and confirms the tracker has advanced to that checkpoint.
 
 ### 5.3 Verify API state and restored guest bytes
 
@@ -190,8 +190,8 @@ The guest-agent helper appends a random payload (`GUEST_INCREMENTAL_DATA_SIZE_MB
 1. Rebase the incremental qcow2 onto the full qcow2 with `qemu-img`, then convert the full-only and combined images to raw.
 2. Attach each raw image with partition scanning and select the largest NTFS partition, querying `blkid` when `lsblk` reports an empty filesystem type.
 3. Mount the selected partition read-only with `ntfs3` when available or the helper image's `ntfs-3g` command.
-4. Read `C:\cbt-data\hello.txt` from each restore, hash the original bytes, and check the marker without normalizing the bytes used for hashing.
-5. Require the full-only hash to match the pre-mutation hash and contain no marker; require the combined hash to match the post-mutation hash and contain the marker. Unmount and detach loop devices on exit.
+4. Inventory `C:\cbt-data\workload` in both restored images and compare file count, total payload bytes, and canonical manifest hash.
+5. Require the full-only restore to match the N-file baseline and the combined restore to match the N+M file set. The manifest hash covers each relative path, size, and per-file SHA-256.
 
 The Windows helper image must be pushed to a registry reachable by the cluster and selected with `RESTORE_HELPER_IMAGE`. Build/push from the repository root, replacing the example reference with a registry you control:
 

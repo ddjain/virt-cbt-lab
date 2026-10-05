@@ -16,33 +16,41 @@ sequenceDiagram
     participant Q as qemu-img + loop/mount
     participant R as report
 
-    V->>V: Read expected full/incremental hashes
+    V->>V: Read and validate workload-manifest.json
     V->>A: Check both backup PVCs are Bound
-    V->>A: Apply restore-verify pod with both PVCs read-only
+    V->>A: Apply OS-specific restore pod with PVCs read-only
     P->>F: Find full qcow2
     P->>I: Find incremental qcow2
     P->>Q: Convert full qcow2 to full.raw
     P->>Q: Rebase incremental overlay onto full qcow2
     P->>Q: Convert rebased chain to combined.raw
-    P->>Q: Loop-attach and mount ext4 root read-only
-    P->>P: Hash hello.txt and check marker presence
-    P-->>V: Full and combined hashes/markers
-    V->>R: Record individual checks and overall result
+    P->>Q: Mount each guest root read-only
+    P->>P: Inventory workload directory and hash canonical file manifest
+    P-->>V: Full and combined counts, bytes, and manifest hashes
+    V->>R: Record expected/observed comparisons
     V->>A: Delete short-lived restore pod
 ```
 
 ## Assertions
 
-| Restore | Expected hash | Marker |
-|---|---|---|
-| Full-only | Hash captured before guest mutation | Absent |
-| Full + incremental | Hash captured after guest mutation | Present |
+| Restore | Expected count | Expected manifest |
+|---|---:|---|
+| Full-only | N | Baseline file-set digest |
+| Full + incremental | N+M | Combined file-set digest |
 
-The helper uses `qemu-img convert`, `qemu-img rebase`, `losetup`, and a read-only ext4 mount. It requires a custom image built from `images/restore-helper/Dockerfile`, a privileged pod, and access to the node's `/dev`.
+The manifest digest covers sorted relative paths, exact byte sizes, and
+per-file SHA-256 values. Matching counts alone is insufficient. The incremental
+PVC is a delta; N+M is asserted only on the reconstructed full-plus-incremental
+disk.
+
+The helper uses `qemu-img convert`, `qemu-img rebase`, `losetup`, and read-only
+ext4 or NTFS mounts. It requires a custom helper image, a privileged pod, and
+access to the node's `/dev`.
+
 
 ## Artifact-level verification gap
 
-The restore test proves semantic guest data, not the physical delta representation. It does not currently run `qemu-img info` or `qemu-img map` assertions on both artifacts, compare the incremental `backing-filename`, or compare allocated clusters. A malformed or unnecessarily full-sized incremental image could still pass the `hello.txt` hash test if the resulting disk state is correct.
+The restore test proves semantic guest data, not the physical delta representation. It does not currently run `qemu-img info` or `qemu-img map` assertions on both artifacts, compare the incremental `backing-filename`, or compare allocated clusters. A malformed or unnecessarily full-sized incremental image could still pass if the reconstructed workload directory matches its manifest.
 
 For a chaos test that claims CBT delta preservation, add a read-only artifact check before and after the injection:
 
@@ -68,7 +76,7 @@ Cloud05 emitted PodSecurity restricted warnings but allowed the pod. A cluster e
 
 ## What this proves and does not prove
 
-It proves the actual guest file can be reconstructed from the full and incremental artifacts, including the incremental marker transition.
+It proves the baseline workload file set is reconstructed from the full artifact and the N+M file set from the full-plus-incremental artifacts. The manifest comparison checks paths, sizes, and per-file hashes.
 
 It does not prove:
 

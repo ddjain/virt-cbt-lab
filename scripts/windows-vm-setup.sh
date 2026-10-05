@@ -2,6 +2,8 @@
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=scripts/workload-manifest.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="windows-vm-setup"
 require_command python3
 
@@ -102,7 +104,7 @@ workflow_action "Probe the QEMU Guest Agent socket before guest operations"
 wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
 workflow_success "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
 
-workflow_step "5/5 Verify startup workloads and initialize C:\\cbt-data\\hello.txt"
+workflow_step "5/5 Verify startup workloads and initialize the baseline file workload"
 workflow_action "Verify Python 3.12.4, file/SQLite writes, HTTP 8080, and the SYSTEM startup task on this clone"
 if ! guest_exec_script "$VM_NAME" "$NAMESPACE" \
   "$ROOT_DIR/scripts/windows-workload-verify.ps1" \
@@ -116,54 +118,74 @@ fi
 
 workflow_action "Probe the QEMU Guest Agent socket before guest-file initialization"
 wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
-
-workflow_action "Use QEMU Guest Agent PowerShell to write a ${GUEST_DATA_SIZE_MB}MiB bounded random payload and flush it to disk"
+workflow_action "Create $GUEST_BASE_FILE_COUNT deterministic files in $WINDOWS_GUEST_WORKLOAD_DIR with sizes from ${GUEST_FILE_SIZE_MIN_MIB}-${GUEST_FILE_SIZE_MAX_MIB}MiB"
+baseline_plan="$(workload_file_plan baseline "$GUEST_BASE_FILE_COUNT")"
+windows_baseline_items=""
+while IFS='|' read -r workload_name workload_size_bytes; do
+  [[ -n "$workload_name" ]] || continue
+  windows_baseline_items="${windows_baseline_items}  [pscustomobject]@{ Name = '${workload_name}'; SizeBytes = [long]${workload_size_bytes} }"$'\n'
+done <<< "$baseline_plan"
 windows_setup_command="\$ErrorActionPreference = 'Stop'
-\$path = 'C:\\cbt-data\\hello.txt'
-\$payloadMiB = ${GUEST_DATA_SIZE_MB}
-\$encoding = [System.Text.UTF8Encoding]::new(\$false)
-[System.IO.Directory]::CreateDirectory('C:\\cbt-data') | Out-Null
-[System.IO.File]::WriteAllText(\$path, 'Hello from the Windows VM CBT demo.' + [Environment]::NewLine, \$encoding)
-\$stream = [System.IO.File]::Open(\$path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
-\$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-try {
-  [long]\$remaining = [long]\$payloadMiB * 1048576
-  [byte[]]\$buffer = New-Object byte[] 786432
-  while (\$remaining -gt 0) {
-    \$count = [int][Math]::Min(\$buffer.Length, \$remaining)
-    \$rng.GetBytes(\$buffer)
-    \$line = [System.Text.Encoding]::ASCII.GetBytes([Convert]::ToBase64String(\$buffer, 0, \$count) + [Environment]::NewLine)
-    \$stream.Write(\$line, 0, \$line.Length)
-    \$remaining -= \$count
-  }
-  \$stream.Flush(\$true)
-} finally {
-  \$rng.Dispose()
-  \$stream.Dispose()
+\$workloadDirectory = 'C:\\cbt-data\\workload'
+[System.IO.Directory]::CreateDirectory(\$workloadDirectory) | Out-Null
+if (@(Get-ChildItem -LiteralPath \$workloadDirectory -Force).Count -gt 0) {
+  throw \"Workload directory is not empty: \$workloadDirectory\"
 }
-\$hash = (Get-FileHash -LiteralPath \$path -Algorithm SHA256).Hash.ToLowerInvariant()
-\$size = (Get-Item -LiteralPath \$path).Length
-Write-Output ('SHA256=' + \$hash)
-Write-Output ('SIZE_BYTES=' + \$size)"
+\$filePlan = @(
+${windows_baseline_items})
+foreach (\$item in \$filePlan) {
+  \$target = Join-Path \$workloadDirectory \$item.Name
+  \$temporary = Join-Path \$workloadDirectory ('.cbt-workload-' + \$item.Name + '.tmp')
+  \$pattern = [System.Text.Encoding]::ASCII.GetBytes(('CBT-WORKLOAD-V1:' + \$item.Name + \"\`n\"))
+  \$chunkSize = [int]([Math]::Ceiling(65536.0 / \$pattern.Length) * \$pattern.Length)
+  \$buffer = New-Object byte[] \$chunkSize
+  for (\$index = 0; \$index -lt \$buffer.Length; \$index++) {
+    \$buffer[\$index] = \$pattern[\$index % \$pattern.Length]
+  }
+  \$stream = [System.IO.File]::Open(\$temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+  try {
+    [long]\$remaining = \$item.SizeBytes
+    while (\$remaining -gt 0) {
+      \$count = [int][Math]::Min(\$buffer.Length, \$remaining)
+      \$stream.Write(\$buffer, 0, \$count)
+      \$remaining -= \$count
+    }
+    \$stream.Flush(\$true)
+  } finally {
+    \$stream.Dispose()
+  }
+  Move-Item -LiteralPath \$temporary -Destination \$target
+  \$actualSize = (Get-Item -LiteralPath \$target).Length
+  if (\$actualSize -ne \$item.SizeBytes) {
+    throw ('Generated file ' + \$target + ' has size ' + \$actualSize + '; expected ' + \$item.SizeBytes + ' bytes.')
+  }
+  \$sha256 = (Get-FileHash -LiteralPath \$target -Algorithm SHA256).Hash.ToLowerInvariant()
+  Write-Output ('FILE_RECORD=' + \$item.Name + '|' + \$actualSize + '|' + \$sha256)
+}
+"
 guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_setup_command")"
 printf '%s\n' "$guest_output"
-guest_hash="$(sed -n 's/^SHA256=//p' <<<"$guest_output" | tr -d '\r' | tail -n1 | tr '[:upper:]' '[:lower:]')"
-guest_size_bytes="$(sed -n 's/^SIZE_BYTES=//p' <<<"$guest_output" | tr -d '\r' | tail -n1)"
-if ! [[ "$guest_hash" =~ ^[[:xdigit:]]{64}$ && "$guest_size_bytes" =~ ^[0-9]+$ ]]; then
-  printf 'QEMU Guest Agent did not return a valid Windows guest file hash and size.\n' >&2
-  exit 1
-fi
-write_state_file "full-backup.sha256" "$guest_hash"
+baseline_records="$(workload_records_from_output "$guest_output")"
+workload_manifest_initialize "$baseline_records"
+baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
+baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
+baseline_manifest_sha256="$(jq -r '.baseline.manifest_sha256' "$(workload_manifest_path)")"
 captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_report_fragment "setup" "$(jq -n \
   --arg namespace "$NAMESPACE" \
   --arg vm_name "$VM_NAME" \
   --arg os_profile "$VM_OS" \
-  --arg hello_file_path "$WINDOWS_GUEST_HELLO_FILE" \
-  --arg sha256 "$guest_hash" \
-  --argjson size_bytes "$guest_size_bytes" \
+  --arg guest_directory "$GUEST_WORKLOAD_DIR" \
+  --arg manifest_path "$WORKLOAD_MANIFEST_NAME" \
+  --arg manifest_sha256 "$baseline_manifest_sha256" \
   --arg captured_at "$captured_at" \
+  --argjson file_count "$baseline_file_count" \
+  --argjson total_payload_bytes "$baseline_total_bytes" \
+  --argjson min_mib "$GUEST_FILE_SIZE_MIN_MIB" \
+  --argjson max_mib "$GUEST_FILE_SIZE_MAX_MIB" \
   '{namespace: $namespace, vm_name: $vm_name, os_profile: $os_profile,
-    guest: {hello_file_path: $hello_file_path,
-            full_backup: {size_bytes: $size_bytes, size_mb: (($size_bytes / 1048576 * 100 | round) / 100), sha256: $sha256, captured_at: $captured_at}}}')"
-workflow_success "Windows guest setup is complete; expected full-backup hash recorded in $STATE_DIR"
+    guest: {workload: {directory: $guest_directory, manifest_path: $manifest_path,
+                       size_range_mib: {min_inclusive: $min_mib, max_inclusive: $max_mib},
+                       baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
+                                  manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
+workflow_success "Windows baseline workload manifest recorded at $(workload_manifest_path)"

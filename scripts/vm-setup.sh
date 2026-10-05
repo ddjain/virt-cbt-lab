@@ -2,6 +2,8 @@
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# shellcheck source=scripts/workload-manifest.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="vm-setup"
 require_command ssh
 require_command ssh-keygen
@@ -47,39 +49,68 @@ if [[ "$cbt_state" != Enabled ]]; then
 fi
 workflow_success "VM $VM_NAME is ready; CBT state is $cbt_state"
 
-workflow_step "5/5 Initialize and validate guest data"
-workflow_action "Port-forward service $SSH_SERVICE and write ~/hello.txt (${GUEST_DATA_SIZE_MB}MiB payload) as $GUEST_USER"
-workflow_action "Print the guest file SHA-256 and size, and record them as the expected full-backup content"
-# `sync` before the backup runs: without it, the write can still be sitting
-# in the guest's page cache when the external snapshot is taken, so the full
-# backup captures an empty/stale hello.txt.
-# base64's default line wrap (not -w0) keeps this a series of ordinary-length
-# lines: vm-cbt-backup.sh's `grep -Fqx` on the marker line has to buffer
-# whatever line it's scanning, and an unwrapped multi-GB payload becomes one
-# single line that OOM-kills grep in the guest at MANIFEST_VARIANT=large sizes.
+workflow_step "5/5 Initialize and validate the baseline file workload"
+workflow_action "Create $GUEST_BASE_FILE_COUNT deterministic files in $LINUX_GUEST_WORKLOAD_DIR with sizes from ${GUEST_FILE_SIZE_MIN_MIB}-${GUEST_FILE_SIZE_MAX_MIB}MiB"
+baseline_plan="$(workload_file_plan baseline "$GUEST_BASE_FILE_COUNT")"
+baseline_items=""
+while IFS='|' read -r workload_name workload_size_bytes; do
+  [[ -n "$workload_name" ]] || continue
+  baseline_items="${baseline_items} '${workload_name}|${workload_size_bytes}'"
+done <<< "$baseline_plan"
 guest_setup_command="
-printf '%s\n' \"Hello from the VM CBT demo.\" > ~/hello.txt
-head -c ${GUEST_DATA_SIZE_MB}M /dev/urandom | base64 >> ~/hello.txt
-printf '\n' >> ~/hello.txt
+set -euo pipefail
+workload_dir='$LINUX_GUEST_WORKLOAD_DIR'
+mkdir -p \"\$workload_dir\"
+if [[ -n \"\$(find \"\$workload_dir\" -mindepth 1 -maxdepth 1 -print -quit)\" ]]; then
+  printf 'Workload directory is not empty: %s\\n' \"\$workload_dir\" >&2
+  exit 1
+fi
+trap 'rm -f \"\$workload_dir\"/.cbt-workload-*.tmp' EXIT
+for workload_spec in ${baseline_items}; do
+  IFS='|' read -r name size_bytes <<< \"\$workload_spec\"
+  tmp_path=\"\$workload_dir/.cbt-workload-\${name}.tmp\"
+  set +o pipefail
+  yes \"CBT-WORKLOAD-V1:\${name}\" | head -c \"\$size_bytes\" > \"\$tmp_path\"
+  set -o pipefail
+  actual_size=\"\$(stat -c '%s' \"\$tmp_path\")\"
+  if [[ \"\$actual_size\" != \"\$size_bytes\" ]]; then
+    printf 'Generated file %s has size %s; expected %s bytes.\\n' \"\$name\" \"\$actual_size\" \"\$size_bytes\" >&2
+    exit 1
+  fi
+  mv \"\$tmp_path\" \"\$workload_dir/\$name\"
+done
 sync
-sha256sum ~/hello.txt
-stat -c 'SIZE_BYTES=%s' ~/hello.txt
+for workload_file in \"\$workload_dir\"/base-*.dat; do
+  [[ -f \"\$workload_file\" ]] || continue
+  name=\"\${workload_file##*/}\"
+  size_bytes=\"\$(stat -c '%s' \"\$workload_file\")\"
+  sha256=\"\$(sha256sum \"\$workload_file\" | awk '{print \$1}')\"
+  printf 'FILE_RECORD=%s|%s|%s\\n' \"\$name\" \"\$size_bytes\" \"\$sha256\"
+done
 "
 guest_output="$(guest_ssh "$guest_setup_command")"
 printf '%s\n' "$guest_output"
-guest_hash_line="$(printf '%s\n' "$guest_output" | grep -v '^SIZE_BYTES=')"
-guest_size_bytes="$(printf '%s\n' "$guest_output" | sed -n 's/^SIZE_BYTES=//p')"
-guest_hash="$(printf '%s' "$guest_hash_line" | extract_sha256)"
-write_state_file "full-backup.sha256" "$guest_hash"
+baseline_records="$(workload_records_from_output "$guest_output")"
+workload_manifest_initialize "$baseline_records"
+baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
+baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
+baseline_manifest_sha256="$(jq -r '.baseline.manifest_sha256' "$(workload_manifest_path)")"
 captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_report_fragment "setup" "$(jq -n \
   --arg namespace "$NAMESPACE" \
   --arg vm_name "$VM_NAME" \
-  --arg hello_file_path "$GUEST_HELLO_FILE" \
-  --arg sha256 "$guest_hash" \
-  --argjson size_bytes "$guest_size_bytes" \
+  --arg os_profile "$VM_OS" \
+  --arg guest_directory "$GUEST_WORKLOAD_DIR" \
+  --arg manifest_path "$WORKLOAD_MANIFEST_NAME" \
+  --arg manifest_sha256 "$baseline_manifest_sha256" \
   --arg captured_at "$captured_at" \
-  '{namespace: $namespace, vm_name: $vm_name,
-    guest: {hello_file_path: $hello_file_path,
-            full_backup: {size_bytes: $size_bytes, size_mb: (($size_bytes / 1048576 * 100 | round) / 100), sha256: $sha256, captured_at: $captured_at}}}')"
-workflow_success "Guest setup is complete; expected full-backup hash recorded in $STATE_DIR"
+  --argjson file_count "$baseline_file_count" \
+  --argjson total_payload_bytes "$baseline_total_bytes" \
+  --argjson min_mib "$GUEST_FILE_SIZE_MIN_MIB" \
+  --argjson max_mib "$GUEST_FILE_SIZE_MAX_MIB" \
+  '{namespace: $namespace, vm_name: $vm_name, os_profile: $os_profile,
+    guest: {workload: {directory: $guest_directory, manifest_path: $manifest_path,
+                       size_range_mib: {min_inclusive: $min_mib, max_inclusive: $max_mib},
+                       baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
+                                  manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
+workflow_success "Baseline workload manifest recorded at $(workload_manifest_path)"

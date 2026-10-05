@@ -85,7 +85,7 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 check_repository() {
   section "Repository"
   [[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
-  local files=(scripts/common.sh scripts/dotenv.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
+  local files=(scripts/common.sh scripts/dotenv.sh scripts/workload-manifest.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
   if [[ "$VM_OS" == windows ]]; then
     files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-incremental-backup.yaml manifests/windows-restore-verify-pod.yaml)
   fi
@@ -107,6 +107,11 @@ check_cli_tools() {
     check_command curl "install curl (Windows ISO upload)"
   fi
   check_command jq "install jq (used to build/merge the per-run JSON report)"
+  if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
+    result PASS "a SHA-256 utility is available for workload manifests"
+  else
+    result FAIL "install shasum or sha256sum for workload manifest hashing"
+  fi
   for command_name in sed mktemp grep sleep kill cat mkdir rm rmdir chmod awk stat tail tr date od; do
     check_command "$command_name" "install the command or restore the standard OS utilities"
   done
@@ -132,6 +137,25 @@ check_environment() {
     result PASS ".env is readable and supported values were loaded without executing it"
   else
     result WARN ".env is absent; environment variables and oc defaults will be used"
+  fi
+  GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
+  GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
+  GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
+  GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
+  local setting
+  for setting in GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB; do
+    if [[ "${!setting}" =~ ^[1-9][0-9]*$ ]]; then
+      result PASS "$setting is a positive integer"
+    else
+      result FAIL "$setting must be a positive integer"
+    fi
+  done
+  if [[ "$GUEST_FILE_SIZE_MIN_MIB" =~ ^[1-9][0-9]*$ &&
+        "$GUEST_FILE_SIZE_MAX_MIB" =~ ^[1-9][0-9]*$ ]] &&
+      ((GUEST_FILE_SIZE_MAX_MIB >= GUEST_FILE_SIZE_MIN_MIB)); then
+    result PASS "guest file size range is ordered"
+  else
+    result FAIL "GUEST_FILE_SIZE_MAX_MIB must be at least GUEST_FILE_SIZE_MIN_MIB"
   fi
 }
 
