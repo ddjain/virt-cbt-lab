@@ -44,8 +44,13 @@ PVC is a delta; N+M is asserted only on the reconstructed full-plus-incremental
 disk.
 
 The helper uses `qemu-img convert`, `qemu-img rebase`, `losetup`, and read-only
-ext4 or NTFS mounts. It requires a custom helper image, a privileged pod, and
-access to the node's `/dev`.
+ext4 (Debian), XFS (RHEL 9), or NTFS mounts. It requires a custom helper image,
+a privileged pod, and access to the node's `/dev`.
+
+The restore pod creates no additional PVC. It reuses the full and incremental
+backup PVCs read-only, stores conversion scratch in an `emptyDir`, and mounts
+host `/dev` for loop devices. The `emptyDir` is ephemeral storage, not part of
+the PVC capacity total.
 
 
 ## Artifact-level verification gap

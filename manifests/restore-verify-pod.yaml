@@ -86,7 +86,7 @@ spec:
             udevadm settle --timeout=5 2>/dev/null || sleep 1
             part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
             if [[ -z "$part" ]]; then
-              echo "ERROR: could not find the ext4 root partition in $raw_image" >&2
+              echo "ERROR: could not find a root partition in $raw_image" >&2
               return 1
             fi
             mount_dir="/work/${label,,}-mount"

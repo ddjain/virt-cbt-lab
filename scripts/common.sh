@@ -45,10 +45,27 @@ GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
 # Guest profile. Debian remains the default for backwards compatibility.
 # shellcheck disable=SC2034
 VM_OS="${VM_OS:-debian}"
+# shellcheck disable=SC2034
 case "$VM_OS" in
-  debian | windows) ;;
+  debian)
+    VM_DATA_SOURCE_NAME=debian
+    VM_DATA_SOURCE_NAMESPACE=vm-cbt-images
+    GUEST_LINUX_GROUP=sudo
+    GUEST_SSHD_SERVICE=ssh
+    GUEST_CLOUD_INIT_PACKAGE_UPDATE=true
+    GUEST_CLOUD_INIT_PACKAGES='[qemu-guest-agent]'
+    ;;
+  rhel9)
+    VM_DATA_SOURCE_NAME=rhel9
+    VM_DATA_SOURCE_NAMESPACE=openshift-virtualization-os-images
+    GUEST_LINUX_GROUP=wheel
+    GUEST_SSHD_SERVICE=sshd
+    GUEST_CLOUD_INIT_PACKAGE_UPDATE=false
+    GUEST_CLOUD_INIT_PACKAGES='[]'
+    ;;
+  windows) ;;
   *)
-    printf 'VM_OS must be "debian" or "windows" (got: %s)\n' "$VM_OS" >&2
+    printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
     exit 1
     ;;
 esac
@@ -108,13 +125,21 @@ fi
 
 # Resolves a manifest base name to the selected guest profile/size variant.
 manifest_path() {
-  local base_name="$1"
+  local base_name="$1" variant="$MANIFEST_VARIANT"
   if [[ "$VM_OS" == windows ]]; then
     printf '%s/manifests/windows-%s.yaml' "$ROOT_DIR" "$base_name"
-  elif [[ "$MANIFEST_VARIANT" == "default" ]]; then
-    printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
   else
-    printf '%s/manifests/%s-%s.yaml' "$ROOT_DIR" "$base_name" "$MANIFEST_VARIANT"
+    if [[ "$VM_OS" == rhel9 ]]; then
+      case "$variant" in
+        default | large) variant=large ;;
+        odf | large-odf) variant=large-odf ;;
+      esac
+    fi
+    if [[ "$variant" == "default" ]]; then
+      printf '%s/manifests/%s.yaml' "$ROOT_DIR" "$base_name"
+    else
+      printf '%s/manifests/%s-%s.yaml' "$ROOT_DIR" "$base_name" "$variant"
+    fi
   fi
 }
 

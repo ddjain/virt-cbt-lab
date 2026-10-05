@@ -11,14 +11,16 @@ ifeq ($(VM_OS),windows)
 VM_SETUP_SCRIPT := scripts/windows-vm-setup.sh
 else ifeq ($(VM_OS),debian)
 VM_SETUP_SCRIPT := scripts/vm-setup.sh
+else ifeq ($(VM_OS),rhel9)
+VM_SETUP_SCRIPT := scripts/vm-setup.sh
 else
-$(error VM_OS must be either debian or windows, got '$(VM_OS)')
+$(error VM_OS must be either debian, rhel9, or windows, got '$(VM_OS)')
 endif
 
 # Optional fixed run name instead of the default random one.
 NAME ?=
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync help
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync help
 
 preflight:
 	@printf '[make] [1/1] Preflight: check local tools and cluster access for VM_OS=%s (read-only).\n' "$(VM_OS)"
@@ -26,6 +28,8 @@ preflight:
 
 sync:
 	@./sync.sh
+
+resync: sync
 
 vm-setup:
 	@printf '[make] [1/1] VM setup (%s): create the CBT-enabled VM and initialize the baseline file workload.\n' "$(VM_OS)"
@@ -92,9 +96,11 @@ help:
 	  'make clean-all           Delete all virt-cbt-lab managed resources (every run) from the namespace, and its generated guest key.' \
 	  'make monitor VM=vm-foo   Watch the full/incremental backups for a run (read-only); run alongside make e2e NAME=foo.' \
 	  'make e2e VM_OS=windows   Run the Windows Server 2022 CBT E2E profile.' \
+	  'make e2e VM_OS=rhel9    Run the RHEL 9 CBT E2E profile.' \
 	  'make windows-e2e        Alias for make e2e VM_OS=windows.' \
 	  'make windows-vm-setup   Clone a Windows VM, verify startup workloads, and initialize the baseline file workload.' \
 	  'make sync               Copy working files to REMOTE_HOST:REMOTE_DIR using sync.sh.' \
+	  'make resync             Alias for make sync; copy working files to REMOTE_HOST:REMOTE_DIR.' \
 	  'sync.sh --pull-reports  Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
 	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
 	  'Prerequisites: OpenShift Virtualization, CBT APIs, and profile-specific storage classes (Windows requires ODF).'

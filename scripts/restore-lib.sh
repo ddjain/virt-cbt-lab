@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helpers for scripts/vm-cbt-restore-test.sh: run a short-lived pod that
 # reconstructs guest disks from the backup PVCs (qemu-img rebase/convert)
-# and reads the guest file from ext4 (Debian) or NTFS (Windows), without
+# and reads the guest file from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows), without
 # booting a second VM.
 set -euo pipefail
 

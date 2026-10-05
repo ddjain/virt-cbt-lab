@@ -77,6 +77,14 @@ WINDOWS_ISO_PATH="${WINDOWS_ISO_PATH:-}"
 WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
 if [[ -z "$VM_OS" ]]; then VM_OS=debian; fi
 
+case "$VM_OS" in
+  debian | rhel9 | windows) ;;
+  *)
+    printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
+    exit 2
+    ;;
+esac
+
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
 GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
@@ -89,6 +97,9 @@ check_repository() {
   if [[ "$VM_OS" == windows ]]; then
     files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-incremental-backup.yaml manifests/windows-restore-verify-pod.yaml)
   fi
+  if [[ "$VM_OS" == rhel9 ]]; then
+    files+=(manifests/vm-large.yaml manifests/vm-large-odf.yaml manifests/full-backup-large.yaml manifests/full-backup-large-odf.yaml manifests/incremental-backup-large.yaml manifests/incremental-backup-large-odf.yaml)
+  fi
   for file in "${files[@]}"; do
     [[ -f "$ROOT_DIR/$file" ]] && result PASS "$file found" || result FAIL "$file is missing"
   done
@@ -99,12 +110,12 @@ check_cli_tools() {
   check_command bash "install Bash 3.2 or newer"
   check_command make "install make"
   check_command oc "install the OpenShift CLI (oc)"
-  if [[ "$VM_OS" == debian ]]; then
-    check_command ssh "install an OpenSSH client"
-    check_command ssh-keygen "install OpenSSH client tools"
-  else
+  if [[ "$VM_OS" == windows ]]; then
     check_command python3 "install Python 3 (answer-file rendering and validation)"
     check_command curl "install curl (Windows ISO upload)"
+  else
+    check_command ssh "install an OpenSSH client"
+    check_command ssh-keygen "install OpenSSH client tools"
   fi
   check_command jq "install jq (used to build/merge the per-run JSON report)"
   if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
@@ -233,6 +244,21 @@ check_cluster_capabilities() {
       result PASS "storage class $demo_storage_class is available"
     else
       result FAIL "storage class $demo_storage_class is unavailable"
+    fi
+  fi
+  if [[ "$VM_OS" == rhel9 ]]; then
+    local rhel9_source_pvc rhel9_source_phase
+    if rhel9_source_pvc="$(oc get datasource rhel9 -n openshift-virtualization-os-images -o 'jsonpath={.spec.source.pvc.name}' 2>"$TMP_DIR/oc-error")" &&
+       [[ -n "$rhel9_source_pvc" ]]; then
+      result PASS "RHEL 9 DataSource rhel9 is available"
+      rhel9_source_phase="$(oc get pvc "$rhel9_source_pvc" -n openshift-virtualization-os-images -o 'jsonpath={.status.phase}' 2>"$TMP_DIR/oc-error" || true)"
+      if [[ "$rhel9_source_phase" == Bound ]]; then
+        result PASS "RHEL 9 DataSource source PVC is Bound"
+      else
+        result FAIL "RHEL 9 DataSource source PVC is not Bound (phase: ${rhel9_source_phase:-unknown})"
+      fi
+    else
+      result FAIL "RHEL 9 DataSource rhel9 is unavailable in openshift-virtualization-os-images"
     fi
   fi
 

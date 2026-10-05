@@ -32,8 +32,8 @@ spec:
       spec:
         sourceRef:
           kind: DataSource
-          name: debian
-          namespace: vm-cbt-images
+          name: __DATA_SOURCE_NAME__
+          namespace: __DATA_SOURCE_NAMESPACE__
         storage:
           accessModes:
             - ReadWriteOnce
@@ -82,17 +82,16 @@ spec:
           cloudInitNoCloud:
             userData: |
               #cloud-config
-              package_update: true
-              packages:
-                - qemu-guest-agent
+              package_update: __GUEST_CLOUD_INIT_PACKAGE_UPDATE__
+              packages: __GUEST_CLOUD_INIT_PACKAGES__
               runcmd:
                 - [systemctl, enable, --now, qemu-guest-agent]
-                - [systemctl, enable, --now, ssh]
+                - [systemctl, enable, --now, __GUEST_SSHD_SERVICE__]
               ssh_pwauth: false
               users:
                 - name: cbt-demo
                   gecos: CBT demo user
-                  groups: [sudo]
+                  groups: [__GUEST_LINUX_GROUP__]
                   sudo: ["ALL=(ALL) NOPASSWD:ALL"]
                   shell: /bin/bash
                   lock_passwd: true

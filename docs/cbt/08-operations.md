@@ -116,6 +116,7 @@ jq . report/run_*/report.json
 | Symptom | First checks |
 |---|---|
 | Golden image import stuck | `oc get dv debian-golden -n vm-cbt-images`; CDI importer logs; HTTPS egress |
+| RHEL 9 source unavailable | `oc get datasource rhel9 -n openshift-virtualization-os-images`; inspect the referenced PVC phase |
 | Root or backup PVC Pending | `oc get events`; HPP CSI/pool pods; storage pool capacity; node affinity |
 | CBT is not Enabled | `IncrementalBackup` gate, VM `cbt-demo=enabled` label, KubeVirt selector configuration |
 | Guest SSH retries | VM/VMI Ready/Running, Service endpoints, cloud-init/sshd, guest key |

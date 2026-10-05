@@ -7,16 +7,37 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="vm-setup"
 require_command ssh
 require_command ssh-keygen
-
 new_run_id
 new_report_id
 
-workflow_step "1/5 Prepare the Debian golden image"
-workflow_action "oc apply -f manifests/debian-image.yaml (namespace vm-cbt-images, DataVolume debian-golden)"
-sed "s|__NAMESPACE__|$NAMESPACE|g" "$ROOT_DIR/manifests/debian-image.yaml" | oc_cmd apply -f - >/dev/null
-workflow_action "oc wait dv/debian-golden -n vm-cbt-images --for=jsonpath={.status.phase}=Succeeded --timeout=20m"
-oc_cmd wait dv/debian-golden -n vm-cbt-images --for=jsonpath='{.status.phase}'=Succeeded --timeout=20m >/dev/null
-workflow_success "Debian golden image is ready (downloaded once, reused on subsequent runs)"
+workflow_step "1/5 Prepare the $VM_OS image source"
+case "$VM_OS" in
+  debian)
+    workflow_action "oc apply -f manifests/debian-image.yaml (namespace vm-cbt-images, DataVolume debian-golden)"
+    sed "s|__NAMESPACE__|$NAMESPACE|g" "$ROOT_DIR/manifests/debian-image.yaml" | oc_cmd apply -f - >/dev/null
+    workflow_action "oc wait dv/debian-golden -n vm-cbt-images --for=jsonpath={.status.phase}=Succeeded --timeout=20m"
+    oc_cmd wait dv/debian-golden -n vm-cbt-images --for=jsonpath='{.status.phase}'=Succeeded --timeout=20m >/dev/null
+    workflow_success "Debian golden image is ready (downloaded once, reused on subsequent runs)"
+    ;;
+  rhel9)
+    workflow_action "Read DataSource $VM_DATA_SOURCE_NAME in namespace $VM_DATA_SOURCE_NAMESPACE"
+    if ! source_pvc_name="$(oc_cmd get datasource "$VM_DATA_SOURCE_NAME" -n "$VM_DATA_SOURCE_NAMESPACE" -o 'jsonpath={.spec.source.pvc.name}')"; then
+      printf 'Unable to read RHEL 9 DataSource %s in namespace %s.\n' "$VM_DATA_SOURCE_NAME" "$VM_DATA_SOURCE_NAMESPACE" >&2
+      exit 1
+    fi
+    if [[ -z "$source_pvc_name" ]]; then
+      printf 'RHEL 9 DataSource %s does not reference a source PVC.\n' "$VM_DATA_SOURCE_NAME" >&2
+      exit 1
+    fi
+    workflow_action "oc wait pvc/$source_pvc_name -n $VM_DATA_SOURCE_NAMESPACE --for=jsonpath={.status.phase}=Bound --timeout=20m"
+    oc_cmd wait "pvc/$source_pvc_name" -n "$VM_DATA_SOURCE_NAMESPACE" --for=jsonpath='{.status.phase}'=Bound --timeout=20m >/dev/null
+    workflow_success "RHEL 9 DataSource $VM_DATA_SOURCE_NAME is ready"
+    ;;
+  *)
+    printf 'scripts/vm-setup.sh requires VM_OS=debian or rhel9 (got %s).\n' "$VM_OS" >&2
+    exit 2
+    ;;
+esac
 
 workflow_step "2/5 Prepare guest SSH access"
 workflow_action "Generate or reuse the guest key at $GUEST_KEY (private key stays local)"
@@ -24,7 +45,7 @@ public_key="$(ensure_guest_key)"
 workflow_success "Guest key is ready for user $GUEST_USER"
 
 workflow_step "3/5 Create the VM, root disk, namespace, and SSH service"
-workflow_action "oc apply -f manifests/vm.yaml (VM $VM_NAME, DataVolume $DV_NAME, service $SSH_SERVICE)"
+workflow_action "oc apply -f $(manifest_path vm) (VM $VM_NAME, DataVolume $DV_NAME, service $SSH_SERVICE)"
 # Inject only the public key; the private key stays outside the manifest.
 sed \
   -e "s|__SSH_PUBLIC_KEY__|$public_key|g" \
@@ -32,6 +53,12 @@ sed \
   -e "s|__VM_NAME__|$VM_NAME|g" \
   -e "s|__DV_NAME__|$DV_NAME|g" \
   -e "s|__SSH_SERVICE__|$SSH_SERVICE|g" \
+  -e "s|__DATA_SOURCE_NAME__|$VM_DATA_SOURCE_NAME|g" \
+  -e "s|__DATA_SOURCE_NAMESPACE__|$VM_DATA_SOURCE_NAMESPACE|g" \
+  -e "s|__GUEST_LINUX_GROUP__|$GUEST_LINUX_GROUP|g" \
+  -e "s|__GUEST_SSHD_SERVICE__|$GUEST_SSHD_SERVICE|g" \
+  -e "s|__GUEST_CLOUD_INIT_PACKAGE_UPDATE__|$GUEST_CLOUD_INIT_PACKAGE_UPDATE|g" \
+  -e "s|__GUEST_CLOUD_INIT_PACKAGES__|$GUEST_CLOUD_INIT_PACKAGES|g" \
   -e "s|__RUN_ID__|$RUN_ID|g" \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \

@@ -7,7 +7,7 @@ load_run_id
 load_report_id
 
 workflow_step "1/4 Create full-backup resources"
-workflow_action "oc apply -f manifests/full-backup.yaml (PVC $FULL_BACKUP_PVC_NAME, tracker $TRACKER_NAME, backup $FULL_BACKUP_NAME)"
+workflow_action "oc apply -f $(manifest_path full-backup) (PVC $FULL_BACKUP_PVC_NAME, tracker $TRACKER_NAME, backup $FULL_BACKUP_NAME)"
 sed \
   -e "s|__NAMESPACE__|$NAMESPACE|g" \
   -e "s|__VM_NAME__|$VM_NAME|g" \
