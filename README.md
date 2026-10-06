@@ -160,6 +160,23 @@ Then run the Windows CBT E2E profile:
 make e2e VM_OS=windows NAME=windows-cbt-1
 ```
 
+### Larger deterministic file workload
+
+Keep the small defaults in `.env.example`, or override them per invocation for a larger CBT payload:
+
+```sh
+make e2e VM_OS=windows NAME=windows-01 \
+  GUEST_BASE_FILE_COUNT=100 GUEST_INCREMENTAL_FILE_COUNT=50 \
+  GUEST_FILE_SIZE_MIN_MIB=5 GUEST_FILE_SIZE_MAX_MIB=10
+
+make e2e VM_OS=rhel9 NAME=rhel9-01 \
+  GUEST_BASE_FILE_COUNT=100 GUEST_INCREMENTAL_FILE_COUNT=50 \
+  GUEST_FILE_SIZE_MIN_MIB=5 GUEST_FILE_SIZE_MAX_MIB=10
+```
+
+The deterministic plan totals 739 MiB baseline, 380 MiB incremental, and 1,119 MiB combined. Use a unique `NAME` per run and run sequentially from one checkout because workflow state is shared.
+
+
 `windows-vm-setup` builds the cached Windows image automatically when it is missing (requires `WINDOWS_ISO_PATH` and `WINDOWS_ADMIN_PASSWORD_FILE`). The Windows E2E target reuses the generic backup/tracker workflow and verifies restored NTFS file bytes.
 
 Use a fixed, deterministic run name for Debian instead of the default random one:
@@ -177,15 +194,11 @@ make vm-cbt-backup
 make vm-cbt-verify
 ```
 
-To track when the full and incremental backups actually start/finish (and their duration) while `make e2e NAME=foo` is running, run this in another terminal for the same run:
+### Timestamped E2E logs
 
-```sh
-make monitor VM=vm-foo
-```
+`make e2e` and workflow steps log UTC timestamps. The E2E summary line reports total elapsed time including preflight, setup, backups, and restore verification. After a successful run, `make e2e` invokes the read-only monitor to print API-recorded full/incremental start, completion, and duration; `make monitor VM=vm-foo` remains available for manually staged workflows.
 
-It only reads `vmbackup` status (no cluster changes), prints the API-recorded creation-to-`Done` duration and terminal reason, and exits non-zero if either backup has a terminal failure reason.
-
-The scripts write concise structured progress messages to stderr. Each workflow uses numbered steps with `→` action lines and `✓` success lines; failures identify the active step while preserving the underlying command diagnostics. `make vm-cbt-demo` and `make e2e` add stage-level headers without printing every shell command. Guest `sha256sum` output and backup checkpoint summaries remain visible in the normal command output.
+The full-backup step logs baseline workload file count and payload bytes; the incremental step logs added and combined file counts and payload bytes. The structured JSON report retains these values and the restore verification results.
 
 Each `make e2e` run generates a unique run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and names every resource it creates from it, so repeat runs coexist in the same `NAMESPACE` without collisions; no cleanup is required between runs. To remove all runs' resources from the namespace:
 

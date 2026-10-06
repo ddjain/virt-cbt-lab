@@ -269,7 +269,8 @@ combined_total_bytes="$(jq -r '.incremental.total_payload_bytes' "$manifest_path
 combined_manifest_sha256="$(jq -r '.incremental.manifest_sha256' "$manifest_path")"
 incremental_added_manifest_sha256="$(jq -r '.incremental.added_manifest_sha256' "$manifest_path")"
 guest_captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-workflow_success "Added $incremental_file_count files; the $combined_file_count-file manifest is $combined_manifest_sha256"
+workflow_success "Incremental workload payload: ${incremental_file_count} files, ${incremental_added_bytes} bytes ($((incremental_added_bytes / 1048576)) MiB) added"
+workflow_action "Combined workload: ${combined_file_count} files, ${combined_total_bytes} bytes ($((combined_total_bytes / 1048576)) MiB); manifest SHA-256: $combined_manifest_sha256"
 
 workflow_step "3/5 Create the incremental backup request"
 workflow_action "oc apply -f $(manifest_path incremental-backup) (PVC $INCREMENTAL_BACKUP_PVC_NAME and backup $INCREMENTAL_BACKUP_NAME)"
@@ -305,7 +306,9 @@ fi
 incremental_checkpoint="$(get_backup_checkpoint "$INCREMENTAL_BACKUP_NAME")"
 workflow_success "$INCREMENTAL_BACKUP_NAME is $incremental_backup_type (checkpoint $incremental_checkpoint)"
 
-workflow_action "Recording incremental backup PVC size and VM backup status for the run report"
+incremental_pvc_requested="$(get_pvc_requested "$INCREMENTAL_BACKUP_PVC_NAME")"
+incremental_pvc_capacity="$(get_pvc_capacity "$INCREMENTAL_BACKUP_PVC_NAME")"
+workflow_action "Incremental backup output PVC: ${incremental_pvc_requested} requested, ${incremental_pvc_capacity} capacity"
 incremental_backup_status="$(get_vm_backup_status)"
 if [[ "$(jq -r '.backupName // empty' <<<"$incremental_backup_status")" != "$INCREMENTAL_BACKUP_NAME" ]]; then
   incremental_backup_status='{}'
@@ -320,8 +323,8 @@ write_report_fragment "incremental-backup" "$(jq -n \
   --arg checkpoint_name "$incremental_checkpoint" \
   --arg done_reason "$incremental_backup_done_reason" \
   --arg pvc_name "$INCREMENTAL_BACKUP_PVC_NAME" \
-  --arg pvc_requested "$(get_pvc_requested "$INCREMENTAL_BACKUP_PVC_NAME")" \
-  --arg pvc_capacity "$(get_pvc_capacity "$INCREMENTAL_BACKUP_PVC_NAME")" \
+  --arg pvc_requested "$incremental_pvc_requested" \
+  --arg pvc_capacity "$incremental_pvc_capacity" \
   --argjson files_added "$incremental_file_count" \
   --argjson added_payload_bytes "$incremental_added_bytes" \
   --argjson total_file_count "$combined_file_count" \

@@ -121,6 +121,7 @@ baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
 baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
 baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
+baseline_total_mib=$((baseline_total_bytes / 1048576))
 baseline_manifest_sha256="$(jq -r '.baseline.manifest_sha256' "$(workload_manifest_path)")"
 captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_report_fragment "setup" "$(jq -n \
@@ -140,4 +141,4 @@ write_report_fragment "setup" "$(jq -n \
                        size_range_mib: {min_inclusive: $min_mib, max_inclusive: $max_mib},
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
-workflow_success "Baseline workload manifest recorded at $(workload_manifest_path)"
+workflow_success "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"

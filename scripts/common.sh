@@ -154,22 +154,28 @@ oc_cmd() {
 set -E
 CURRENT_STEP="workflow startup"
 
+# UTC timestamps match the timestamps recorded by the Kubernetes API.
+workflow_timestamp() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
 workflow_step() {
   CURRENT_STEP="$1"
-  printf '\n[%s] %s\n' "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
+  printf '\n[%s] [%s] %s\n' "$(workflow_timestamp)" "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
 }
 
 workflow_action() {
-  printf '  → %s\n' "$1" >&2
+  printf '  [%s] → %s\n' "$(workflow_timestamp)" "$1" >&2
 }
 
 workflow_success() {
-  printf '  ✓ %s\n' "$1" >&2
+  printf '  [%s] ✓ %s\n' "$(workflow_timestamp)" "$1" >&2
 }
 
 workflow_failed() {
-  local status=$?
-  printf '  ✗ Failed: %s (exit %d)\n' "$CURRENT_STEP" "$status" >&2
+  local status=$? timestamp
+  timestamp="$(workflow_timestamp)"
+  printf '  [%s] ✗ Failed: %s (exit %d)\n' "$timestamp" "$CURRENT_STEP" "$status" >&2
   return "$status"
 }
 

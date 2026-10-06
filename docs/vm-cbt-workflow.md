@@ -67,7 +67,7 @@ make vm-cbt-backup
 make vm-cbt-verify
 ```
 
-The scripts emit concise structured progress messages to stderr: numbered workflow steps, `→` action descriptions, `✓` success messages, and an active-step failure message before the original command diagnostic. Make-level headers show the four demo stages; raw shell tracing is intentionally not enabled.
+Workflow logs use UTC timestamps on numbered steps, actions, successes, and failures. The full-backup and incremental steps print workload file counts and payload bytes. `make e2e` logs total elapsed time including preflight and restore verification, then invokes the read-only monitor after a successful run to print API-recorded full and incremental backup start/completion times and durations.
 
 ## Step-by-step behavior
 
@@ -80,7 +80,7 @@ The scripts emit concise structured progress messages to stderr: numbered workfl
 3. Generates a fresh run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and persists it to `state/run-id`, then applies the selected VM manifest. It creates namespace `$NAMESPACE` (if missing), the run's VM (`vm-<run-id>`), root disk, and SSH service (`vm-ssh-<run-id>`), each labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`.
 4. Creates a root `DataVolume` from the profile's DataSource. Debian uses the selected standard size (5Gi on `cbt-demo-hpp` or 6Gi on ODF). RHEL 9 maps HPP settings to the 40Gi `large` manifests and ODF settings to the 48Gi `large-odf` manifests, which are sized to clone the larger platform source. The target disk must still be at least as large as the source PVC. The VM has one vCPU, 2 GiB memory for the small Debian profile or 4 GiB for RHEL 9, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file and records the baseline file list, sizes, and hashes in `report/<REPORT_ID>/workload-manifest.json` before the full backup.
+6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file, logs the baseline file count and payload bytes, and records the file list, sizes, and hashes in `report/<REPORT_ID>/workload-manifest.json` before the full backup.
 
 All later steps (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`) read the run ID back from `state/run-id` rather than generating a new one, so they operate on the same run's resources. Deleting or overwriting `state/run-id` between steps of one E2E run breaks the chain; `make clean-all` removes it along with the rest of the local run state.
 
@@ -102,11 +102,13 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 1. Confirms the full backup completed as `Full`.
 2. Waits for the tracker checkpoint to match the full backup checkpoint. This avoids starting the next backup before the base checkpoint is recorded.
-3. Adds `GUEST_INCREMENTAL_FILE_COUNT` (default 4) new, deterministic files in the same directory, verifies that the baseline still matches the manifest, and extends that manifest with the added files. All writes are flushed before the incremental backup.
+3. Adds `GUEST_INCREMENTAL_FILE_COUNT` (default 4) new, deterministic files in the same directory, verifies that the baseline still matches the manifest, and extends that manifest with the added files. It logs the added and combined file counts/payload bytes; all writes are flushed before the incremental backup.
 4. Applies `manifests/incremental-backup.yaml`, creating the `vm-incremental-pvc-<run-id>` PVC (3 GiB, sized for the delta only) and `vm-incremental-<run-id>` backup, both labeled with the run's ownership labels. Its source is the same tracker, so KubeVirt can use the tracker's checkpoint as the incremental base.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, and prints the new checkpoint.
 
 File names, sizes, and bytes are stable across retries. Existing incremental files are retained only if their sizes and hashes match the deterministic payload; missing files are created, and unexpected or changed files fail before the incremental backup.
+
+**100/50-file run profile.** The normal defaults remain 8 baseline files, 4 incremental files, and a 4–12 MiB range. For a larger per-run payload, pass `GUEST_BASE_FILE_COUNT=100 GUEST_INCREMENTAL_FILE_COUNT=50 GUEST_FILE_SIZE_MIN_MIB=5 GUEST_FILE_SIZE_MAX_MIB=10` to `make e2e`. The deterministic filename assignment totals 739 MiB baseline and 380 MiB incremental (1,119 MiB combined). The run manifest and console output record the exact counts and payload bytes.
 
 **ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against the target ODF cluster: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.
 
