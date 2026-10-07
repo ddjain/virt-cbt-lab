@@ -19,7 +19,7 @@ TARGET_PVC="${TARGET_PVC:-}"
 if [[ -z "$TARGET_PVC" ]]; then
   case "$TARGET_BACKUP" in
     full) TARGET_PVC="vm-backup-pvc-${RUN_NAME}" ;;
-    incremental) TARGET_PVC="vm-incremental-pvc-${RUN_NAME}" ;;
+    incremental) TARGET_PVC="$INCREMENTAL_BACKUP_PVC_NAME" ;;
   esac
 fi
 chaos_require_tools

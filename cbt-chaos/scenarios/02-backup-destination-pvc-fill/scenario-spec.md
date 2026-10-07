@@ -6,34 +6,32 @@
 Fill the backup-destination PVC during live block-copy to test clean-failure vs silent truncation.
 
 ## 2. Description
-Targets `hello-full-output` / `hello-incremental-output` PVCs (local hostpath storage) during the live
-block-copy window. Tests whether capacity exhaustion mid-copy produces a terminal error condition or
-lets `Done=True` be reached over a truncated file — the "Backup destination capacity" row in
-`chaos-plan.md` §D, currently UNKNOWN/untested.
+Targets the run-scoped `vm-backup-pvc-<RUN_NAME>` PVC or a pass-specific
+`vm-incremental-pvc-<RUN_NAME>-pNN` PVC during the live block-copy window.
+The incremental pass is selected with `INCREMENTAL_PASS` (default `1`).
 
 ## 3. Chaos Injection
 
 **Primary (krknctl):**
 
 Validated against `krknctl describe pvc-scenarios` / `krknctl run pvc-scenarios --help` (real scenario
-tag is `pvc-scenarios`, not `pvc_scenarios`. The reusable trigger derives
-`vm-backup-pvc-<RUN_NAME>` or `vm-incremental-pvc-<RUN_NAME>` in `vm-cbt-demo`.
-`--namespace` is a required flag with no default.
+tag is `pvc-scenarios`, not `pvc_scenarios`). The trigger derives the full PVC
+or the incremental PVC for `INCREMENTAL_PASS`; `--namespace` has no default.
 
 ```bash
 krknctl run pvc-scenarios \
   --namespace vm-cbt-demo \
-  --pvc-name hello-full-output \
+  --pvc-name vm-backup-pvc-<RUN_NAME> \
   --fill-percentage 95 \
   --duration 60 \
   --kubeconfig /path/to/cluster/kubeconfig
-
 ```
 `chaos-trigger.sh` also passes `--trigger-command`, `--triggers-interval`,
 `--triggers-timeout`, and `--triggers-on-timeout fail`; these flags keep a missed
 boundary from becoming a false-positive successful chaos run.
 
-Set `TARGET_BACKUP=incremental` to select the incremental PVC; `TARGET_PVC` can override the derived name.
+Set `TARGET_BACKUP=incremental` and `INCREMENTAL_PASS=2` to target pass 2.
+`TARGET_PVC` can override the derived name.
 
 **Secondary (oc, only if krknctl cannot do this):**
 ```

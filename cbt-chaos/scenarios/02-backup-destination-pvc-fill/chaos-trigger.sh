@@ -6,7 +6,6 @@
 # in-container boundary. Use the large profile so krknctl's trigger startup is
 # absorbed before the copy and the fill runs during the measured copy window.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../trigger-common.sh
 source "$SCRIPT_DIR/../trigger-common.sh"
@@ -18,7 +17,7 @@ TARGET_PVC="${TARGET_PVC:-}"
 if [[ -z "$TARGET_PVC" ]]; then
   case "$TARGET_BACKUP" in
     full) TARGET_PVC="vm-backup-pvc-${RUN_NAME}" ;;
-    incremental) TARGET_PVC="vm-incremental-pvc-${RUN_NAME}" ;;
+    incremental) TARGET_PVC="$INCREMENTAL_BACKUP_PVC_NAME" ;;
   esac
 fi
 FILL_PERCENTAGE="${FILL_PERCENTAGE:-95}"

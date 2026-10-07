@@ -1,22 +1,55 @@
 # KubeVirt CBT VM backup demo
 
-This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. The default workflow creates a Debian VM, writes a deterministic baseline file set, adds files, takes full and incremental backups, then verifies the API state and restored data. The `rhel9` profile uses the cluster-provided RHEL 9 DataSource with the same Linux SSH and restore workflow. A Windows Server 2022 profile uses QEMU Guest Agent and a cached sysprepped image; `make windows-vm-setup` provisions one Windows VM and creates the backup test file before the Windows E2E profile is run.
+This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-machine backups. The default workflow creates a Debian VM, writes a deterministic baseline file set and manifest, takes one full backup followed by one or more sequential incremental backups, then verifies every checkpoint and restored workload prefix. The `rhel9` profile uses the cluster-provided RHEL 9 DataSource with the same Linux SSH and restore workflow. A Windows Server 2022 profile uses QEMU Guest Agent and a cached sysprepped image; `make windows-vm-setup` provisions one Windows VM and creates the backup test file before the Windows E2E profile is run.
 
 The workflow is a demonstration, not a production backup policy. Each run uses run-derived resource names in a shared namespace and local/RWO storage.
+
+## Quick start
+
+After meeting the prerequisites below and selecting a supported cluster with `oc`, run the one-shot E2E:
+
+```sh
+make e2e
+```
+
+`make e2e` runs read-only preflight, VM setup, one full backup, the configured incremental passes, and restore verification. Defaults: Debian on the ODF variant, 8 baseline files, 4 new files per incremental pass, 1 pass, and 4–12 MiB per file. If your cluster uses HPP without ODF, run `make e2e MANIFEST_VARIANT=default`. A `.env` file is optional; `make` loads it when present.
+
+### Separate full and incremental commands
+
+```sh
+make e2e TYPE=full VM=vm-demo
+make e2e TYPE=incremental VM=vm-demo
+```
+
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run the same `TYPE=incremental` command `N` times. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it exits without waiting for future backup objects; automatic timing collection runs after the final pass.
+
+### Supported E2E modes
+
+| `TYPE` | Behavior |
+|---|---|
+| `all` (default) | Run setup, full backup, all planned incrementals, and verification in one command. |
+| `full` | Start a lifecycle and take its full backup. Set `VM=vm-<run-id>` for a predictable name in later stages. |
+| `incremental` | Add the next planned pass to `VM`; the final planned pass also verifies. |
+| `verify` | Recheck checkpoints and restored data without adding a pass; e.g. `make e2e TYPE=verify VM=vm-demo`. |
+| `extend` | Add one pass to a completed lifecycle; e.g. `make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4` after three passes. |
+
+Use `VM=vm-<run-id>` for `incremental`, `verify`, and `extend`. `EXTEND_TO_PASS` must be exactly one above the completed total.
+
+Key Make variables such as `VM_OS`, `MANIFEST_VARIANT`, `GUEST_*`, and `DEBUG` are documented in [Supported variables](#supported-variables). Run `make preflight` for a read-only readiness check and `make help` for the other public Make targets. `make clean-all` deletes every workflow-managed resource in the namespace; reports are retained.
 
 ## Architecture and workflow
 
 ```text
-vm-setup -> vm-backup -> vm-cbt-backup -> vm-cbt-verify
+vm-setup -> vm-backup -> [vm-cbt-backup] x GUEST_INCREMENTAL_PASSES -> vm-cbt-verify
 ```
 For the component, network, storage, checkpoint, source-code, sequence-diagram, and failure-boundary reference, start with [`docs/cbt/README.md`](docs/cbt/README.md). The stable architecture hub is [`docs/cbt-architecture.md`](docs/cbt-architecture.md).
 - `common.sh` centralizes workflow names, environment handling, prerequisite checks, guest-key creation, port-forward cleanup, and backup queries.
 - `scripts/dotenv.sh` safely reads supported `.env` values without executing the file; both `preflight` and `sync.sh` use it.
 - `vm-setup.sh` imports the cached Debian image or clones the cluster-provided RHEL 9 DataSource, then creates a Linux VM with SSH; `windows-vm-setup.sh` reuses the Windows golden DataSource, attaches a run-scoped OOBE Secret, and initializes a run-scoped file workload through QEMU Guest Agent.
-- `vm-backup.sh` creates the backup PVC, tracker, and full backup, then waits for completion.
-- `vm-cbt-backup.sh` waits for the tracker checkpoint, adds new deterministic workload files, creates the incremental backup, and checks its type.
-- `vm-cbt-verify.sh` checks CBT, completion conditions, distinct checkpoints, and the tracker's latest checkpoint, then runs `vm-cbt-restore-test.sh`, then merges every stage's fragment into the run's `report.json`.
-- `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and incremental backup PVCs and verifies its actual data — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and how to independently cross-check it.
+- `vm-backup.sh` creates the backup PVC, tracker, and full backup, then streams observed backup status while waiting for completion.
+- `vm-cbt-backup.sh` adds one pass of new deterministic workload files to the same VM, creates its pass-specific incremental backup, streams observed backup status while waiting, and advances lifecycle state only after the backup and tracker checkpoint succeed.
+- `vm-cbt-verify.sh` checks CBT, completion, every distinct checkpoint, and the final tracker checkpoint, then verifies the full restore and every cumulative incremental restore prefix before merging report fragments into `report.json`.
+- `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and every incremental backup PVC, then verifies the baseline and each cumulative restore prefix — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and independent cross-checks.
 - `clean-all.sh` removes workflow-managed resources, including per-run Windows OOBE Secrets, from the shared namespace and only the guest key marked as workflow-managed.
 
 Each run also writes a structured JSON report to `report/run_<UTC timestamp>/` — see [Run report](#run-report) below.
@@ -33,7 +66,8 @@ Cluster resources:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` APIs.
 - The `IncrementalBackup` feature gate.
-- Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for the RWO VM and backup PVCs. RHEL 9 requires a ready `rhel9` DataSource in `openshift-virtualization-os-images`; it uses a 40Gi HPP or 48Gi ODF root/full-backup PVC and a 25Gi/30Gi incremental PVC.
+- Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for the RWO VM and backup PVCs.
+- RHEL 9 requires a ready `rhel9` DataSource in `openshift-virtualization-os-images`; the selected HPP or ODF profile requests an 80Gi root disk and 80Gi full-backup PVC, plus a 25Gi/30Gi incremental PVC per pass (HPP/ODF). CDI may increase the actual ODF root PVC request.
 - Windows requires `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 40Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. These ODF classes are used by the Windows manifests.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
@@ -57,22 +91,31 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 
    `make` also includes `.env` automatically and exports the supported variables to workflow scripts.
 
-Supported variables:
+### Supported variables
 
-| Variable | Required | Meaning |
-|---|---:|---|
-| `KUBECONFIG_PATH` | No | Kubeconfig path; otherwise `KUBECONFIG` or the `oc` default is used. |
-| `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
-| `REMOTE_HOST` | For `make sync`/`make resync` | SSH host or alias used for synchronization. |
-| `REMOTE_DIR` | For `make sync`/`make resync` | Destination directory on that host. |
-| `VM_OS` | No | Guest profile for `make e2e`: `debian` (default), `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
-| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
-| `GUEST_BASE_FILE_COUNT` | No | Number of deterministic files created before the full backup. Default: `8`. |
-| `GUEST_INCREMENTAL_FILE_COUNT` | No | Number of new files added before the incremental backup. Default: `4`. |
-| `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | Inclusive whole-MiB size range for each file. Defaults: `4` and `12`. The selected sizes and SHA-256 hashes are recorded in the run manifest. |
-| `MANIFEST_VARIANT` | No | Debian sizing: `odf`, `default`, `large`, or `large-odf`; RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. Default: `odf`. |
-| `WINDOWS_ISO_PATH` | If the ISO is not already staged | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
-| `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Local, gitignored file containing the Administrator password; never committed or logged. |
+| Variable | Required | Default | Meaning |
+|---|---:|---|---|
+| `KUBECONFIG_PATH` | No | Unset | Kubeconfig path; when unset, use `$KUBECONFIG`, then the `oc` default. |
+| `GUEST_KEY` | No | `keys/id_ed25519` | Repository-local private key path (gitignored). |
+| `REMOTE_HOST` | For `make sync`/`make resync`/`make pull-reports` | Unset | SSH host or alias used for synchronization. |
+| `REMOTE_DIR` | For `make sync`/`make resync`/`make pull-reports` | Unset | Destination directory on that host. |
+| `NAMESPACE` | No | `vm-cbt-demo` | Kubernetes namespace for workflow resources. |
+| `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `verify`, or `extend`. |
+| `VM` | For staged `incremental`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
+| `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when both `NAME` and `VM` are unset, a new run ID is generated. |
+| `VM_OS` | No | `debian` | Guest profile for `make e2e`: `debian`, `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `DEBUG` | No | `false` | `DEBUG=true` adds detailed backup-condition and VMI-status snapshots; normal output includes state changes and 30-second heartbeats. No byte-progress percentage is available. |
+| `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
+| `GUEST_INCREMENTAL_FILE_COUNT` | No | `4` | Number of new deterministic files added in each incremental pass. |
+| `GUEST_INCREMENTAL_PASSES` | No | `1` | Number of incremental backups after the single full backup; maximum `99`. |
+| `EXTEND_TO_PASS` | For `TYPE=extend` | Unset | Target total incremental count when adding exactly one pass; valid range `2`–`99`. For example, `4` extends a three-pass run. |
+| `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | `4` / `12` | Inclusive whole-MiB size range for each file. Selected sizes and SHA-256 hashes are recorded in the run manifest. |
+| `MANIFEST_VARIANT` | No | `odf` | Debian variants: `odf`, `default`, `large`, or `large-odf`; RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. |
+| `WINDOWS_ISO_PATH` | If the ISO is not already staged | Unset | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
+| `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Unset | Local, gitignored file containing the Administrator password; never committed or logged. |
+
+`Unset` means the variable has no fixed value; documented fallbacks or generated run IDs still apply. `.env.example` uses placeholders for `REMOTE_HOST`, `REMOTE_DIR`, and `RESTORE_HELPER_IMAGE`; replace them before use.
 
 ### ODF-backed variant (default)
 
@@ -92,7 +135,7 @@ The installer guest also needs outbound HTTPS access to `www.python.org` to inst
 
 ### Large-disk variant (chaos testing)
 
-Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp` instead of the default demo manifests; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage. Set `MANIFEST_VARIANT=large-odf` for the same sizing intent on ODF/Ceph instead — `manifests/vm-large-odf.yaml` (48Gi root disk), `manifests/full-backup-large-odf.yaml` (48Gi PVC), and `manifests/incremental-backup-large-odf.yaml` (30Gi PVC), scaled up with the same capacity margin as the `odf` variant.
+Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp` instead of the default demo manifests; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage. Set `MANIFEST_VARIANT=large-odf` for the same sizing intent on ODF/Ceph instead — `manifests/vm-large-odf.yaml` (48Gi root disk), `manifests/full-backup-large-odf.yaml` (48Gi PVC), and `manifests/incremental-backup-large-odf.yaml` (30Gi PVC). These are the Debian large-profile requests; RHEL 9 resolves the selected backend's large root/full requests to 80Gi.
 
 For a Debian chaos-test starting point, run `make e2e MANIFEST_VARIANT=large GUEST_BASE_FILE_COUNT=8 GUEST_INCREMENTAL_FILE_COUNT=11 GUEST_FILE_SIZE_MIN_MIB=512 GUEST_FILE_SIZE_MAX_MIB=1536`. The current deterministic file-name assignment totals 8511 MiB baseline and 12858 MiB incremental. These are payload totals, not timing measurements; confirm the actual window with `scripts/monitor.sh`. Do not assume this preset fits the Windows root disk without checking available capacity.
 
@@ -123,14 +166,9 @@ READY: environment is prepared for the repository workflow.
 
 The script reads supported values from `.env` when corresponding environment variables are unset; it does not execute `.env`. `KUBECONFIG_PATH` and `GUEST_KEY` use the same defaults as the workflow scripts. A preflight pass confirms prerequisites and access, not that a later backup operation will succeed.
 
-## Run the demo
+## Profile-specific run examples
 
-
-Run the complete default Debian workflow:
-
-```sh
-make e2e
-```
+The [Quick start](#quick-start) section covers one-shot and staged E2E commands. The examples here show profile-specific and larger-workload settings.
 
 Run the RHEL 9 CBT profile using the cluster-provided `rhel9` DataSource:
 
@@ -140,12 +178,15 @@ make e2e VM_OS=rhel9
 
 The RHEL 9 profile selects the large disk/backup manifests for the chosen storage backend so the root disk can clone the platform image.
 
-The measured `large-odf` RHEL 9 profile had a 51Gi root PVC (CDI expanded
-the 48Gi DataVolume request to a 50.88Gi PVC request), a 48Gi full-backup PVC,
-and a 30Gi incremental PVC. Those three claims total 129Gi of reported
-capacity; KubeVirt also creates a ~0.54Gi persistent-state claim, for ~129.42Gi
-of requested PVC storage (budget 130Gi). Restore verification adds no PVC;
-its `emptyDir` scratch uses node ephemeral storage. See
+The earlier RHEL 9 `large-odf` measurement used a 48Gi DataVolume request:
+CDI expanded its PVC request to 50.88Gi (51Gi reported capacity), with
+48Gi full and 30Gi incremental backup PVCs. That one-pass run requested
+about 129.42Gi including the ~0.54Gi KubeVirt persistent-state claim
+(130Gi planning budget); this is historical, not the current 80Gi profile.
+The current RHEL 9 large manifests request 80Gi for the root DataVolume and
+full-backup PVC. Three ODF incremental passes add 3 × 30Gi; nominal claims
+total 250Gi before CDI root-PVC overhead and persistent-state. Restore adds
+no PVC; its `emptyDir` scratch uses node ephemeral storage. See
 [RHEL 9 storage footprint](docs/vm-cbt-workflow.md#rhel-9-storage-footprint).
 
 For Windows, first validate one VM and its backup test file:
@@ -159,6 +200,7 @@ Then run the Windows CBT E2E profile:
 ```sh
 make e2e VM_OS=windows NAME=windows-cbt-1
 ```
+
 
 ### Larger deterministic file workload
 
@@ -176,6 +218,23 @@ make e2e VM_OS=rhel9 NAME=rhel9-01 \
 
 The deterministic plan totals 739 MiB baseline, 380 MiB incremental, and 1,119 MiB combined. Use a unique `NAME` per run and run sequentially from one checkout because workflow state is shared.
 
+For the requested RHEL 9 80Gi workload with three incremental passes:
+
+```sh
+make e2e VM_OS=rhel9 MANIFEST_VARIANT=large-odf \
+  GUEST_BASE_FILE_COUNT=1000 GUEST_INCREMENTAL_FILE_COUNT=500 \
+  GUEST_INCREMENTAL_PASSES=3 \
+  GUEST_FILE_SIZE_MIN_MIB=10 GUEST_FILE_SIZE_MAX_MIB=15
+```
+
+This creates 1,000 baseline files and adds 500 files per pass, ending with
+2,500 files. Each file is deterministically sized from 10–15 MiB inclusive.
+The combined payload ranges from 25,000 to 37,500 MiB (~24.4–36.6GiB),
+excluding the RHEL OS and filesystem metadata. On ODF, root/full/three
+incremental PVC requests total 250Gi nominally (80Gi + 80Gi + 3 × 30Gi),
+before CDI root-PVC overhead and KubeVirt persistent-state storage. Use
+`MANIFEST_VARIANT=large` on HPP (235Gi nominal requests) and confirm cluster
+capacity before running.
 
 `windows-vm-setup` builds the cached Windows image automatically when it is missing (requires `WINDOWS_ISO_PATH` and `WINDOWS_ADMIN_PASSWORD_FILE`). The Windows E2E target reuses the generic backup/tracker workflow and verifies restored NTFS file bytes.
 
@@ -196,11 +255,13 @@ make vm-cbt-verify
 
 ### Timestamped E2E logs
 
-`make e2e` and workflow steps log UTC timestamps. The E2E summary line reports total elapsed time including preflight, setup, backups, and restore verification. After a successful run, `make e2e` invokes the read-only monitor to print API-recorded full/incremental start, completion, and duration; `make monitor VM=vm-foo` remains available for manually staged workflows.
+`make e2e` logs UTC timestamps and `elapsed_seconds` for preflight and each top-level target. `vm-cbt-demo` separately times VM setup/baseline workload, the full backup, each incremental pass, and verification/restore. After all planned backups complete, the cluster-read-only monitor persists each backup's API creation time, `Done.lastTransitionTime`, duration in seconds, and reason under `backup_timings` in report JSON and `vm-info.json`.
 
-The full-backup step logs baseline workload file count and payload bytes; the incremental step logs added and combined file counts and payload bytes. The structured JSON report retains these values and the restore verification results.
+For a separate live monitor, run `make monitor VM=vm-<run-id>` after setup creates `report/vms/<run-id>/vm-info.json`. It watches the full backup and every planned incremental name, including backup objects not yet created. On completion, it writes `fragments/backup-timings.json` and updates `report.json` if present.
 
-Each `make e2e` run generates a unique run ID (`<adjective>-<noun>-<hex tag>`, e.g. `dark-forest-80d7`) and names every resource it creates from it, so repeat runs coexist in the same `NAMESPACE` without collisions; no cleanup is required between runs. To remove all runs' resources from the namespace:
+The full-backup step logs baseline file count and payload bytes. Each incremental pass logs files and payload bytes added plus the cumulative workload totals. The structured JSON report retains per-pass payload/checkpoint data and restore results for the baseline and every prefix.
+
+Each `TYPE=all` or `TYPE=full` lifecycle uses a unique run ID by default (`<adjective>-<noun>-<hex tag>`), or a fixed ID from `NAME`/`VM`; it derives resource names from that ID, so separate lifecycles coexist in `NAMESPACE` without cleanup. `TYPE=incremental` and `TYPE=verify` use the existing `VM` and its saved lifecycle state. Run `make clean-all` to remove all workflow-managed runs:
 
 ```sh
 make clean-all
@@ -210,15 +271,23 @@ Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-la
 
 ## Synchronization helper
 
-`sync.sh` copies the repository and its `.git` metadata to a configured remote host. It reads `REMOTE_HOST` and `REMOTE_DIR` from the current environment first, then from the local `.env` without executing that file. It requires `ssh` and `rsync` locally. It excludes `.env`, dotenv variants, and log files, but includes `.git` so the destination remains a Git working copy:
+`make sync` (also `make resync`) pushes the working tree. `make pull-reports` copies all of `REMOTE_DIR/report/` into local `report/` and does not modify the remote. All three targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`; neither has a built-in default. The push excludes `.env` files, `.git`, local credentials, generated data, and tooling state.
+
+With `.env` configured, use:
 
 ```sh
-REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup ./sync.sh
+make sync
+make pull-reports
 ```
 
-If you run the workflow on the remote host (e.g. because that's where cluster access is configured), pull its generated reports back with `./sync.sh --pull-reports`, which copies `REMOTE_DIR/report/` into the local `report/` directory and never modifies the remote.
+For a one-off remote host and path:
 
-Use a host alias and destination appropriate for your environment. The helper does not transfer credentials.
+```sh
+make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup sync
+make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup pull-reports
+```
+
+The helper requires local `ssh` and `rsync` and never transfers credentials. `pull-reports` retrieves the local report artifacts; guest workload files remain inside the VM.
 
 ## Validation and testing
 
@@ -261,30 +330,30 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 │   ├── dotenv.sh         # Safe parser for supported .env values
 │   ├── restore-lib.sh    # Restore-verification pod orchestration
 │   └── workload-manifest.sh # Deterministic file plans and run manifests
-├── state/                # Transient run IDs (gitignored, created at runtime)
 ├── report/               # Per-run manifests, JSON reports, and run-owned pod logs (gitignored; survives clean-all)
-└── sync.sh               # Remote synchronization helper, exposed as make sync and make resync
 ```
 
 ## Run report
 
-Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a `<run-id>` suffix is added only if another report starts in the same second) and later stages append JSON fragments under `report/<REPORT_ID>/fragments/`. `vm-cbt-verify.sh` merges them into `report/<REPORT_ID>/report.json` and collects logs from the run's own VM and restore pod.
+Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a run-ID suffix is added only if needed) and stores it in `report/vms/<run-id>/vm-info.json`. Staged commands resolve the report ID from that VM record; fragments are appended under `report/<REPORT_ID>/fragments/`.
 
 `report.json` contains, per run:
 - `os_profile`: `debian`, `rhel9`, or `windows`.
-- `guest.workload`: directory, per-file size range, baseline and incremental file counts, payload byte totals, and the path to the run's `workload-manifest.json`.
-- `backups.full` / `backups.incremental`: backup name, type, checkpoint name, backup PVC name/requested size/actual capacity, and (when available) the VM's recorded backup start/end timestamps and completion status.
+- `guest.workload`: directory, file-size range, baseline and per-pass file counts, added/cumulative payload byte totals, manifest hashes, and `workload-manifest.json` path.
+- `backups.full` and `backups.incrementals[]`: names, types, checkpoints, per-pass file/payload totals, and backup PVC names/requested sizes/capacities.
+- `backup_timings.full` and `backup_timings.incrementals[]`: API creation and Done timestamps, `duration_seconds`, and terminal reason for each backup.
 - `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
-- `verification.checks`: CBT/checkpoint/PVC checks plus full-only and combined restore file counts, byte totals, and manifest-hash comparisons.
+- `verification.checks`: CBT/checkpoint/PVC checks plus full-only and every cumulative restore prefix's file counts, byte totals, and manifest-hash comparisons.
+- `report/vms/<run-id>/vm-info.json`: lifecycle configuration, report ID, current/next pass, backup/checkpoint records, timing data, and status. Updates are atomic; `make clean-all` marks this record cleaned but retains it with the run report.
 - `logs`: relative paths to the collected `virt-launcher` and restore-pod logs.
 
-Unlike `state/`, `report/` is not deleted by `make clean-all` — it is meant to remain as a debugging record across runs. Inspect it with `jq . report/run_*/report.json` or diff two runs' `report.json` files to compare outcomes. Log collection is best-effort and only covers pods the run itself creates (the VM's `virt-launcher` pod and the short-lived restore-verify pod); it does not collect cluster component logs (KubeVirt/CDI operators, node agents, etc.).
+Unlike transient `state/`, `report/` is not deleted by `make clean-all` — it preserves per-run reports and per-VM lifecycle records for history. Inspect a run with `jq . report/run_*/report.json` or compare two reports. Log collection is best-effort and does not collect cluster component logs.
 
 ## Known limitations
 
-- Resource names are derived from a per-run ID, but all runs share the configured namespace and local/RWO storage; `make clean-all` removes every workflow-managed run in that namespace. One checkout's `state/` and report/hash files are shared, so serialize workflows per checkout or use separate repository copies for concurrent runs.
+- All runs share the namespace and local/RWO storage. The checkout E2E lock prevents concurrent `make e2e` operations in one checkout; use separate repository copies for parallel operations. Staged `TYPE=incremental` commands use the per-VM lifecycle record. `make clean-all` removes every workflow-managed run in the namespace, not only the most recent one.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- Debian uses small local/RWO disks, RHEL 9 uses a 40Gi/48Gi root disk and correspondingly sized backup PVCs, and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
+- Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
 - `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

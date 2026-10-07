@@ -21,6 +21,7 @@ sed \
   -e "s|__TRACKER_NAME__|$TRACKER_NAME|g" \
   -e "s|__FULL_BACKUP_NAME__|$FULL_BACKUP_NAME|g" \
   -e "s|__FULL_BACKUP_PVC__|$FULL_BACKUP_PVC_NAME|g" \
+  -e "s|__LARGE_DISK_SIZE__|$LARGE_MANIFEST_DISK_SIZE|g" \
   -e "s|__RUN_ID__|$RUN_ID|g" \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
@@ -30,7 +31,7 @@ workflow_success "PVC, tracker, and full backup request created in namespace $NA
 
 workflow_step "2/4 Wait for the full backup to complete"
 workflow_action "oc wait vmbackup/$FULL_BACKUP_NAME -n $NAMESPACE --for=condition=Done --timeout=20m"
-wait_for_backup_done "$FULL_BACKUP_NAME"
+wait_for_backup_done "$FULL_BACKUP_NAME" "$FULL_BACKUP_PVC_NAME" Full
 full_backup_done_reason="$(get_backup_done_reason "$FULL_BACKUP_NAME")"
 workflow_success "$FULL_BACKUP_NAME reports Done=True (reason: $full_backup_done_reason)"
 
@@ -75,3 +76,18 @@ if backup_done_reason_is_failure "$full_backup_done_reason"; then
     "$FULL_BACKUP_NAME" "$full_backup_done_reason" >&2
   exit 1
 fi
+vm_info_load "$RUN_ID"
+vm_info_update \
+  '.status = "incremental_ready" |
+   .backups.full = ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
+                     done_reason: $done_reason, pvc_name: $pvc_name,
+                     pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)' \
+  --arg name "$FULL_BACKUP_NAME" \
+  --arg type "$full_backup_type" \
+  --arg checkpoint_name "$full_backup_checkpoint" \
+  --arg done_reason "$full_backup_done_reason" \
+  --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
+  --arg pvc_requested "$full_pvc_requested" \
+  --arg pvc_capacity "$full_pvc_capacity" \
+  --argjson backup_status "$full_backup_status"
+workflow_success "VM lifecycle state records the full checkpoint"

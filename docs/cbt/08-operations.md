@@ -51,6 +51,15 @@ For a valid incremental result, check all of:
 - the Done reason is not a terminal `Backup has failed...` reason;
 - full-only and combined restore counts, payload bytes, and workload manifest hashes pass.
 
+
+### Live backup status
+
+The full and incremental scripts stream observed `VirtualMachineBackup` condition changes, destination PVC phase, and matching `VM.status.changedBlockTracking.backupStatus` timestamps/results while `oc wait` remains the terminal completion gate. A 30-second heartbeat makes an unchanged in-progress state visible without logging every poll.
+
+`DEBUG=true` adds detailed condition and VM backup-status snapshots. The API provides no copied-byte or percentage field, so the watcher reports observed phase and elapsed time, not a guessed progress bar. Treat events such as `HotplugFailed` as context; confirm the settled `Done` reason, type, checkpoint, and tracker before classifying the backup.
+
+`make monitor VM=vm-<run-id>` is read-only and can run after the lifecycle state file is created; it derives the full and planned incremental backup names and waits for objects that have not yet been applied.
+
 ## Deep inspection for CBT and chaos tests
 
 Inspect the tracker recovery flag and the actual libvirt checkpoint tree:
@@ -92,9 +101,9 @@ oc get network.config.openshift.io cluster -o yaml
 oc get vmi "$VM_NAME" -n "$NAMESPACE" -o yaml
 ```
 
-The cloud05 audit observed HPP's pool and all CBT PVCs on one node. A `Pending` PVC can therefore be a first-consumer/scheduling problem even when total reported PV capacity looks large.
+HPP volumes are node-affine. A `Pending` PVC can indicate first-consumer/scheduling issues; inspect placement and binding events before treating reported PV capacity as available backup space.
 
-Cloud05 produced both `VirtualMachineBackupCompletedSuccessfully` and `VirtualMachineBackupFailed: Backup has failed: VMI backup status was lost` events for some runs, while the final object state was successful in other cases. This is why the scripts inspect terminal conditions and reasons and then restore data. When investigating a failure, preserve the object YAML and event timeline before cleanup; an event alone cannot establish final artifact correctness.
+Backup events are interim signals and may conflict with settled CR status. Check the terminal `Done` condition and reason, checkpoint, tracker, and restore verification; preserve the object YAML and event timeline before cleanup. An event alone cannot establish artifact correctness.
 
 ## Reports
 

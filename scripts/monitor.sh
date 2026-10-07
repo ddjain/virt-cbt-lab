@@ -6,9 +6,9 @@ WORKFLOW_NAME="monitor"
 
 usage() {
   printf 'Usage: %s <vm_name>\n' "$(basename "$0")" >&2
-  printf 'Read-only: watches the full and incremental vmbackup for the run that owns <vm_name>\n' >&2
-  printf 'and prints when each one starts, finishes, and how long it took.\n' >&2
-  printf 'Run it alongside `make e2e` (in another terminal, or backgrounded) for the same run.\n' >&2
+  printf 'Read-only on the cluster: watches the full backup and all incremental passes in the saved VM lifecycle plan.\n' >&2
+  printf 'Prints API creation/Done timestamps and durations, then persists timing records to report JSON.\n' >&2
+  printf 'Run after vm-info.json exists; backup objects are watched even before lifecycle records are written.\n' >&2
 }
 
 if (($# != 1)) || [[ "$1" == "-h" || "$1" == "--help" ]]; then
@@ -23,25 +23,61 @@ if [[ "$vm_name" != vm-* ]]; then
 fi
 RUN_ID="${vm_name#vm-}"
 set_resource_names
+backup_names=()
+declare -A backup_label=()
+declare -A backup_kind=()
+declare -A backup_pass=()
+if [[ ! -r "$VM_INFO_PATH" ]]; then
+  printf 'No VM lifecycle state found for VM %s at %s.\n' "$vm_name" "$VM_INFO_PATH" >&2
+  exit 1
+fi
+vm_info_load "$RUN_ID"
+NAMESPACE="$(jq -r '.namespace' "$VM_INFO_PATH")"
+load_report_id
+full_name="$(jq -r '.backups.full.name // empty' "$VM_INFO_PATH")"
+if [[ -z "$full_name" ]]; then
+  full_name="$FULL_BACKUP_NAME"
+fi
+backup_names+=("$full_name")
+backup_label["$full_name"]="full backup"
+backup_kind["$full_name"]="full"
+
+pass_total="$(jq -r '.incremental_passes_total // ((.backups.incrementals // []) | length)' "$VM_INFO_PATH")"
+if ! [[ "$pass_total" =~ ^[0-9]+$ ]] || ((pass_total > 99)); then
+  printf 'Invalid planned incremental pass total for VM %s: %s\n' "$vm_name" "$pass_total" >&2
+  exit 1
+fi
+for ((pass = 1; pass <= pass_total; pass++)); do
+  backup_name="$(jq -r --argjson pass "$pass" \
+    '[.backups.incrementals[]? | select(.pass == $pass) | .name] | last // empty' "$VM_INFO_PATH")"
+  if [[ -z "$backup_name" ]]; then
+    backup_name="$(incremental_backup_name_for_pass "$pass")"
+  fi
+  backup_names+=("$backup_name")
+  printf -v pass_label '%02d' "$pass"
+  backup_label["$backup_name"]="incremental pass $pass_label"
+  backup_kind["$backup_name"]="incremental"
+  backup_pass["$backup_name"]="$pass"
+done
+if ((${#backup_names[@]} == 0)); then
+  printf 'No planned backup objects are available for VM %s.\n' "$vm_name" >&2
+  exit 1
+fi
 
 POLL_INTERVAL_SECONDS="${MONITOR_POLL_INTERVAL_SECONDS:-2}"
 
-# Backups this run creates, in the order the pipeline creates them.
-backup_names=("$FULL_BACKUP_NAME" "$INCREMENTAL_BACKUP_NAME")
-declare -A backup_label=(
-  ["$FULL_BACKUP_NAME"]="full backup"
-  ["$INCREMENTAL_BACKUP_NAME"]="incremental backup"
-)
 declare -A reported_created=()
 declare -A reported_done=()
+declare -A reported_reason=()
+declare -A reported_duration=()
 failed_backup=0
 
 workflow_step "Watching $NAMESPACE for run $RUN_ID"
-workflow_action "Tracking ${backup_label[$FULL_BACKUP_NAME]} ($FULL_BACKUP_NAME) and ${backup_label[$INCREMENTAL_BACKUP_NAME]} ($INCREMENTAL_BACKUP_NAME)"
+workflow_action "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
 
 # Prints "<label> <name> started at <ts>" once creationTimestamp is first seen,
 # then "<label> <name> done in <duration>s (reason: <reason>)" once the Done
-# condition appears; returns 0 once both have been reported.
+# condition appears; returns 0 once every recorded backup has been reported.
 #
 # The duration is a real measurement, not an estimate: it is
 # status.conditions[Done].lastTransitionTime minus metadata.creationTimestamp,
@@ -85,6 +121,8 @@ poll_backup() {
   fi
 
   reported_done[$backup_name]="$done_time"
+  reported_reason["$backup_name"]="$done_reason"
+  reported_duration["$backup_name"]="$duration_seconds"
   if backup_done_reason_is_failure "$done_reason"; then
     failed_backup=1
     printf '  ✗ %s (%s) failed after %ss [measured: lastTransitionTime %s - creationTimestamp %s] (reason: %s)\n' \
@@ -94,24 +132,88 @@ poll_backup() {
   fi
   return 0
 }
+persist_backup_timings() {
+  local backup_name created done_at reason duration kind pass record timings_json timing_fragment report_path report_tmp
+  local -a timing_records=()
+  for backup_name in "${backup_names[@]}"; do
+    [[ -n "${reported_done[$backup_name]:-}" ]] || continue
+    created="${reported_created[$backup_name]:-}"
+    done_at="${reported_done[$backup_name]:-}"
+    reason="${reported_reason[$backup_name]:-}"
+    duration="${reported_duration[$backup_name]:-}"
+    if [[ -z "$created" || -z "$done_at" ]] || ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+      continue
+    fi
+    kind="${backup_kind[$backup_name]}"
+    if [[ "$kind" == incremental ]]; then
+      pass="${backup_pass[$backup_name]}"
+      record="$(jq -nc \
+        --arg kind "$kind" \
+        --arg name "$backup_name" \
+        --arg created "$created" \
+        --arg done_at "$done_at" \
+        --arg reason "$reason" \
+        --argjson pass "$pass" \
+        --argjson duration "$duration" \
+        '{kind: $kind, pass: $pass, backup_name: $name, created_at: $created,
+          done_at: $done_at, duration_seconds: $duration, done_reason: $reason}')"
+    else
+      record="$(jq -nc \
+        --arg kind "$kind" \
+        --arg name "$backup_name" \
+        --arg created "$created" \
+        --arg done_at "$done_at" \
+        --arg reason "$reason" \
+        --argjson duration "$duration" \
+        '{kind: $kind, backup_name: $name, created_at: $created,
+          done_at: $done_at, duration_seconds: $duration, done_reason: $reason}')"
+    fi
+    timing_records+=("$record")
+  done
+  ((${#timing_records[@]} > 0)) || return 0
+
+  timings_json="$(printf '%s\n' "${timing_records[@]}" | jq -cs '
+    {
+      full: ([.[] | select(.kind == "full") | del(.kind)] | first // null),
+      incrementals: [.[] | select(.kind == "incremental") | del(.kind)]
+    }
+  ')"
+  timing_fragment="$(jq -cn --argjson timings "$timings_json" '{backup_timings: $timings}')"
+  write_report_fragment "backup-timings" "$timing_fragment"
+  vm_info_update '.backup_timings = $timings' --argjson timings "$timings_json"
+
+  report_path="$REPORT_DIR/report.json"
+  if [[ -r "$report_path" ]]; then
+    report_tmp="${report_path}.tmp.$$"
+    jq --argjson timings "$timings_json" '.backup_timings = $timings' "$report_path" > "$report_tmp"
+    mv -f "$report_tmp" "$report_path"
+    workflow_success "Backup timings saved to $report_path"
+  else
+    workflow_success "Backup timings saved to $REPORT_DIR/fragments/backup-timings.json"
+  fi
+}
 
 while :; do
   all_done=1
   for backup_name in "${backup_names[@]}"; do
     if [[ -z "${reported_done[$backup_name]:-}" ]]; then
       poll_backup "$backup_name" || true
+      if ((failed_backup)); then
+        break
+      fi
       [[ -n "${reported_done[$backup_name]:-}" ]] || all_done=0
     fi
   done
-  if ((all_done)); then
+  if ((failed_backup || all_done)); then
     break
   fi
   sleep "$POLL_INTERVAL_SECONDS"
 done
+persist_backup_timings
 
 if ((failed_backup)); then
   printf 'One or more backups reached Done=True with a terminal failure reason; see the lines above.\n' >&2
   exit 1
 fi
 
-workflow_success "Both backups reached Done=True for run $RUN_ID"
+workflow_success "All ${#backup_names[@]} backups reached Done=True for run $RUN_ID"

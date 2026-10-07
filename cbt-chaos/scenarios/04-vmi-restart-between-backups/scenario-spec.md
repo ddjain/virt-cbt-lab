@@ -50,7 +50,7 @@ backup's checkpoint name, and no incremental `VirtualMachineBackup` CR exists ye
 **How we watch for it:** `chaos-trigger.sh` starts krknctl before E2E and uses
 krknctl's native `--trigger-command` to require a non-empty
 `vm-tracker-<RUN_NAME>.status.latestCheckpoint.name` while
-`vm-incremental-<RUN_NAME>` is still absent. This absorbs startup latency before
+`vm-incremental-<RUN_NAME>-pNN` (with `INCREMENTAL_PASS` selecting the next pass) is still absent. This absorbs startup latency before
 the between-backups window and fails on trigger timeout.
 
 ## 5. Expected Behavior / Pass-Fail Criteria

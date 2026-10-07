@@ -17,7 +17,7 @@ case "$TARGET_BACKUP" in
     TARGET_PVC="${TARGET_PVC:-vm-backup-pvc-${RUN_NAME}}"
     ;;
   incremental)
-    TARGET_PVC="${TARGET_PVC:-vm-incremental-pvc-${RUN_NAME}}"
+    TARGET_PVC="${TARGET_PVC:-$INCREMENTAL_BACKUP_PVC_NAME}"
     ;;
   *)
     printf '[scenario-06] unsupported TARGET_BACKUP=%s (expected full or incremental)\n' \

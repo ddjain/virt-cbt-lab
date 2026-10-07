@@ -6,11 +6,9 @@
 Throttle I/O on the incremental backup destination PVC to widen the reconcile-duplicate race window.
 
 ## 2. Description
-Targets `hello-incremental-output` PVC during the live block-copy window of an incremental backup
-(`chaos-plan.md` §E injection point 1, slow variant). The observed incremental copy completes in ~5ms
-under normal conditions (`chaos-plan.md` §C step 4), too fast for the reconcile-duplicate race (§C) to
-matter in practice. Throttling widens this window deterministically and reversibly, without an outright
-failure, to test whether a slow-but-not-failed copy lets that race produce a real conflict.
+Targets the pass-specific incremental backup PVC during the live block-copy
+window. The pass is selected with `INCREMENTAL_PASS` (default `1`); the
+throttle widens the reconcile-duplicate race window without forcing failure.
 
 ## 3. Chaos Injection
 
@@ -19,12 +17,13 @@ failure, to test whether a slow-but-not-failed copy lets that race produce a rea
 Validated against `krknctl describe storage-throttle` / `krknctl run storage-throttle --help` (real
 scenario tag is `storage-throttle`, not `storage_throttle_scenarios`; `--duration` is a string
 with a unit suffix such as `30s`. The reusable trigger derives
-`vm-incremental-pvc-<RUN_NAME>` and resolves the target pod from that PVC.
+`vm-incremental-pvc-<RUN_NAME>-pNN` and resolves the target pod from that PVC.
+Set `INCREMENTAL_PASS=2` (or another pass number) to target that pass's PVC; the default is pass 1.
 
 ```bash
 krknctl run storage-throttle \
   --namespace vm-cbt-demo \
-  --pvc-name vm-incremental-pvc-<RUN_NAME> \
+  --pvc-name vm-incremental-pvc-<RUN_NAME>-p01 \
   --throttle-type iops \
   --write-iops 5 \
   --duration 30s \

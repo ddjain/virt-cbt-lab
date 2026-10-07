@@ -11,76 +11,112 @@ workflow_action "oc get vm $VM_NAME -n $NAMESPACE -o jsonpath=.status.changedBlo
 vm_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
 workflow_success "VM $VM_NAME CBT state: ${vm_state:-unknown}"
 
-workflow_step "2/4 Read backup completion, types, and checkpoints"
-workflow_action "Query $FULL_BACKUP_NAME, $INCREMENTAL_BACKUP_NAME, and tracker $TRACKER_NAME in namespace $NAMESPACE"
-full_type="$(get_backup_type "$FULL_BACKUP_NAME")"
-full_done="$(get_backup_done_status "$FULL_BACKUP_NAME")"
-full_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
-incremental_type="$(get_backup_type "$INCREMENTAL_BACKUP_NAME")"
-incremental_done="$(get_backup_done_status "$INCREMENTAL_BACKUP_NAME")"
-incremental_checkpoint="$(get_backup_checkpoint "$INCREMENTAL_BACKUP_NAME")"
-latest_checkpoint="$(get_tracker_checkpoint)"
+vm_info_load "$RUN_ID"
+
+workflow_step "2/4 Read full backup and incremental pass status"
+full_type="$(get_backup_type "$FULL_BACKUP_NAME" 2>/dev/null || true)"
+full_done="$(get_backup_done_status "$FULL_BACKUP_NAME" 2>/dev/null || true)"
+full_reason="$(get_backup_done_reason "$FULL_BACKUP_NAME" 2>/dev/null || true)"
+full_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME" 2>/dev/null || true)"
+incremental_passes="$(jq -c '.backups.incrementals' "$VM_INFO_PATH")"
+incremental_pass_count="$(jq -r 'length' <<< "$incremental_passes")"
+incremental_passes_completed="$(jq -r '.incremental_passes_completed' "$VM_INFO_PATH")"
+incremental_passes_total="$(jq -r '.incremental_passes_total' "$VM_INFO_PATH")"
+latest_checkpoint="$(get_tracker_checkpoint 2>/dev/null || true)"
 workflow_action "Full: type=$full_type done=$full_done checkpoint=$full_checkpoint"
-workflow_action "Incremental: type=$incremental_type done=$incremental_done checkpoint=$incremental_checkpoint"
-workflow_action "Tracker $TRACKER_NAME latest checkpoint=$latest_checkpoint"
+workflow_action "Incremental passes recorded=$incremental_pass_count completed=$incremental_passes_completed planned=$incremental_passes_total"
+workflow_action "Tracker $TRACKER_NAME latest checkpoint=${latest_checkpoint:-missing}"
 
-workflow_step "3/4 Validate CBT and checkpoint relationships"
-vm_cbt_is_enabled() {
-  [[ "$vm_state" == Enabled ]]
-}
-
-full_backup_is_complete() {
-  [[ "$full_type" == Full && "$full_done" == True ]]
-}
-
-incremental_backup_is_complete() {
-  [[ "$incremental_type" == Incremental && "$incremental_done" == True ]]
-}
-
-checkpoints_are_distinct_and_present() {
-  [[ -n "$full_checkpoint" &&
-     -n "$incremental_checkpoint" &&
-     "$full_checkpoint" != "$incremental_checkpoint" ]]
-}
-
-tracker_matches_incremental_checkpoint() {
-  [[ "$latest_checkpoint" == "$incremental_checkpoint" ]]
-}
-
-# Run every check (rather than stopping at the first failure) so the report
-# and the printed summary show the full picture for debugging.
+workflow_step "3/4 Validate CBT and incremental checkpoint chain"
 verify_checks_json='[]'
 record_check() {
   local name="$1" passed="$2"
   verify_checks_json="$(jq -c --arg name "$name" --argjson passed "$passed" \
     '. + [{name: $name, passed: $passed}]' <<<"$verify_checks_json")"
 }
-
-verify_passed=true
-for check in vm_cbt_is_enabled full_backup_is_complete incremental_backup_is_complete \
-             checkpoints_are_distinct_and_present tracker_matches_incremental_checkpoint; do
-  if "$check"; then
-    record_check "$check" true
+record_result() {
+  local name="$1" passed="$2"
+  if [[ "$passed" == true ]]; then
+    record_check "$name" true
   else
-    record_check "$check" false
+    record_check "$name" false
     verify_passed=false
   fi
+}
+verify_passed=true
+
+if [[ "$vm_state" == Enabled ]]; then
+  record_check "vm_cbt_is_enabled" true
+else
+  record_result "vm_cbt_is_enabled" false
+fi
+if [[ "$full_type" == Full && "$full_done" == True ]] &&
+   ! backup_done_reason_is_failure "$full_reason"; then
+  record_check "full_backup_is_complete" true
+else
+  record_result "full_backup_is_complete" false
+fi
+
+if [[ "$incremental_pass_count" == "$incremental_passes_total" &&
+      "$incremental_passes_completed" == "$incremental_passes_total" ]]; then
+  record_check "incremental_pass_count_matches_plan" true
+else
+  record_result "incremental_pass_count_matches_plan" false
+fi
+
+previous_checkpoint="$full_checkpoint"
+for ((index = 0; index < incremental_pass_count; index++)); do
+  pass_record="$(jq -c --argjson index "$index" '.[$index]' <<< "$incremental_passes")"
+  pass_number="$(jq -r '.pass' <<< "$pass_record")"
+  backup_name="$(jq -r '.name' <<< "$pass_record")"
+  recorded_checkpoint="$(jq -r '.checkpoint_name' <<< "$pass_record")"
+  backup_type="$(get_backup_type "$backup_name" 2>/dev/null || true)"
+  backup_done="$(get_backup_done_status "$backup_name" 2>/dev/null || true)"
+  backup_reason="$(get_backup_done_reason "$backup_name" 2>/dev/null || true)"
+  backup_checkpoint="$(get_backup_checkpoint "$backup_name" 2>/dev/null || true)"
+  printf -v pass_label '%02d' "$pass_number"
+  workflow_action "Pass $pass_number: $backup_name type=$backup_type done=$backup_done checkpoint=$backup_checkpoint"
+  pass_ok=false
+  if [[ "$backup_type" == Incremental && "$backup_done" == True ]] &&
+     ! backup_done_reason_is_failure "$backup_reason"; then
+    pass_ok=true
+  fi
+  record_result "incremental_pass_${pass_label}_is_complete" "$pass_ok"
+  if [[ -n "$backup_checkpoint" && "$backup_checkpoint" == "$recorded_checkpoint" ]]; then
+    record_check "incremental_pass_${pass_label}_checkpoint_matches_state" true
+  else
+    record_result "incremental_pass_${pass_label}_checkpoint_matches_state" false
+  fi
+  if [[ -n "$backup_checkpoint" && "$backup_checkpoint" != "$previous_checkpoint" ]]; then
+    record_check "incremental_pass_${pass_label}_checkpoint_is_distinct" true
+  else
+    record_result "incremental_pass_${pass_label}_checkpoint_is_distinct" false
+  fi
+  previous_checkpoint="$backup_checkpoint"
 done
 
-if [[ "$verify_passed" != true ]]; then
-  printf 'CBT verification failed. VM=%s full=%s/%s incremental=%s/%s tracker=%s\n' \
-    "$vm_state" "$full_type" "$full_done" "$incremental_type" "$incremental_done" "$latest_checkpoint" >&2
+if [[ -n "$full_checkpoint" && "$previous_checkpoint" != "$full_checkpoint" &&
+      "$latest_checkpoint" == "$previous_checkpoint" ]]; then
+  record_check "tracker_matches_final_incremental_checkpoint" true
 else
-  workflow_success "CBT verification passed; full and incremental checkpoints are distinct and tracker matches incremental"
-  printf 'Full checkpoint:        %s\nIncremental checkpoint: %s\n' \
-    "$full_checkpoint" "$incremental_checkpoint"
+  record_result "tracker_matches_final_incremental_checkpoint" false
+fi
+
+if [[ "$verify_passed" != true ]]; then
+  printf 'CBT verification failed. VM=%s full=%s/%s passes=%s/%s tracker=%s\n' \
+    "$vm_state" "$full_type" "$full_done" "$incremental_pass_count" \
+    "$incremental_passes_total" "$latest_checkpoint" >&2
+else
+  workflow_success "CBT verification passed; all incremental checkpoints are distinct and the tracker matches the final pass"
+  printf 'Full checkpoint: %s\nFinal incremental checkpoint: %s\n' \
+    "$full_checkpoint" "$previous_checkpoint"
 fi
 
 workflow_step "4/4 Verify the backups actually restore the correct guest data"
 workflow_action "Running scripts/vm-cbt-restore-test.sh to rebuild and read the guest disk"
 restore_test_passed=true
 if "$ROOT_DIR/scripts/vm-cbt-restore-test.sh"; then
-  workflow_success "Restore test passed; full and full+incremental restores match the recorded guest data"
+  workflow_success "Restore test passed; full and all cumulative incremental prefixes match their workload manifests"
 else
   restore_test_passed=false
   printf 'Restore test failed; the backup does not reconstruct the expected guest data.\n' >&2
@@ -107,7 +143,7 @@ jq -s '
   def deepmerge($a; $b):
     if ($a | type) == "object" and ($b | type) == "object" then
       reduce ($b | keys_unsorted[]) as $k
-        ($a; .[$k] = (if ($a[$k] | type) == "array" and ($b[$k] | type) == "array" and $k == "checks"
+        ($a; .[$k] = (if ($a[$k] | type) == "array" and ($b[$k] | type) == "array" and ($k == "checks" or $k == "incrementals" or $k == "extensions")
                       then ($a[$k] + $b[$k])
                       elif ($a | has($k)) then deepmerge($a[$k]; $b[$k])
                       else $b[$k] end))
@@ -124,6 +160,19 @@ jq --arg run_id "$RUN_ID" --arg report_id "$REPORT_ID" --argjson overall_passed 
    .verification.restore_log_path = "logs/restore-verify-pod.log" |
    .logs = {virt_launcher: "logs/virt-launcher.log", restore_verify_pod: "logs/restore-verify-pod.log"}' \
   "$report_path" > "$report_path.tmp" && mv "$report_path.tmp" "$report_path"
+if [[ "$overall_passed" == true ]]; then
+  vm_info_update \
+    '.status = "complete" |
+     .verified_at = $updated_at |
+     del(.verification_failed_at) |
+     if .extension_pending != null then
+       .extensions = ((.extensions // []) + [(.extension_pending +
+         {status: "complete", verified_at: $updated_at})]) |
+       del(.extension_pending)
+     else . end'
+else
+  vm_info_update '.status = "verification_failed" | .verification_failed_at = $updated_at'
+fi
 
 workflow_success "Run report written to $report_path"
 

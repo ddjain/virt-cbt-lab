@@ -9,9 +9,16 @@ chaos_set_run_names() {
   NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
   VM_NAME="${VM_NAME:-vm-${RUN_NAME}}"
   TARGET_BACKUP="${TARGET_BACKUP:-full}"
+  INCREMENTAL_PASS="${INCREMENTAL_PASS:-1}"
+  if ! [[ "$INCREMENTAL_PASS" =~ ^[1-9][0-9]*$ ]] || ((INCREMENTAL_PASS > 99)); then
+    printf 'INCREMENTAL_PASS must be between 1 and 99 (got: %s)\n' "$INCREMENTAL_PASS" >&2
+    exit 2
+  fi
+  printf -v incremental_pass_suffix '%02d' "$INCREMENTAL_PASS"
+  INCREMENTAL_BACKUP_PVC_NAME="${INCREMENTAL_BACKUP_PVC_NAME:-vm-incremental-pvc-${RUN_NAME}-p${incremental_pass_suffix}}"
   case "$TARGET_BACKUP" in
     full) TARGET_BACKUP_NAME="${TARGET_BACKUP_NAME:-vm-backup-${RUN_NAME}}" ;;
-    incremental) TARGET_BACKUP_NAME="${TARGET_BACKUP_NAME:-vm-incremental-${RUN_NAME}}" ;;
+    incremental) TARGET_BACKUP_NAME="${TARGET_BACKUP_NAME:-vm-incremental-${RUN_NAME}-p${incremental_pass_suffix}}" ;;
     *)
       printf 'TARGET_BACKUP must be full or incremental (got: %s)\n' "$TARGET_BACKUP" >&2
       exit 2
