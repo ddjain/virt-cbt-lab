@@ -1,35 +1,16 @@
 # 04. Storage topology
 
-## Cloud05 storage class
+## HPP storage class
 
-The observed `cbt-demo-hpp` class used:
+The `cbt-demo-hpp` profile uses local, node-affine `ReadWriteOnce` storage. It is demonstration storage, not replicated storage, off-cluster backup, or disaster recovery. Confirm the target class's provisioner, binding mode, and reclaim policy before use.
 
-- provisioner: `kubevirt.io.hostpath-provisioner`;
-- `WaitForFirstConsumer` binding;
-- `ReadWriteOnce` access;
-- `Delete` reclaim policy;
-- HPP pool `cbt-demo-pool` on node-local host-path storage.
+## Capacity and placement
 
-This is demonstration storage. It is not replicated storage, off-cluster backup, or disaster recovery.
+HPP may report backing-pool/PV capacity rather than the PVC request. Do not interpret a large `.status.capacity` as the amount of backup data written.
 
-## Cloud05 storage facts
+`WaitForFirstConsumer` can leave a claim `Pending` until a consumer provides scheduling information. The Debian golden image is the exception: its manifest requests immediate binding because it has no VM consumer of its own. CDI clones also create temporary source/clone pods and PVCs; those belong to image preparation, not CBT backup data.
 
-The live HPP resource was:
-
-```text
-HostPathProvisioner: cbt-demo-hpp
-pool: cbt-demo-pool
-pool path: host-local path configured by the HPP resource
-pool backing claim: HPP-generated claim on the selected worker
-pool backing capacity: 1489Gi in this audit
-HPP workload node: one selected worker, dynamic
-```
-
-The HPP pool template requests `1Ti`, but the backing PV and every observed workload PVC reported `1489Gi`. That is the provisioned backing-pool/PV capacity, not the amount requested or the amount of qcow2 data written. The destination PVCs still request only 5/3 GiB in the default manifests or 40/25 GiB in the large manifests.
-
-`WaitForFirstConsumer` means a PVC can remain Pending until a consumer supplies scheduling information. The golden image is the exception: `manifests/debian-image.yaml` sets `cdi.kubevirt.io/storage.bind.immediate.requested: "true"` because it has no VM consumer of its own. CDI clones also create temporary source/clone pods and PVCs; those are part of image preparation, not CBT backup data.
-
-All observed CBT workload PVCs were `ReadWriteOnce`, `Filesystem`, and selected to the same HPP worker. The current cloud05 layout is a single-node storage failure domain.
+HPP-backed PVCs are node-affine. Inspect the selected node and current pool capacity rather than assuming all claims share a single failure domain.
 
 ## Topology
 

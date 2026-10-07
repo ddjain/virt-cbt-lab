@@ -24,21 +24,21 @@ delta; the combined restored disk is the N+M file-set assertion target.
 
 The CRD's source description is explicit: when `source.kind` is `VirtualMachineBackupTracker`, KubeVirt resolves the source VM and uses the tracker to obtain the base checkpoint. On completion, the tracker is updated with the new checkpoint. There is no `fullBackupName` field in the manifest; the relationship is carried by the tracker and the libvirt checkpoint name.
 
-For the cloud05 large run:
+## Example checkpoint relationship
 
 ```text
 full checkpoint:
-  vm-backup-kb-large-0930-1248-2026-09-30_12-50-38
-incremental checkpoint:
-  vm-incremental-kb-large-0930-1248-2026-09-30_12-53-45
+  vm-backup-<run-id>-<timestamp>
+pass 1 incremental checkpoint:
+  vm-incremental-<run-id>-p01-<timestamp>
 tracker latestCheckpoint:
-  vm-incremental-kb-large-0930-1248-2026-09-30_12-53-45
+  pass 1 incremental checkpoint
 libvirt tree:
   full
-   └── incremental
+   └── pass 1
 ```
 
-The live launcher log also emitted `Generating incremental backup ... from checkpoint: ...`, which is the strongest direct evidence that the named full checkpoint was used as the base.
+The launcher logs `Generating incremental backup <name> from checkpoint: <checkpoint>`. Pass 1 should name the full checkpoint; later passes should name the previous incremental checkpoint held by the tracker.
 
 ## Objects applied
 

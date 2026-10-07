@@ -18,24 +18,11 @@
 | Guest | Debian/RHEL 9 Linux, SSH, qemu-guest-agent | Provides test workload, SSH mutation, and optional freeze/thaw |
 | Verification | restore-helper image and privileged pod | Reconstructs qcow2 chain and reads ext4, XFS, or NTFS guest data |
 
-## Live cloud05 reference snapshot
+## Runtime and version considerations
 
-The audit observed this stack on cloud05. Treat versions, pod counts, IPs, and node names as a point-in-time reference, not a contract:
+OpenShift/KubeVirt versions, controller/handler replica counts, and network ranges vary by cluster. Treat live pod counts and placements as observations, not architecture contracts. Run `preflight` and inspect the installed backup CRDs, CBT feature gate, and VM CBT state on the target cluster.
 
-| Item | Observed value |
-|---|---|
-| OpenShift | 4.22.15 |
-| OpenShift Virtualization/KubeVirt | HCO 4.22.9; KubeVirt operator version `v1.8.4` |
-| CBT feature gate | `IncrementalBackup` |
-| CBT selector | VM label `cbt-demo=enabled` |
-| Backup CRD owner | `virt-operator`; CRD version `v1alpha1` |
-| `virt-controller` | 2 running replicas in `openshift-cnv` |
-| `virt-handler` | DaemonSet, one pod per node |
-| HPP pool | `cbt-demo-pool`, host-path-backed, selected worker is dynamic and should be read from the HPP node selector |
-
-The live audit found six running CBT-enabled VMs across `cbt-demo` and `vm-cbt-demo`, with multiple full/incremental backup pairs coexisting. Resource-name isolation works at the Kubernetes level; local repository state still makes concurrent workflows unsafe. See [09. Limitations](09-limitations.md).
-
-The live `openshift-cnv` namespace also contained CDI operator/apiserver/deployment/upload-proxy components, the HPP operator/CSI/provisioner components, and KubeVirt control-plane pods. The network control plane was OVN-Kubernetes. These are dependencies of setup and storage/network plumbing; none is a separate CBT backup controller.
+The backup API call, guest freeze/thaw, checkpoint handling, and QEMU block-copy run in the `compute` container of the `virt-launcher` pod. `virt-controller` coordinates reconciliation and reports status; it does not copy disk bytes.
 
 The golden-image manifest also creates a `RoleBinding` in `vm-cbt-images` for the workflow namespace's `default` ServiceAccount to CDI's `cdi.kubevirt.io:clone-sourcer` ClusterRole. Without this cross-namespace permission, DataVolume cloning fails before CBT is reached.
 
