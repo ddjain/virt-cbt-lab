@@ -102,7 +102,6 @@ During full and incremental backup waits, logs show observed backup-condition an
 
 After a successful workflow with all planned incrementals complete, the automatic cluster-read-only monitor reports API-object creation-to-Done durations for the full and every planned incremental backup; these include controller/PVC work, not only QEMU's data-copy interval. It also persists `created_at`, `done_at`, `duration_seconds`, and `done_reason` under `backup_timings` in the report, VM lifecycle JSON, and a `backup-timings.json` fragment for report regeneration. `TYPE=full` and non-final `TYPE=incremental` defer automatic timing collection until the plan is complete, so the staged command exits instead of waiting for backups created by later commands. A separate live monitor started with `make monitor VM=vm-<run-id>` waits for every planned backup object to appear; run it alongside the workflow or after all planned passes are complete.
 
-
 ## Step-by-step behavior
 
 ### 1. `make vm-setup`
@@ -155,7 +154,6 @@ completed total. The extension reuses the saved workload profile and tracker,
 creates the next pass-specific backup/PVC, then verifies the full restore and
 all cumulative prefixes. Repeating the completed target creates no new pass.
 File counts, size range, OS, and storage variant remain fixed.
-
 **100/50-file run profile.** The normal defaults remain 8 baseline files, 4 incremental files, and a 4–12 MiB range. For a larger per-run payload, pass `GUEST_BASE_FILE_COUNT=100 GUEST_INCREMENTAL_FILE_COUNT=50 GUEST_FILE_SIZE_MIN_MIB=5 GUEST_FILE_SIZE_MAX_MIB=10` to `make e2e`. The deterministic filename assignment totals 739 MiB baseline and 380 MiB incremental (1,119 MiB combined). The run manifest and console output record the exact counts and payload bytes.
 
 **ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against the target ODF cluster: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.

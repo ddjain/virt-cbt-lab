@@ -236,7 +236,6 @@ before CDI root-PVC overhead and KubeVirt persistent-state storage. Use
 `MANIFEST_VARIANT=large` on HPP (235Gi nominal requests) and confirm cluster
 capacity before running.
 
-
 `windows-vm-setup` builds the cached Windows image automatically when it is missing (requires `WINDOWS_ISO_PATH` and `WINDOWS_ADMIN_PASSWORD_FILE`). The Windows E2E target reuses the generic backup/tracker workflow and verifies restored NTFS file bytes.
 
 Use a fixed, deterministic run name for Debian instead of the default random one:
