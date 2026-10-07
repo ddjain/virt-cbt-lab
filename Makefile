@@ -23,7 +23,7 @@ NAME ?=
 TYPE ?= all
 VM ?=
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync help test
+.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync pull-reports help test
 
 preflight:
 	@printf '[%s] [make] [1/1] Preflight: check local tools and cluster access for VM_OS=%s (read-only).\n' "$(UTC_TIMESTAMP)" "$(VM_OS)"
@@ -33,6 +33,9 @@ sync:
 	@./sync.sh
 
 resync: sync
+
+pull-reports:
+	@./sync.sh --pull-reports
 
 vm-setup:
 	@printf '[%s] [make] [1/1] VM setup (%s): create the CBT-enabled VM and initialize the baseline file workload.\n' "$(UTC_TIMESTAMP)" "$(VM_OS)"
@@ -103,31 +106,40 @@ windows-e2e:
 
 help:
 	@printf '%s\n' \
-	  'make preflight           Check the local tools and cluster prerequisites for VM_OS (read-only).' \
-	  'make vm-setup            Create the selected guest VM and its baseline deterministic file workload.' \
-	  'make vm-backup           Take the one full VM backup and establish the tracker checkpoint.' \
-	  'make vm-cbt-backup       Add the next deterministic incremental pass to the active VM.' \
-	  'make vm-cbt-verify       Verify all incremental backups, checkpoints, and restored pass prefixes.' \
-	  'make vm-cbt-restore-test Reconstruct the full and cumulative incremental restore states.' \
-	  'make vm-cbt-demo         Run setup, one full backup, all configured incremental passes, and verification.' \
-	  'make e2e                 Run the complete workflow; GUEST_INCREMENTAL_PASSES defaults to 1.' \
-	  'make e2e GUEST_INCREMENTAL_PASSES=3 Run one VM lifecycle with three sequential incremental passes.' \
-	  'make e2e TYPE=full VM=vm-foo Start a managed VM lifecycle and take its full backup.' \
-	  'make e2e TYPE=incremental VM=vm-foo Add the next pass to that lifecycle; final pass verifies the chain.' \
-	  'make e2e TYPE=extend VM=vm-foo EXTEND_TO_PASS=4 Add one pass to a completed lifecycle; value is target total.' \
-	  'make e2e TYPE=verify VM=vm-foo Re-run chain and restore verification for that lifecycle.' \
-	  'make clean-all           Delete all virt-cbt-lab managed resources from the namespace; retain reports.' \
-	  'make monitor VM=vm-foo   Read full and per-pass incremental backup timestamps/durations.' \
-	  'make e2e VM_OS=windows   Run the Windows Server 2022 CBT E2E profile.' \
-	  'make e2e VM_OS=rhel9     Run the RHEL 9 CBT E2E profile.' \
-	  'make windows-e2e         Alias for make e2e VM_OS=windows.' \
-	  'make windows-vm-setup    Clone a Windows VM, verify startup workloads, and initialize the baseline file workload.' \
-	  'make test                Run deterministic offline multi-pass workload/state tests.' \
-	  'make sync                Copy working files to REMOTE_HOST:REMOTE_DIR using sync.sh.' \
-	  'make resync              Alias for make sync; copy working files to REMOTE_HOST:REMOTE_DIR.' \
-	  'sync.sh --pull-reports   Pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/.' \
-	  'Configuration: copy .env.example to .env, then edit the placeholders.' \
-	  'Prerequisites: OpenShift Virtualization, CBT APIs, and profile-specific storage classes (Windows requires ODF).'
+	  'Usage: make <target> [VAR=value]' \
+	  '' \
+	  'WORKFLOW' \
+	  '  make e2e                         Full setup, backups, and verification.' \
+	  '  make e2e TYPE=full               Start a lifecycle and take its full backup.' \
+	  '  make e2e TYPE=incremental VM=vm-demo' \
+	  '                                    Add the next pass; final pass verifies.' \
+	  '  make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4' \
+	  '                                    Add one pass; value is the total planned passes.' \
+	  '  make e2e TYPE=verify VM=vm-demo Re-run chain and restore verification.' \
+	  '  make e2e GUEST_INCREMENTAL_PASSES=3 Run three sequential incremental passes.' \
+	  '  make vm-cbt-demo                 Timed full demo pipeline.' \
+	  '  Individual targets: vm-setup, vm-backup, vm-cbt-backup,' \
+	  '                      vm-cbt-extend, vm-cbt-verify, vm-cbt-restore-test.' \
+	  '' \
+	  'PROFILES' \
+	  '  VM_OS: debian (default), rhel9, windows.' \
+	  '  make e2e VM_OS=rhel9             Use the RHEL 9 profile.' \
+	  '  make windows-e2e                 Alias for Windows E2E.' \
+	  '  Windows targets: windows-vm-setup, windows-golden-image.' \
+	  '' \
+	  'OPERATIONS' \
+	  '  make preflight                   Read-only readiness check.' \
+	  '  make monitor VM=vm-demo          Show backup timings.' \
+	  '  make clean-all                   Delete managed resources; reports remain.' \
+	  '  make sync or make resync         Push working files; set REMOTE_HOST/REMOTE_DIR.' \
+	  '  make pull-reports                Pull REMOTE_HOST:REMOTE_DIR/report/ locally.' \
+	  '  make test                        Run offline tests.' \
+	  '' \
+	  'DEFAULTS' \
+	  '  TYPE=all; VM_OS=debian; MANIFEST_VARIANT=odf; NAMESPACE=vm-cbt-demo.' \
+	  '  GUEST_BASE_FILE_COUNT=8; GUEST_INCREMENTAL_FILE_COUNT=4.' \
+	  '  GUEST_INCREMENTAL_PASSES=1; file sizes=4-12 MiB; DEBUG=false.' \
+	  '  Copy .env.example to .env; all variables and prerequisites: README.md.'
 
 test:
 	@bash tests/test-incremental-passes.sh

@@ -164,7 +164,6 @@ foreach (\$item in \$filePlan) {
 }
 "
 guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_setup_command")"
-printf '%s\n' "$guest_output"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
 vm_info_initialize

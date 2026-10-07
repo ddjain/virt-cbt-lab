@@ -117,7 +117,6 @@ for workload_file in \"\$workload_dir\"/base-*.dat; do
 done
 "
 guest_output="$(guest_ssh "$guest_setup_command")"
-printf '%s\n' "$guest_output"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
 vm_info_initialize

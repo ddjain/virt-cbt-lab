@@ -280,11 +280,26 @@ printf '[%s] [make] E2E pipeline %s for TYPE=%s VM_OS=%s; total_elapsed_seconds=
 if ((status == 0)); then
   if [[ -z "$vm_name" && -n "$run_id" ]]; then vm_name="vm-${run_id}"; fi
   if [[ -n "$vm_name" ]]; then
-    printf '[%s] [make] Collecting API-recorded backup timings for VM=%s.\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name"
-    if ! run_profiled_make monitor VM="$vm_name"; then
-      printf '[%s] [make] WARNING: E2E passed but the backup timing monitor failed for VM=%s.\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name" >&2
+    lifecycle_info_path="$REPORT_ROOT_DIR/vms/$run_id/vm-info.json"
+    monitor_deferred=false
+    if [[ -r "$lifecycle_info_path" ]]; then
+      planned_passes="$(jq -r '.incremental_passes_total // 0' "$lifecycle_info_path")"
+      completed_passes="$(jq -r '.incremental_passes_completed // 0' "$lifecycle_info_path")"
+      if [[ "$completed_passes" =~ ^[0-9]+$ && "$planned_passes" =~ ^[0-9]+$ ]] &&
+         ((completed_passes < planned_passes)); then
+        monitor_deferred=true
+      fi
+    fi
+    if [[ "$monitor_deferred" == true ]]; then
+      printf '[%s] [make] Backup timing monitor deferred: %s/%s planned incremental passes complete for VM=%s.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_passes" "$planned_passes" "$vm_name"
+    else
+      printf '[%s] [make] Collecting API-recorded backup timings for VM=%s.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name"
+      if ! run_profiled_make monitor VM="$vm_name"; then
+        printf '[%s] [make] WARNING: E2E passed but the backup timing monitor failed for VM=%s.\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name" >&2
+      fi
     fi
   fi
 fi

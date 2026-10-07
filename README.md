@@ -21,7 +21,7 @@ make e2e TYPE=full VM=vm-demo
 make e2e TYPE=incremental VM=vm-demo
 ```
 
-This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run the same `TYPE=incremental` command `N` times. Keep the same `VM`; later stages reuse settings saved by the full stage.
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run the same `TYPE=incremental` command `N` times. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it exits without waiting for future backup objects; automatic timing collection runs after the final pass.
 
 ### Supported E2E modes
 
@@ -93,27 +93,29 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 
 ### Supported variables
 
-| Variable | Required | Meaning |
-|---|---:|---|
-| `KUBECONFIG_PATH` | No | Kubeconfig path; otherwise `KUBECONFIG` or the `oc` default is used. |
-| `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
-| `REMOTE_HOST` | For `make sync`/`make resync` | SSH host or alias used for synchronization. |
-| `REMOTE_DIR` | For `make sync`/`make resync` | Destination directory on that host. |
-| `NAMESPACE` | No | Kubernetes namespace for workflow resources. Default: `vm-cbt-demo`. |
-| `TYPE` | No | E2E mode: `all` (default), `full`, `incremental`, `verify`, or `extend`. |
-| `VM` | Staged workflow | Managed VM name `vm-<run-id>`; use for staged `full`, `incremental`, `verify`, and `extend` commands. |
-| `NAME` | No | Optional fixed run ID for `TYPE=all` or `TYPE=full` when `VM` is unset. |
-| `VM_OS` | No | Guest profile for `make e2e`: `debian` (default), `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
-| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
-| `DEBUG` | No | Default `false` keeps state changes and 30-second backup heartbeats; `DEBUG=true` adds detailed condition and VM backup-status snapshots. No byte-progress percentage is available. |
-| `GUEST_BASE_FILE_COUNT` | No | Number of deterministic files created before the full backup. Default: `8`. |
-| `GUEST_INCREMENTAL_FILE_COUNT` | No | Number of new deterministic files added in each incremental pass. Default: `4`. |
-| `GUEST_INCREMENTAL_PASSES` | No | Number of incremental backups after the single full backup. Default: `1`; maximum: `99`. |
-| `EXTEND_TO_PASS` | For `TYPE=extend` | Target total incremental count when adding exactly one pass to a completed lifecycle; e.g. `4` extends a three-pass run. Leave empty otherwise. |
-| `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | Inclusive whole-MiB size range for each file. Defaults: `4` and `12`. The selected sizes and SHA-256 hashes are recorded in the run manifest. |
-| `MANIFEST_VARIANT` | No | Debian sizing: `odf`, `default`, `large`, or `large-odf`; RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. Default: `odf`. |
-| `WINDOWS_ISO_PATH` | If the ISO is not already staged | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
-| `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Local, gitignored file containing the Administrator password; never committed or logged. |
+| Variable | Required | Default | Meaning |
+|---|---:|---|---|
+| `KUBECONFIG_PATH` | No | Unset | Kubeconfig path; when unset, use `$KUBECONFIG`, then the `oc` default. |
+| `GUEST_KEY` | No | `keys/id_ed25519` | Repository-local private key path (gitignored). |
+| `REMOTE_HOST` | For `make sync`/`make resync`/`make pull-reports` | Unset | SSH host or alias used for synchronization. |
+| `REMOTE_DIR` | For `make sync`/`make resync`/`make pull-reports` | Unset | Destination directory on that host. |
+| `NAMESPACE` | No | `vm-cbt-demo` | Kubernetes namespace for workflow resources. |
+| `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `verify`, or `extend`. |
+| `VM` | For staged `incremental`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
+| `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when both `NAME` and `VM` are unset, a new run ID is generated. |
+| `VM_OS` | No | `debian` | Guest profile for `make e2e`: `debian`, `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `DEBUG` | No | `false` | `DEBUG=true` adds detailed backup-condition and VMI-status snapshots; normal output includes state changes and 30-second heartbeats. No byte-progress percentage is available. |
+| `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
+| `GUEST_INCREMENTAL_FILE_COUNT` | No | `4` | Number of new deterministic files added in each incremental pass. |
+| `GUEST_INCREMENTAL_PASSES` | No | `1` | Number of incremental backups after the single full backup; maximum `99`. |
+| `EXTEND_TO_PASS` | For `TYPE=extend` | Unset | Target total incremental count when adding exactly one pass; valid range `2`–`99`. For example, `4` extends a three-pass run. |
+| `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | `4` / `12` | Inclusive whole-MiB size range for each file. Selected sizes and SHA-256 hashes are recorded in the run manifest. |
+| `MANIFEST_VARIANT` | No | `odf` | Debian variants: `odf`, `default`, `large`, or `large-odf`; RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. |
+| `WINDOWS_ISO_PATH` | If the ISO is not already staged | Unset | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
+| `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Unset | Local, gitignored file containing the Administrator password; never committed or logged. |
+
+`Unset` means the variable has no fixed value; documented fallbacks or generated run IDs still apply. `.env.example` uses placeholders for `REMOTE_HOST`, `REMOTE_DIR`, and `RESTORE_HELPER_IMAGE`; replace them before use.
 
 ### ODF-backed variant (default)
 
@@ -254,9 +256,9 @@ make vm-cbt-verify
 
 ### Timestamped E2E logs
 
-`make e2e` logs UTC timestamps and `elapsed_seconds` for preflight and each top-level target. `vm-cbt-demo` separately times VM setup/baseline workload, the full backup, each incremental pass, and verification/restore. The E2E summary includes preflight through restore verification. After success, `make e2e` runs the read-only monitor for API creation-to-Done durations; these include controller/PVC work, not only QEMU's data copy.
+`make e2e` logs UTC timestamps and `elapsed_seconds` for preflight and each top-level target. `vm-cbt-demo` separately times VM setup/baseline workload, the full backup, each incremental pass, and verification/restore. After all planned backups complete, the cluster-read-only monitor persists each backup's API creation time, `Done.lastTransitionTime`, duration in seconds, and reason under `backup_timings` in report JSON and `vm-info.json`.
 
-For a separate live monitor, run `make monitor VM=vm-<run-id>` after setup creates `report/vms/<run-id>/vm-info.json`. It watches the full backup and every planned incremental name, including backup objects not yet created.
+For a separate live monitor, run `make monitor VM=vm-<run-id>` after setup creates `report/vms/<run-id>/vm-info.json`. It watches the full backup and every planned incremental name, including backup objects not yet created. On completion, it writes `fragments/backup-timings.json` and updates `report.json` if present.
 
 The full-backup step logs baseline file count and payload bytes. Each incremental pass logs files and payload bytes added plus the cumulative workload totals. The structured JSON report retains per-pass payload/checkpoint data and restore results for the baseline and every prefix.
 
@@ -270,15 +272,23 @@ Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-la
 
 ## Synchronization helper
 
-`sync.sh` copies the repository and its `.git` metadata to a configured remote host. It reads `REMOTE_HOST` and `REMOTE_DIR` from the current environment first, then from the local `.env` without executing that file. It requires `ssh` and `rsync` locally. It excludes `.env`, dotenv variants, and log files, but includes `.git` so the destination remains a Git working copy:
+`make sync` (also `make resync`) pushes the working tree. `make pull-reports` copies all of `REMOTE_DIR/report/` into local `report/` and does not modify the remote. All three targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`; neither has a built-in default. The push excludes `.env` files, `.git`, local credentials, generated data, and tooling state.
+
+With `.env` configured, use:
 
 ```sh
-REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup ./sync.sh
+make sync
+make pull-reports
 ```
 
-If you run the workflow on the remote host (e.g. because that's where cluster access is configured), pull its generated reports back with `./sync.sh --pull-reports`, which copies `REMOTE_DIR/report/` into the local `report/` directory and never modifies the remote.
+For a one-off remote host and path:
 
-Use a host alias and destination appropriate for your environment. The helper does not transfer credentials.
+```sh
+make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup sync
+make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup pull-reports
+```
+
+The helper requires local `ssh` and `rsync` and never transfers credentials. `pull-reports` retrieves the local report artifacts; guest workload files remain inside the VM.
 
 ## Validation and testing
 
@@ -331,10 +341,11 @@ Each VM setup generates a `REPORT_ID` (`run_<UTC timestamp>`; a run-ID suffix is
 `report.json` contains, per run:
 - `os_profile`: `debian`, `rhel9`, or `windows`.
 - `guest.workload`: directory, file-size range, baseline and per-pass file counts, added/cumulative payload byte totals, manifest hashes, and `workload-manifest.json` path.
-- `backups.full` and `backups.incrementals[]`: names, types, checkpoints, per-pass file/payload totals, backup PVC names/requested sizes/capacities, and available API timing fields.
+- `backups.full` and `backups.incrementals[]`: names, types, checkpoints, per-pass file/payload totals, and backup PVC names/requested sizes/capacities.
+- `backup_timings.full` and `backup_timings.incrementals[]`: API creation and Done timestamps, `duration_seconds`, and terminal reason for each backup.
 - `tracker`: the `VirtualMachineBackupTracker` name and latest checkpoint.
 - `verification.checks`: CBT/checkpoint/PVC checks plus full-only and every cumulative restore prefix's file counts, byte totals, and manifest-hash comparisons.
-- `report/vms/<run-id>/vm-info.json`: lifecycle configuration, report ID, current/next pass, backup/checkpoint records, and status. Updates are atomic; `make clean-all` marks this record cleaned but retains it with the run report.
+- `report/vms/<run-id>/vm-info.json`: lifecycle configuration, report ID, current/next pass, backup/checkpoint records, timing data, and status. Updates are atomic; `make clean-all` marks this record cleaned but retains it with the run report.
 - `logs`: relative paths to the collected `virt-launcher` and restore-pod logs.
 
 Unlike transient `state/`, `report/` is not deleted by `make clean-all` — it preserves per-run reports and per-VM lifecycle records for history. Inspect a run with `jq . report/run_*/report.json` or compare two reports. Log collection is best-effort and does not collect cluster component logs.

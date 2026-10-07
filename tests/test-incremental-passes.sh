@@ -165,6 +165,20 @@ printf '%s\n' "$target" >> "$MAKE_LOG"
 case "$target" in
   preflight|monitor|vm-cbt-verify)
     ;;
+  vm-setup)
+    run_id_arg=""
+    for arg in "$@"; do
+      if [[ "$arg" == RUN_ID=* ]]; then run_id_arg="${arg#RUN_ID=}"; fi
+    done
+    if [[ -z "$run_id_arg" || -z "${TEST_STAGE_ROOT:-}" ]]; then
+      printf 'Fake Make received an incomplete VM setup request.\n' >&2
+      exit 90
+    fi
+    mkdir -p "$TEST_STAGE_ROOT/state"
+    printf '%s\n' "$run_id_arg" > "$TEST_STAGE_ROOT/state/run-id"
+    ;;
+  vm-backup)
+    ;;
   vm-cbt-extend)
     target_pass="${EXTEND_TO_PASS:-}"
     total="$(jq -r '.incremental_passes_total' "$TEST_VM_INFO")"
@@ -258,6 +272,21 @@ run_extend_stage() {
     VM="vm-$run_id" \
     bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
 }
+run_full_stage() {
+  local run_id="$1" info_path calls_path
+  info_path="$stage_checkout/report/vms/$run_id/vm-info.json"
+  calls_path="$TEST_TMP/$run_id-make-calls.targets"
+  : > "$calls_path"
+  env \
+    MAKE_COMMAND="$fake_make" \
+    MAKE_LOG="$calls_path" \
+    TEST_VM_INFO="$info_path" \
+    TEST_STAGE_ROOT="$stage_checkout" \
+    TYPE=full \
+    NAME="$run_id" \
+    GUEST_INCREMENTAL_PASSES=1 \
+    bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
+}
 
 assert_stage_targets() {
   local run_id="$1" expected="$2" actual
@@ -284,12 +313,18 @@ prepare_completed_stage_state() {
   printf '%s' "$info_path"
 }
 
+full_run_id=full-stage-test
+full_info_path="$(prepare_stage_state "$full_run_id" 1)"
+run_full_stage "$full_run_id"
+assert_stage_targets "$full_run_id" '["preflight","vm-setup","vm-backup"]'
+[[ "$(jq -r '.incremental_passes_completed' "$full_info_path")" == 0 ]]
+
 stage_run_id=stage-test
 stage_info_path="$(prepare_stage_state "$stage_run_id" 3)"
 for pass in 1 2 3; do
   run_incremental_stage "$stage_run_id"
   if ((pass < 3)); then
-    assert_stage_targets "$stage_run_id" '["preflight","vm-cbt-backup","monitor"]'
+    assert_stage_targets "$stage_run_id" '["preflight","vm-cbt-backup"]'
     expected_stage_status=incremental_ready
   else
     assert_stage_targets "$stage_run_id" '["preflight","vm-cbt-backup","vm-cbt-verify","monitor"]'

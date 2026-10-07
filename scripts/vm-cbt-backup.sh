@@ -317,7 +317,6 @@ done <<< \"\$entries\"
 "
   guest_output="$(guest_ssh "$guest_mutation_command")"
 fi
-printf '%s\n' "$guest_output"
 all_guest_records="$(workload_records_from_output "$guest_output")"
 guest_baseline_records="$(workload_records_for_phase "$all_guest_records" baseline)"
 workload_manifest_verify_inventory "$guest_baseline_records" "$baseline_expected" "Baseline after pass $incremental_pass mutation"
