@@ -4,6 +4,39 @@ This repository demonstrates Changed Block Tracking (CBT) for KubeVirt virtual-m
 
 The workflow is a demonstration, not a production backup policy. Each run uses run-derived resource names in a shared namespace and local/RWO storage.
 
+## Quick start
+
+After meeting the prerequisites below and selecting a supported cluster with `oc`, run the one-shot E2E:
+
+```sh
+make e2e
+```
+
+`make e2e` runs read-only preflight, VM setup, one full backup, the configured incremental passes, and restore verification. Defaults: Debian on the ODF variant, 8 baseline files, 4 new files per incremental pass, 1 pass, and 4–12 MiB per file. If your cluster uses HPP without ODF, run `make e2e MANIFEST_VARIANT=default`. A `.env` file is optional; `make` loads it when present.
+
+### Separate full and incremental commands
+
+```sh
+make e2e TYPE=full VM=vm-demo
+make e2e TYPE=incremental VM=vm-demo
+```
+
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run the same `TYPE=incremental` command `N` times. Keep the same `VM`; later stages reuse settings saved by the full stage.
+
+### Supported E2E modes
+
+| `TYPE` | Behavior |
+|---|---|
+| `all` (default) | Run setup, full backup, all planned incrementals, and verification in one command. |
+| `full` | Start a lifecycle and take its full backup. Set `VM=vm-<run-id>` for a predictable name in later stages. |
+| `incremental` | Add the next planned pass to `VM`; the final planned pass also verifies. |
+| `verify` | Recheck checkpoints and restored data without adding a pass; e.g. `make e2e TYPE=verify VM=vm-demo`. |
+| `extend` | Add one pass to a completed lifecycle; e.g. `make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4` after three passes. |
+
+Use `VM=vm-<run-id>` for `incremental`, `verify`, and `extend`. `EXTEND_TO_PASS` must be exactly one above the completed total.
+
+Key Make variables such as `VM_OS`, `MANIFEST_VARIANT`, `GUEST_*`, and `DEBUG` are documented in [Supported variables](#supported-variables). Run `make preflight` for a read-only readiness check and `make help` for the other public Make targets. `make clean-all` deletes every workflow-managed resource in the namespace; reports are retained.
+
 ## Architecture and workflow
 
 ```text
@@ -58,7 +91,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 
    `make` also includes `.env` automatically and exports the supported variables to workflow scripts.
 
-Supported variables:
+### Supported variables
 
 | Variable | Required | Meaning |
 |---|---:|---|
@@ -66,6 +99,10 @@ Supported variables:
 | `GUEST_KEY` | No | Private key path. Default: repository-local `keys/id_ed25519` (gitignored). |
 | `REMOTE_HOST` | For `make sync`/`make resync` | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `make sync`/`make resync` | Destination directory on that host. |
+| `NAMESPACE` | No | Kubernetes namespace for workflow resources. Default: `vm-cbt-demo`. |
+| `TYPE` | No | E2E mode: `all` (default), `full`, `incremental`, `verify`, or `extend`. |
+| `VM` | Staged workflow | Managed VM name `vm-<run-id>`; use for staged `full`, `incremental`, `verify`, and `extend` commands. |
+| `NAME` | No | Optional fixed run ID for `TYPE=all` or `TYPE=full` when `VM` is unset. |
 | `VM_OS` | No | Guest profile for `make e2e`: `debian` (default), `rhel9` (cluster-provided RHEL 9 DataSource), or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `DEBUG` | No | Default `false` keeps state changes and 30-second backup heartbeats; `DEBUG=true` adds detailed condition and VM backup-status snapshots. No byte-progress percentage is available. |
@@ -127,35 +164,9 @@ READY: environment is prepared for the repository workflow.
 
 The script reads supported values from `.env` when corresponding environment variables are unset; it does not execute `.env`. `KUBECONFIG_PATH` and `GUEST_KEY` use the same defaults as the workflow scripts. A preflight pass confirms prerequisites and access, not that a later backup operation will succeed.
 
-## Run the demo
+## Profile-specific run examples
 
-
-Run the complete default Debian workflow:
-
-```sh
-make e2e
-```
-
-Run one full backup followed by three incremental backups in one command:
-
-```sh
-make e2e GUEST_INCREMENTAL_PASSES=3
-```
-
-For a staged lifecycle, use a fixed VM name and run one incremental command per pass:
-
-```sh
-make e2e TYPE=full VM=vm-foo GUEST_INCREMENTAL_PASSES=3
-make e2e TYPE=incremental VM=vm-foo  # repeat three times; the final pass runs verification
-```
-
-After all planned passes are complete, add exactly one pass to the same VM:
-
-```sh
-make e2e TYPE=extend VM=vm-foo EXTEND_TO_PASS=4
-```
-
-The full stage stores the OS profile, workload settings, initial pass count, report ID, completed passes, next pass, backup names, and checkpoints in `report/vms/foo/vm-info.json`. Incremental stages use that saved profile. For a completed lifecycle, `TYPE=extend` with `EXTEND_TO_PASS` set to the new total adds only the next pass; for example, use `4` after three passes. File counts, size range, and OS stay fixed. `make e2e TYPE=verify VM=vm-foo` reruns verification without adding a pass.
+The [Quick start](#quick-start) section covers one-shot and staged E2E commands. The examples here show profile-specific and larger-workload settings.
 
 Run the RHEL 9 CBT profile using the cluster-provided `rhel9` DataSource:
 
