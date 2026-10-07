@@ -42,7 +42,8 @@ trap cleanup EXIT INT TERM
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbt-preflight.XXXXXX")"
 section() {
   SECTION_NUMBER=$((SECTION_NUMBER + 1))
-  printf '\n[preflight %d/%d] %s\n' "$SECTION_NUMBER" "$TOTAL_SECTIONS" "$1"
+  printf '\n[%s] [preflight %d/%d] %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SECTION_NUMBER" "$TOTAL_SECTIONS" "$1"
 }
 
 result() {
@@ -76,6 +77,10 @@ VM_OS="${VM_OS:-debian}"
 WINDOWS_ISO_PATH="${WINDOWS_ISO_PATH:-}"
 WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
 if [[ -z "$VM_OS" ]]; then VM_OS=debian; fi
+TYPE="${TYPE:-all}"
+VM="${VM:-}"
+EXTEND_TO_PASS="${EXTEND_TO_PASS:-}"
+DEBUG="${DEBUG:-false}"
 
 case "$VM_OS" in
   debian | rhel9 | windows) ;;
@@ -93,7 +98,7 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 check_repository() {
   section "Repository"
   [[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
-  local files=(scripts/common.sh scripts/dotenv.sh scripts/workload-manifest.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
+  local files=(scripts/common.sh scripts/dotenv.sh scripts/workload-manifest.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-extend.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
   if [[ "$VM_OS" == windows ]]; then
     files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-incremental-backup.yaml manifests/windows-restore-verify-pod.yaml)
   fi
@@ -151,6 +156,7 @@ check_environment() {
   fi
   GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
   GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
+  GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
   GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
   GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
   local setting
@@ -161,12 +167,37 @@ check_environment() {
       result FAIL "$setting must be a positive integer"
     fi
   done
+  if [[ "$GUEST_INCREMENTAL_PASSES" =~ ^[1-9][0-9]?$ ]]; then
+    result PASS "GUEST_INCREMENTAL_PASSES is between 1 and 99"
+  else
+    result FAIL "GUEST_INCREMENTAL_PASSES must be between 1 and 99"
+  fi
   if [[ "$GUEST_FILE_SIZE_MIN_MIB" =~ ^[1-9][0-9]*$ &&
         "$GUEST_FILE_SIZE_MAX_MIB" =~ ^[1-9][0-9]*$ ]] &&
       ((GUEST_FILE_SIZE_MAX_MIB >= GUEST_FILE_SIZE_MIN_MIB)); then
     result PASS "guest file size range is ordered"
   else
     result FAIL "GUEST_FILE_SIZE_MAX_MIB must be at least GUEST_FILE_SIZE_MIN_MIB"
+
+  fi
+  if [[ "$DEBUG" == true || "$DEBUG" == false ]]; then
+    result PASS "DEBUG is $DEBUG"
+  else
+    result FAIL "DEBUG must be true or false"
+  fi
+  if [[ "$TYPE" == extend ]]; then
+    if [[ "$VM" =~ ^vm-[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+      result PASS "TYPE=extend uses managed VM name $VM"
+    else
+      result FAIL "TYPE=extend requires VM=vm-<run-id>"
+    fi
+    if [[ "$EXTEND_TO_PASS" =~ ^[1-9][0-9]?$ ]] && ((EXTEND_TO_PASS >= 2)); then
+      result PASS "EXTEND_TO_PASS is a target total from 2 to 99"
+    else
+      result FAIL "TYPE=extend requires EXTEND_TO_PASS from 2 to 99 (the target total)"
+    fi
+  elif [[ -n "$EXTEND_TO_PASS" ]]; then
+    result FAIL "EXTEND_TO_PASS is only valid with TYPE=extend"
   fi
 }
 

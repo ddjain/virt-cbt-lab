@@ -192,7 +192,6 @@ After the full checkpoint, the guest-agent helper adds `GUEST_INCREMENTAL_FILE_C
 3. Mount the selected partition read-only with `ntfs3` when available or the helper image's `ntfs-3g` command.
 4. Inventory `C:\cbt-data\workload` in both restored images and compare file count, total payload bytes, and canonical manifest hash.
 5. Require the full-only restore to match the N-file baseline and the combined restore to match the N+M file set. The manifest hash covers each relative path, size, and per-file SHA-256.
-
 The Windows helper image must be pushed to a registry reachable by the cluster and selected with `RESTORE_HELPER_IMAGE`. Build/push from the repository root, replacing the example reference with a registry you control:
 
 ```sh

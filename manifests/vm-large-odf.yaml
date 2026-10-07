@@ -1,11 +1,11 @@
 # LARGE-ODF VARIANT — opt-in via MANIFEST_VARIANT=large-odf (see .env.example).
 # Same chaos-testing sizing intent as vm-large.yaml, but backed by
-# ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp; the root disk request
-# carries the same +20% margin used in vm-odf.yaml, since Ceph RBD enforces
-# PVC capacity strictly and CDI's clone-time overhead inflates the actual
-# disk past the nominal request (see docs/odf-setup-plan.md). Requires
-# ODF/Ceph deployed on the cluster first. Keep structurally identical to
-# vm-large.yaml (only storage class and sizes differ) so
+# ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp. `__LARGE_DISK_SIZE__`
+# is resolved by scripts/common.sh to 48Gi for Debian or 80Gi for RHEL 9.
+# CDI's clone-time filesystem-overhead reservation can expand the actual
+# root PVC request beyond the DataVolume request (see docs/odf-setup-plan.md).
+# Requires ODF/Ceph deployed on the cluster first. Keep structurally identical
+# to vm-large.yaml (only storage class and sizes differ) so
 # scripts/vm-setup.sh's sed pipeline works unchanged.
 apiVersion: v1
 kind: Namespace
@@ -39,7 +39,7 @@ spec:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 48Gi
+              storage: __LARGE_DISK_SIZE__
           storageClassName: ocs-storagecluster-ceph-rbd
           volumeMode: Filesystem
   template:

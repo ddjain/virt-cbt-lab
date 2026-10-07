@@ -51,6 +51,15 @@ For a valid incremental result, check all of:
 - the Done reason is not a terminal `Backup has failed...` reason;
 - full-only and combined restore counts, payload bytes, and workload manifest hashes pass.
 
+
+### Live backup status
+
+The full and incremental scripts stream observed `VirtualMachineBackup` condition changes, destination PVC phase, and matching `VM.status.changedBlockTracking.backupStatus` timestamps/results while `oc wait` remains the terminal completion gate. A 30-second heartbeat makes an unchanged in-progress state visible without logging every poll.
+
+`DEBUG=true` adds detailed condition and VM backup-status snapshots. The API provides no copied-byte or percentage field, so the watcher reports observed phase and elapsed time, not a guessed progress bar. Treat events such as `HotplugFailed` as context; confirm the settled `Done` reason, type, checkpoint, and tracker before classifying the backup.
+
+`make monitor VM=vm-<run-id>` is read-only and can run after the lifecycle state file is created; it derives the full and planned incremental backup names and waits for objects that have not yet been applied.
+
 ## Deep inspection for CBT and chaos tests
 
 Inspect the tracker recovery flag and the actual libvirt checkpoint tree:

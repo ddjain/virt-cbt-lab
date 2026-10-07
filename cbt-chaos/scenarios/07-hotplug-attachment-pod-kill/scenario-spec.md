@@ -19,9 +19,12 @@ bound or can wedge the backup CR indefinitely — the "Hotplug-attach race" row 
 
 Validated against `krknctl describe pod-scenarios` / `krknctl run pod-scenarios --help` (real scenario
 tag is `pod-scenarios`). No `hp-volume-*` pod exists on <target-host> outside the brief hotplug-attach window
-itself (`oc get pods -n vm-cbt-demo` shows only the virt-launcher pod at rest) — this confirms the
+itself (`oc get pods -n vm-cbt-demo` shows only the virt-launcher pod at rest). This confirms the
 attachment pod is genuinely transient and the injection window is as narrow as `chaos-plan.md` §D
 describes.
+
+For an incremental target, set `INCREMENTAL_PASS` (default `1`); the trigger
+selects the corresponding `vm-incremental-pvc-<RUN_NAME>-pNN` attachment.
 
 ```bash
 krknctl run pod-scenarios \

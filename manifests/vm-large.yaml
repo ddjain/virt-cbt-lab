@@ -36,7 +36,7 @@ spec:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 40Gi
+              storage: __LARGE_DISK_SIZE__
           storageClassName: cbt-demo-hpp
           volumeMode: Filesystem
   template:

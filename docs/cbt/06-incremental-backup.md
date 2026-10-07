@@ -43,11 +43,11 @@ The live launcher log also emitted `Generating incremental backup ... from check
 ## Objects applied
 
 ```text
-PVC vm-incremental-pvc-<run>
-VirtualMachineBackup vm-incremental-<run>
+PVC vm-incremental-pvc-<run>-pNN
+VirtualMachineBackup vm-incremental-<run>-pNN
   source.kind = VirtualMachineBackupTracker
   source.name = vm-tracker-<run>
-  pvcName     = vm-incremental-pvc-<run>
+  pvcName     = vm-incremental-pvc-<run>-pNN
 ```
 
 ## Incremental sequence

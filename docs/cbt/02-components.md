@@ -75,8 +75,8 @@ Names use `<run-id>`; the namespace is normally `vm-cbt-demo`.
 | `VirtualMachineBackupTracker/vm-tracker-<run-id>` | Source VM and latest checkpoint |
 | `VirtualMachineBackup/vm-backup-<run-id>` | Full backup request/result |
 | `PVC/vm-backup-pvc-<run-id>` | Full qcow2 destination |
-| `VirtualMachineBackup/vm-incremental-<run-id>` | Incremental backup request/result |
-| `PVC/vm-incremental-pvc-<run-id>` | Incremental qcow2 destination |
+| `VirtualMachineBackup/vm-incremental-<run-id>-pNN` | Pass-specific incremental backup request/result |
+| `PVC/vm-incremental-pvc-<run-id>-pNN` | Pass-specific incremental qcow2 destination |
 | `Pod/vm-restore-verify-<run-id>` | Short-lived repository restore verifier |
 | `persistent-state-for-vm-<run-id>-<suffix>` PVC | KubeVirt backend metadata and CBT state; generated automatically |
 

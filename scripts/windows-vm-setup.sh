@@ -167,8 +167,10 @@ guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_setup_command")"
 printf '%s\n' "$guest_output"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
+vm_info_initialize
 baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
 baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
+baseline_total_mib=$((baseline_total_bytes / 1048576))
 baseline_manifest_sha256="$(jq -r '.baseline.manifest_sha256' "$(workload_manifest_path)")"
 captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 write_report_fragment "setup" "$(jq -n \
@@ -183,9 +185,11 @@ write_report_fragment "setup" "$(jq -n \
   --argjson total_payload_bytes "$baseline_total_bytes" \
   --argjson min_mib "$GUEST_FILE_SIZE_MIN_MIB" \
   --argjson max_mib "$GUEST_FILE_SIZE_MAX_MIB" \
+  --argjson incremental_passes_total "$GUEST_INCREMENTAL_PASSES" \
   '{namespace: $namespace, vm_name: $vm_name, os_profile: $os_profile,
     guest: {workload: {directory: $guest_directory, manifest_path: $manifest_path,
                        size_range_mib: {min_inclusive: $min_mib, max_inclusive: $max_mib},
+                       incremental_passes_total: $incremental_passes_total,
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
-workflow_success "Windows baseline workload manifest recorded at $(workload_manifest_path)"
+workflow_success "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"

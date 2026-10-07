@@ -1,11 +1,11 @@
 # LARGE-ODF VARIANT — opt-in via MANIFEST_VARIANT=large-odf (see .env.example).
 # Same chaos-testing sizing intent as full-backup-large.yaml, but backed by
-# ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp, with the same +20%
-# margin used in full-backup-odf.yaml (Ceph RBD enforces PVC capacity
-# strictly; see docs/odf-setup-plan.md). Requires ODF/Ceph deployed on the
-# cluster first. Keep structurally identical to full-backup-large.yaml (only
-# storage class and sizes differ) so scripts/vm-backup.sh's sed pipeline
-# works unchanged.
+# ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp. `__LARGE_DISK_SIZE__`
+# is resolved by scripts/common.sh to 48Gi for Debian or 80Gi for RHEL 9.
+# Ceph RBD enforces PVC capacity strictly; see docs/odf-setup-plan.md.
+# Requires ODF/Ceph deployed first. Keep structurally identical to
+# full-backup-large.yaml (only storage class and sizes differ) so the
+# scripts/vm-backup.sh sed pipeline works unchanged.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -20,7 +20,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 48Gi
+      storage: __LARGE_DISK_SIZE__
 ---
 apiVersion: backup.kubevirt.io/v1alpha1
 kind: VirtualMachineBackupTracker

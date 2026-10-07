@@ -172,16 +172,19 @@ selected.
 
 The ODF-backed PVCs are sized larger than their `cbt-demo-hpp` equivalents
 (6Gi/6Gi/4Gi vs. 5Gi/5Gi/3Gi for the small variant; 48Gi/48Gi/30Gi vs.
-40Gi/40Gi/25Gi for large) — found necessary by actually running
-`make e2e MANIFEST_VARIANT=odf` against this cluster: CDI's clone-time
-filesystem-overhead reservation inflates the root disk past its nominal
-request, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`,
-which silently tolerates the same overcommit), so a flat backup-target PVC
-at the nominal size failed the full backup with
-`Backup has failed: No space left on device`. All four variants
-(`default`, `large`, `odf`, `large-odf`) were run end to end against
-`cloud05` after the fix, including the restore-verification hash checks,
-and passed. The existing single-node HPP pool is left untouched.
+40Gi/40Gi/25Gi for the initial Debian large variant) — found necessary by
+actually running `make e2e MANIFEST_VARIANT=odf` on an ODF-backed target cluster:
+CDI's clone-time filesystem-overhead reservation inflates the root disk past
+its nominal request, and Ceph RBD enforces PVC capacity strictly (unlike
+`cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat
+backup-target PVC at the nominal size failed the full backup with
+`Backup has failed: No space left on device`.
+
+The current RHEL 9 profile resolves the selected HPP or ODF large root/full
+requests to 80Gi; incremental PVC requests remain 25Gi/30Gi, respectively.
+All four variants (`default`, `large`, `odf`, `large-odf`) passed end-to-end
+validation on a compatible target cluster, including restore-verification hash
+checks.
 
 ## Operational notes and decisions carried from planning discussion
 

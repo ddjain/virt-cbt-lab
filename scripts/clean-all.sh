@@ -3,6 +3,13 @@ set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="clean-all"
+if [[ -r "$STATE_DIR/e2e.lock/pid" ]]; then
+  e2e_pid="$(cat "$STATE_DIR/e2e.lock/pid")"
+  if [[ "$e2e_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$e2e_pid" 2>/dev/null; then
+    printf '[clean-all] Refusing cleanup while E2E process %s holds the checkout lock.\n' "$e2e_pid" >&2
+    exit 1
+  fi
+fi
 
 # Every resource kind an E2E run can create directly (VM/DataVolume owned
 # child resources like the root PVC cascade-delete with the VM).
@@ -62,6 +69,23 @@ if [[ -f "$marker" ]]; then
 else
   workflow_success "No workflow-managed key found; existing key files preserved"
 fi
+workflow_action "Mark VM lifecycle records cleaned while preserving per-run report history"
+cleaned_at="$(workflow_timestamp)"
+for vm_info in "$VM_INFO_ROOT_DIR"/*/vm-info.json; do
+  [[ -f "$vm_info" ]] || continue
+  if jq -e --arg namespace "$NAMESPACE" \
+      '.namespace == $namespace and .status != "cleaned"' "$vm_info" >/dev/null; then
+    tmp_path="${vm_info}.tmp.$$"
+    jq --arg cleaned_at "$cleaned_at" \
+      'if .current_incremental_pass.status == "running" then
+         .current_incremental_pass.status = "interrupted_by_cleanup"
+       else . end |
+       .status = "cleaned" | .cleaned_at = $cleaned_at | .updated_at = $cleaned_at' \
+      "$vm_info" > "$tmp_path"
+    mv -f "$tmp_path" "$vm_info"
+  fi
+done
+workflow_success "VM lifecycle records retained with cleaned status"
 workflow_action "Removing local run state (recorded run ID and guest hashes) in $STATE_DIR"
 rm -rf "$STATE_DIR"
 # report/ is intentionally left in place: it holds each run's JSON report and

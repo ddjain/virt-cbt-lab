@@ -25,7 +25,14 @@ delete_restore_pod() {
 }
 
 run_restore_verify_pod() {
-  local full_pvc="$1" incremental_pvc="$2" restore_manifest
+  local full_pvc="$1" restore_manifest snippet_dir volumes_file mounts_file rendered
+  local index pass pvc
+  shift
+  local -a incremental_pvcs=("$@")
+  if ((${#incremental_pvcs[@]} == 0)); then
+    printf 'Restore verification requires at least one incremental PVC.\n' >&2
+    return 1
+  fi
   if [[ "$VM_OS" == windows ]]; then
     restore_manifest="$ROOT_DIR/manifests/windows-restore-verify-pod.yaml"
   else
@@ -33,21 +40,56 @@ run_restore_verify_pod() {
   fi
 
   delete_restore_pod
-  trap delete_restore_pod RETURN
+  snippet_dir="$(mktemp -d)"
+  volumes_file="$snippet_dir/incremental-volumes.yaml"
+  mounts_file="$snippet_dir/incremental-mounts.yaml"
+  rendered="$snippet_dir/pod.yaml"
+  cleanup_restore() {
+    local status=$?
+    trap - RETURN
+    delete_restore_pod
+    rm -rf "$snippet_dir"
+    return "$status"
+  }
+  trap cleanup_restore RETURN
 
-  workflow_action "oc apply -f $restore_manifest (pod $RESTORE_POD_NAME mounts $full_pvc and $incremental_pvc read-only)"
+  : > "$volumes_file"
+  : > "$mounts_file"
+  for ((index = 0; index < ${#incremental_pvcs[@]}; index++)); do
+    printf -v pass '%02d' "$((index + 1))"
+    pvc="${incremental_pvcs[$index]}"
+    printf '    - name: incremental-p%s\n      persistentVolumeClaim:\n        claimName: %s\n        readOnly: true\n' \
+      "$pass" "$pvc" >> "$volumes_file"
+    printf '        - name: incremental-p%s\n          mountPath: /backups/incrementals/p%s\n          readOnly: true\n' \
+      "$pass" "$pass" >> "$mounts_file"
+  done
+  awk -v volumes_file="$volumes_file" -v mounts_file="$mounts_file" '
+    /^[[:space:]]*#[[:space:]]__INCREMENTAL_VOLUMES__[[:space:]]*$/ {
+      while ((getline line < volumes_file) > 0) print line
+      close(volumes_file)
+      next
+    }
+    /^[[:space:]]*#[[:space:]]__INCREMENTAL_MOUNTS__[[:space:]]*$/ {
+      while ((getline line < mounts_file) > 0) print line
+      close(mounts_file)
+      next
+    }
+    { print }
+  ' "$restore_manifest" > "$rendered"
+
+  workflow_action "oc apply restore verifier $RESTORE_POD_NAME with full PVC $full_pvc and ${#incremental_pvcs[@]} ordered incremental PVC(s)"
   sed \
     -e "s|__POD_NAME__|$RESTORE_POD_NAME|g" \
     -e "s|__NAMESPACE__|$NAMESPACE|g" \
     -e "s|__FULL_PVC__|$full_pvc|g" \
-    -e "s|__INCREMENTAL_PVC__|$incremental_pvc|g" \
     -e "s|__HELPER_IMAGE__|$RESTORE_HELPER_IMAGE|g" \
     -e "s|__WORKLOAD_DIR__|$RESTORE_WORKLOAD_MOUNT_DIR|g" \
+    -e "s|__INCREMENTAL_COUNT__|${#incremental_pvcs[@]}|g" \
     -e "s|__RUN_ID__|$RUN_ID|g" \
     -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
     -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
     -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-    "$restore_manifest" | oc_cmd apply -f -
+    "$rendered" | oc_cmd apply -f -
 
   workflow_action "Waiting for pod/$RESTORE_POD_NAME to reach phase Succeeded or Failed (timeout 10m)"
   local phase='' attempt

@@ -14,10 +14,7 @@ spec:
       persistentVolumeClaim:
         claimName: __FULL_PVC__
         readOnly: true
-    - name: incremental-backup
-      persistentVolumeClaim:
-        claimName: __INCREMENTAL_PVC__
-        readOnly: true
+    # __INCREMENTAL_VOLUMES__
     - name: work
       emptyDir: {}
     - name: host-dev
@@ -33,9 +30,7 @@ spec:
         - name: full-backup
           mountPath: /backups/full
           readOnly: true
-        - name: incremental-backup
-          mountPath: /backups/incremental
-          readOnly: true
+        # __INCREMENTAL_MOUNTS__
         - name: work
           mountPath: /work
         - name: host-dev
@@ -73,29 +68,16 @@ spec:
           trap 'exit 130' INT
           trap 'exit 143' TERM
 
-          full_qcow2="$(find /backups/full -type f -iname '*.qcow2' -print -quit 2>/dev/null || true)"
-          incremental_qcow2="$(find /backups/incremental -type f -iname '*.qcow2' -print -quit 2>/dev/null || true)"
+          full_qcow2="$(find /backups/full -type f -iname '*.qcow2' -print | LC_ALL=C sort | head -n1)"
           if [[ -z "$full_qcow2" || ! -r "$full_qcow2" ]]; then
             printf 'ERROR: no readable qcow2 image found under /backups/full\n' >&2
             exit 1
           fi
-          if [[ -z "$incremental_qcow2" || ! -r "$incremental_qcow2" ]]; then
-            printf 'ERROR: no readable qcow2 image found under /backups/incremental\n' >&2
-            exit 1
-          fi
-
-          if ! qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw; then
-            printf 'ERROR: failed to convert the full qcow2 image to raw\n' >&2
-            exit 1
-          fi
-
-          cp "$incremental_qcow2" /work/incremental.qcow2
-          if ! qemu-img rebase -b "$full_qcow2" -F qcow2 -f qcow2 -u /work/incremental.qcow2; then
-            printf 'ERROR: failed to rebase the incremental qcow2 image onto the full image\n' >&2
-            exit 1
-          fi
-          if ! qemu-img convert -f qcow2 -O raw /work/incremental.qcow2 /work/combined.raw; then
-            printf 'ERROR: failed to convert the rebased incremental image to raw\n' >&2
+          mapfile -t incremental_dirs < <(find /backups/incrementals -mindepth 1 -maxdepth 1 -type d -name 'p[0-9][0-9]' | LC_ALL=C sort)
+          expected_incremental_count="__INCREMENTAL_COUNT__"
+          if ((${#incremental_dirs[@]} != expected_incremental_count)); then
+            printf 'ERROR: expected %s incremental PVC mount(s), found %s\n' \
+              "$expected_incremental_count" "${#incremental_dirs[@]}" >&2
             exit 1
           fi
 
@@ -156,7 +138,7 @@ spec:
             while IFS= read -r entry; do
               [[ -n "$entry" ]] || continue
               name="${entry##*/}"
-              if [[ ! "$name" =~ ^(base|incremental)-[0-9]{6}[.]dat$ ]]; then
+              if [[ ! "$name" =~ ^(base-[0-9]{6}|incremental-[0-9]{2}-[0-9]{6})[.]dat$ ]]; then
                 printf 'ERROR: unexpected workload filename in %s restore: %s\n' "$label" "$name" >&2
                 return 1
               fi
@@ -178,5 +160,30 @@ spec:
             printf '%s_WORKLOAD_MANIFEST_SHA256=%s\n' "$label" "$sha256"
           }
 
+          qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw
           inspect_ntfs_workload /work/full.raw FULL
-          inspect_ntfs_workload /work/combined.raw COMBINED
+          rm -f /work/full.raw
+          base_qcow2="$full_qcow2"
+          expected_pass=1
+          for incremental_dir in "${incremental_dirs[@]}"; do
+            pass_name="${incremental_dir##*/}"
+            printf -v expected_name 'p%02d' "$expected_pass"
+            if [[ "$pass_name" != "$expected_name" ]]; then
+              printf 'ERROR: expected incremental mount %s, found %s\n' "$expected_name" "$pass_name" >&2
+              exit 1
+            fi
+            mapfile -t pass_qcow2s < <(find "$incremental_dir" -type f -iname '*.qcow2' | LC_ALL=C sort)
+            if ((${#pass_qcow2s[@]} != 1)); then
+              printf 'ERROR: expected one qcow2 file under %s, found %s\n' "$incremental_dir" "${#pass_qcow2s[@]}" >&2
+              exit 1
+            fi
+            overlay="/work/${pass_name}.qcow2"
+            raw="/work/${pass_name}.raw"
+            cp "${pass_qcow2s[0]}" "$overlay"
+            qemu-img rebase -b "$base_qcow2" -F qcow2 -f qcow2 -u "$overlay"
+            qemu-img convert -f qcow2 -O raw "$overlay" "$raw"
+            inspect_ntfs_workload "$raw" "PASS_${pass_name#p}"
+            rm -f "$raw"
+            base_qcow2="$overlay"
+            expected_pass=$((expected_pass + 1))
+          done

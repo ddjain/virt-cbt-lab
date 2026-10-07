@@ -48,7 +48,7 @@ HPP node-local pool
 +-- vm-cbt-demo/vm-backup-pvc-<run> PVC
 |      full qcow2 output
 |
-+-- vm-cbt-demo/vm-incremental-pvc-<run> PVC
++-- vm-cbt-demo/vm-incremental-pvc-<run>-pNN PVC
        incremental qcow2 overlay output
 ```
 
@@ -91,16 +91,24 @@ The HPP PV may report the backing pool capacity rather than the request. Do not 
 
 A large PVC does not automatically create a long copy window. The measured large run used 8192 MiB initial guest data and 12288 MiB incremental data, producing approximately 29 seconds full and 15 seconds incremental copy durations.
 
-## RHEL 9 ODF PVC measurement
+## RHEL 9 ODF storage sizing
 
-A successful RHEL 9 `large-odf` run measured a 48Gi DataVolume request that
-expanded to a 54,631,984,006-byte root PVC request (~50.88Gi) with 51Gi
-reported capacity. The full-backup PVC was 48Gi and incremental-backup PVC
-30Gi: the three workflow claims requested 128.88Gi and reported 129Gi
-combined capacity. KubeVirt added a persistent-state claim requesting
-580,198,073 bytes (~0.54Gi); its 1489Gi HPP status capacity is backing-PV
-capacity, not per-run usage. Total measured per-run PVC requests were
-~129.42Gi (round to 130Gi).
+The current large ODF manifests request 80Gi for the RHEL 9 root DataVolume
+and full-backup PVC, plus 30Gi for each incremental PVC. Three incrementals
+therefore request 250Gi nominally (80Gi + 80Gi + 3 × 30Gi), before CDI
+root-PVC overhead and KubeVirt persistent-state storage. The actual root PVC
+request can exceed the DataVolume request because CDI reserves filesystem
+overhead.
+
+**Historical 48Gi, one-increment measurement.** A successful RHEL 9
+`large-odf` run measured a 48Gi DataVolume request expanded to a
+54,631,984,006-byte root PVC request (~50.88Gi) with 51Gi reported capacity.
+The full-backup PVC was 48Gi and the incremental PVC was 30Gi: the three
+workflow claims requested 128.88Gi and reported 129Gi combined capacity.
+KubeVirt added a persistent-state claim requesting 580,198,073 bytes
+(~0.54Gi); its 1489Gi HPP status capacity is backing-PV capacity, not
+per-run usage. Total measured per-run PVC requests were ~129.42Gi (round to
+130Gi).
 
 The shared `rhel9` source PVC requested ~31.8Gi and reported 1489Gi capacity
 on HPP; it predates the run and is excluded from the per-run total. Restore
