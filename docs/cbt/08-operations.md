@@ -101,9 +101,9 @@ oc get network.config.openshift.io cluster -o yaml
 oc get vmi "$VM_NAME" -n "$NAMESPACE" -o yaml
 ```
 
-The cloud05 audit observed HPP's pool and all CBT PVCs on one node. A `Pending` PVC can therefore be a first-consumer/scheduling problem even when total reported PV capacity looks large.
+HPP volumes are node-affine. A `Pending` PVC can indicate first-consumer/scheduling issues; inspect placement and binding events before treating reported PV capacity as available backup space.
 
-Cloud05 produced both `VirtualMachineBackupCompletedSuccessfully` and `VirtualMachineBackupFailed: Backup has failed: VMI backup status was lost` events for some runs, while the final object state was successful in other cases. This is why the scripts inspect terminal conditions and reasons and then restore data. When investigating a failure, preserve the object YAML and event timeline before cleanup; an event alone cannot establish final artifact correctness.
+Backup events are interim signals and may conflict with settled CR status. Check the terminal `Done` condition and reason, checkpoint, tracker, and restore verification; preserve the object YAML and event timeline before cleanup. An event alone cannot establish artifact correctness.
 
 ## Reports
 
