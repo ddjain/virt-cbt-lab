@@ -21,7 +21,7 @@ make e2e TYPE=full VM=vm-demo
 make e2e-incremental VM=vm-demo
 ```
 
-This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it exits without waiting for future backup objects; automatic timing collection runs after the final pass.
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it prints the exact next `make e2e TYPE=incremental VM=...` command and exits without waiting for future backup objects; the final pass verifies automatically.
 
 
 ### Supported E2E modes
@@ -106,7 +106,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when both `NAME` and `VM` are unset, a new run ID is generated. |
 | `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `debian`, or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
-| `DEBUG` | No | `false` | Normal output shows phase headers, numbered steps, concise results, warnings/failures, and a final PASS/FAIL/INCOMPLETE box with total elapsed time. Detailed commands and watcher diagnostics remain in `runs/<run-id>/logs/workflow.log`; `DEBUG=true` also prints timestamped command, status, progress, and backup-condition/VMI details. |
+| `DEBUG` | No | `false` | Normal output shows effective non-secret pipeline settings, target VM/resource names, concise phase/step results, warnings/failures, and the final PASS/FAIL/INCOMPLETE box. `DEBUG=true` adds timestamped command, status, progress, and backup-condition/VMI diagnostics. |
 | `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
 | `GUEST_INCREMENTAL_FILE_COUNT` | No | `4` | Number of new deterministic files added in each pass; every pass also modifies one deterministic baseline file. |
 | `GUEST_INCREMENTAL_PASSES` | No | `1` | Number of incremental backups after the single full backup; maximum `99`. |

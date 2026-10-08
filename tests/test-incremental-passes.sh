@@ -329,6 +329,15 @@ run_full_stage() {
     TYPE=full \
     NAME="$run_id" \
     GUEST_INCREMENTAL_PASSES=1 \
+    VM_OS=rhel9 \
+    MANIFEST_VARIANT=large-odf \
+    NAMESPACE=vm-cbt-demo \
+    DEBUG=false \
+    GUEST_BASE_FILE_COUNT=8 \
+    GUEST_INCREMENTAL_FILE_COUNT=4 \
+    GUEST_FILE_SIZE_MIN_MIB=4 \
+    GUEST_FILE_SIZE_MAX_MIB=12 \
+    RESTORE_HELPER_IMAGE=quay.io/example/restore-helper:test \
     bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
 }
 
@@ -383,11 +392,42 @@ assert_final_verdict() {
       "$run_id" "$expected" >&2
     return 1
   fi
+  if [[ "$outcome" == INCOMPLETE &&
+        ( "$output" != *'Next command:'* ||
+          "$output" != *"make e2e TYPE=incremental VM=vm-$run_id"* ) ]]; then
+    printf 'Incomplete stage did not print the next incremental command for %s.\n' \
+      "$run_id" >&2
+    return 1
+  fi
 }
 
 full_run_id=full-stage-test
 full_info_path="$(prepare_stage_state "$full_run_id" 1)"
 run_full_stage "$full_run_id"
+full_output="$(<"$TEST_TMP/$full_run_id-e2e-stage.log")"
+if [[ "$full_output" != *'Pipeline configuration'* ||
+      "$full_output" != *'TYPE=full'* ||
+      "$full_output" != *'VM_OS=rhel9'* ||
+      "$full_output" != *'MANIFEST_VARIANT=large-odf'* ||
+      "$full_output" != *'NAMESPACE=vm-cbt-demo'* ||
+      "$full_output" != *'DEBUG=false'* ||
+      "$full_output" != *'GUEST_BASE_FILE_COUNT=8'* ||
+      "$full_output" != *'GUEST_INCREMENTAL_FILE_COUNT=4'* ||
+      "$full_output" != *'GUEST_INCREMENTAL_PASSES=1'* ||
+      "$full_output" != *'GUEST_FILE_SIZE_MIN_MIB=4'* ||
+      "$full_output" != *'GUEST_FILE_SIZE_MAX_MIB=12'* ||
+      "$full_output" != *'RESTORE_HELPER_IMAGE=configured (reference omitted)'* ||
+      "$full_output" != *'EXTEND_TO_PASS=none'* ||
+      "$full_output" != *"RUN_ID=$full_run_id"* ||
+      "$full_output" != *"VM_NAME=vm-$full_run_id"* ||
+      "$full_output" != *"VirtualMachine: vm-$full_run_id"* ||
+      "$full_output" != *"Root DataVolume/PVC: vm-disk-$full_run_id"* ||
+      "$full_output" != *"Guest SSH service: vm-ssh-$full_run_id"* ||
+      "$full_output" != *"Full backup PVC: vm-backup-pvc-$full_run_id"* ||
+      "$full_output" != *'Incremental backup/PVC resources: deferred'* ]]; then
+  printf 'Startup summary omitted effective settings or planned resources.\n%s\n' "$full_output" >&2
+  exit 1
+fi
 assert_stage_targets "$full_run_id" '["preflight","vm-setup","vm-backup"]'
 [[ "$(jq -r '.incremental_passes_completed' "$full_info_path")" == 0 ]]
 assert_final_verdict "$full_run_id" \
