@@ -84,7 +84,6 @@ fi
 
 load_run_id
 vm_info_load "$RUN_ID"
-load_report_id
 saved_vm_name="$(jq -r '.vm_name' "$VM_INFO_PATH")"
 if [[ "$saved_vm_name" != "$VM_NAME" ]]; then
   extension_error "saved lifecycle names $saved_vm_name, not $VM_NAME."
@@ -105,7 +104,7 @@ read_vm_state
 pending_at_start="$pending_extension"
 if ! [[ "$current_total" =~ ^[1-9][0-9]?$ &&
         "$completed_passes" =~ ^[0-9]+$ ]]; then
-  extension_error 'saved lifecycle pass counters are invalid; inspect vm-info.json before extending.'
+  extension_error 'saved lifecycle pass counters are invalid; inspect runs/<run-id>/run.json before extending.'
 fi
 
 if [[ -z "$pending_extension" && "$vm_status" == complete &&
@@ -114,7 +113,7 @@ if [[ -z "$pending_extension" && "$vm_status" == complete &&
   if ! workload_manifest_validate "$manifest_path" true; then
     extension_error 'the completed workload manifest is invalid; no pass was added.'
   fi
-  workflow_success "Lifecycle already includes $current_total incremental pass(es); no new backup was created. Use EXTEND_TO_PASS=$((current_total + 1)) to add one more."
+  workflow_progress "Lifecycle already includes $current_total incremental pass(es); no new backup was created. Use EXTEND_TO_PASS=$((current_total + 1)) to add one more."
   exit 0
 fi
 
@@ -161,7 +160,7 @@ if [[ -z "$pending_extension" ]]; then
   if [[ "$manifest_total" != "$current_total" ||
         "$manifest_pass_count" != "$completed_passes" ||
         "$state_pass_count" != "$completed_passes" ]]; then
-    extension_error "vm-info and workload manifest disagree (total=$current_total, state passes=$state_pass_count, manifest total=$manifest_total passes=$manifest_pass_count)."
+    extension_error "run metadata and workload manifest disagree (total=$current_total, state passes=$state_pass_count, manifest total=$manifest_total passes=$manifest_pass_count)."
   fi
   if [[ ! -r "$report_path" ]] || ! jq -e '.verification.overall_passed == true' "$report_path" >/dev/null; then
     extension_error "the last run report does not show successful verification: $report_path. Run TYPE=verify before extending."
@@ -279,4 +278,4 @@ fi
 
 extension_requested_at="$(jq -r '.extension_pending.requested_at // empty' "$VM_INFO_PATH")"
 write_extension_fragment "$pending_from" "$pending_target" "$extension_requested_at"
-workflow_success "Extension target $pending_target is prepared; the dispatcher will add that pass or verify it if already recorded."
+workflow_progress "Extension target $pending_target is prepared; the dispatcher will add that pass or verify it if already recorded."

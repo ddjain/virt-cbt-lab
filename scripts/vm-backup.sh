@@ -6,7 +6,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="vm-backup"
 load_run_id
-load_report_id
+vm_info_load "$RUN_ID"
 
 workflow_step "1/4 Create full-backup resources"
 baseline_manifest="$(workload_manifest_path)"
@@ -26,14 +26,14 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$(manifest_path full-backup)" | oc_cmd apply -f -
-workflow_success "PVC, tracker, and full backup request created in namespace $NAMESPACE"
+  "$(manifest_path full-backup)" | oc_cmd apply -f - >/dev/null
+workflow_status "Full backup resources applied (PVC=$FULL_BACKUP_PVC_NAME tracker=$TRACKER_NAME backup=$FULL_BACKUP_NAME)"
 
 workflow_step "2/4 Wait for the full backup to complete"
 workflow_action "oc wait vmbackup/$FULL_BACKUP_NAME -n $NAMESPACE --for=condition=Done --timeout=20m"
 wait_for_backup_done "$FULL_BACKUP_NAME" "$FULL_BACKUP_PVC_NAME" Full
 full_backup_done_reason="$(get_backup_done_reason "$FULL_BACKUP_NAME")"
-workflow_success "$FULL_BACKUP_NAME reports Done=True (reason: $full_backup_done_reason)"
+workflow_status "$FULL_BACKUP_NAME reports Done=True (reason: $full_backup_done_reason)"
 
 workflow_step "3/4 Validate backup type"
 full_backup_type="$(get_backup_type "$FULL_BACKUP_NAME")"
@@ -45,15 +45,12 @@ workflow_success "$FULL_BACKUP_NAME is a $full_backup_type backup"
 
 workflow_step "4/4 Record the full checkpoint"
 full_backup_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
-workflow_success "$FULL_BACKUP_NAME checkpoint is $full_backup_checkpoint"
+workflow_status "$FULL_BACKUP_NAME checkpoint is $full_backup_checkpoint"
 
 full_pvc_requested="$(get_pvc_requested "$FULL_BACKUP_PVC_NAME")"
 full_pvc_capacity="$(get_pvc_capacity "$FULL_BACKUP_PVC_NAME")"
 workflow_action "Full backup output PVC: ${full_pvc_requested} requested, ${full_pvc_capacity} capacity"
-full_backup_status="$(get_vm_backup_status)"
-if [[ "$(jq -r '.backupName // empty' <<<"$full_backup_status")" != "$FULL_BACKUP_NAME" ]]; then
-  full_backup_status='{}'
-fi
+full_backup_evidence_path="$(write_backup_status_evidence "$FULL_BACKUP_NAME" "$(get_vm_backup_status)")"
 write_report_fragment "full-backup" "$(jq -n \
   --arg name "$FULL_BACKUP_NAME" \
   --arg type "$full_backup_type" \
@@ -62,9 +59,11 @@ write_report_fragment "full-backup" "$(jq -n \
   --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
   --arg pvc_requested "$full_pvc_requested" \
   --arg pvc_capacity "$full_pvc_capacity" \
-  --argjson backup_status "$full_backup_status" \
-  '{backups: {full: ({name: $name, type: $type, checkpoint_name: $checkpoint_name, done_reason: $done_reason,
-                      pvc_name: $pvc_name, pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)}}')"
+  --arg evidence_path "$full_backup_evidence_path" \
+  '{backups: {full: {name: $name, type: $type, checkpoint_name: $checkpoint_name,
+                    done_reason: $done_reason, pvc_name: $pvc_name,
+                    pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity}},
+    evidence: {vm_backup_status: {full: (if $evidence_path == "" then null else $evidence_path end)}}}')"
 
 # `Done=True` covers both a real completion and a terminal failure (see
 # common.sh's backup_done_reason_is_failure comment) — fail loudly here,
@@ -76,18 +75,16 @@ if backup_done_reason_is_failure "$full_backup_done_reason"; then
     "$FULL_BACKUP_NAME" "$full_backup_done_reason" >&2
   exit 1
 fi
-vm_info_load "$RUN_ID"
 vm_info_update \
   '.status = "incremental_ready" |
-   .backups.full = ({name: $name, type: $type, checkpoint_name: $checkpoint_name,
-                     done_reason: $done_reason, pvc_name: $pvc_name,
-                     pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity} + $backup_status)' \
+   .backups.full = {name: $name, type: $type, checkpoint_name: $checkpoint_name,
+                    done_reason: $done_reason, pvc_name: $pvc_name,
+                    pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity}' \
   --arg name "$FULL_BACKUP_NAME" \
   --arg type "$full_backup_type" \
   --arg checkpoint_name "$full_backup_checkpoint" \
   --arg done_reason "$full_backup_done_reason" \
   --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
   --arg pvc_requested "$full_pvc_requested" \
-  --arg pvc_capacity "$full_pvc_capacity" \
-  --argjson backup_status "$full_backup_status"
+  --arg pvc_capacity "$full_pvc_capacity"
 workflow_success "VM lifecycle state records the full checkpoint"

@@ -2,12 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/run-id.sh"
 MAKE_COMMAND="${MAKE_COMMAND:-make}"
 TYPE="${TYPE:-all}"
 VM="${VM:-}"
 NAME="${NAME:-}"
 DEBUG="${DEBUG:-false}"
-VM_OS="${VM_OS:-debian}"
+VM_OS="${VM_OS:-rhel9}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
 GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
@@ -15,8 +16,8 @@ GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
 EXTEND_TO_PASS="${EXTEND_TO_PASS:-}"
 GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
 GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
-MANIFEST_VARIANT="${MANIFEST_VARIANT:-odf}"
-REPORT_ROOT_DIR="$ROOT_DIR/report"
+MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
+RUNS_ROOT_DIR="$ROOT_DIR/runs"
 
 start_epoch="$(date +%s)"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -61,10 +62,13 @@ resolve_new_run_id() {
     fi
   else
     run_id="${NAME:-}"
+    [[ -n "$run_id" ]] || run_id="$(generate_run_id)"
   fi
-  if [[ -n "$run_id" ]]; then
-    vm_info_path="$REPORT_ROOT_DIR/vms/$run_id/vm-info.json"
+  if ! valid_run_id "$run_id"; then
+    fail "Invalid run ID: $run_id"
+    return
   fi
+  vm_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
 }
 
 load_vm_info() {
@@ -74,12 +78,17 @@ load_vm_info() {
   fi
   vm_name="$VM"
   run_id="${VM#vm-}"
-  vm_info_path="$REPORT_ROOT_DIR/vms/$run_id/vm-info.json"
+  if ! valid_run_id "$run_id"; then
+    fail "Invalid run ID: $run_id"
+    return
+  fi
+  vm_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
   if [[ ! -r "$vm_info_path" ]] || ! jq -e \
       --arg run_id "$run_id" --arg vm_name "$vm_name" \
-      '.schema_version == 1 and .run_id == $run_id and .vm_name == $vm_name and .status != "cleaned"' \
+      '.schema_version == 1 and .run_id == $run_id and .vm_name == $vm_name and
+       (.vm_uid | type == "string" and length > 0) and .status != "cleaned"' \
       "$vm_info_path" >/dev/null; then
-    fail "No valid managed VM lifecycle state found for $VM at $vm_info_path."
+    fail "No valid managed run metadata found for $VM at $vm_info_path."
     return
   fi
   VM_OS="$(jq -r '.os_profile' "$vm_info_path")"
@@ -114,7 +123,7 @@ run_profiled_make() {
   local target="$1"
   shift
   local -a args=()
-  local start_epoch end_epoch step_status
+  local start_epoch end_epoch step_status timing_timestamp timing_line
   while IFS= read -r arg; do args+=("$arg"); done < <(profile_args)
   start_epoch="$(date +%s)"
   if "$MAKE_COMMAND" --no-print-directory "$target" "$@" "${args[@]}"; then
@@ -123,8 +132,14 @@ run_profiled_make() {
     step_status=$?
   fi
   end_epoch="$(date +%s)"
-  printf '[%s] [make] Step timing: target=%s elapsed_seconds=%s.\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$target" "$((end_epoch - start_epoch))" >&2
+  timing_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  timing_line="Step timing: target=$target elapsed_seconds=$((end_epoch - start_epoch))."
+  if [[ -n "$run_id" && -d "$RUNS_ROOT_DIR/$run_id/logs" ]]; then
+    printf '[%s] [make] %s\n' "$timing_timestamp" "$timing_line" >> "$RUNS_ROOT_DIR/$run_id/logs/workflow.log"
+  fi
+  if [[ "$DEBUG" == true ]]; then
+    printf '[%s] [make] %s\n' "$timing_timestamp" "$timing_line" >&2
+  fi
   return "$step_status"
 }
 
@@ -187,20 +202,14 @@ if ((status == 0)); then
   case "$TYPE" in
     all)
       if run_profiled_make vm-cbt-demo RUN_ID="$run_id"; then
-        run_id="$(cat "$ROOT_DIR/state/run-id")"
         vm_name="vm-${run_id}"
       else
         status=$?
-        if [[ -z "$run_id" && -f "$ROOT_DIR/state/run-id" ]]; then
-          run_id="$(cat "$ROOT_DIR/state/run-id")"
-          vm_info_path="$REPORT_ROOT_DIR/vms/$run_id/vm-info.json"
-        fi
         mark_incremental_failure
       fi
       ;;
     full)
       if run_profiled_make vm-setup RUN_ID="$run_id"; then
-        run_id="$(cat "$ROOT_DIR/state/run-id")"
         vm_name="vm-${run_id}"
         if run_profiled_make vm-backup RUN_ID="$run_id"; then
           :
@@ -280,7 +289,7 @@ printf '[%s] [make] E2E pipeline %s for TYPE=%s VM_OS=%s; total_elapsed_seconds=
 if ((status == 0)); then
   if [[ -z "$vm_name" && -n "$run_id" ]]; then vm_name="vm-${run_id}"; fi
   if [[ -n "$vm_name" ]]; then
-    lifecycle_info_path="$REPORT_ROOT_DIR/vms/$run_id/vm-info.json"
+    lifecycle_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
     monitor_deferred=false
     if [[ -r "$lifecycle_info_path" ]]; then
       planned_passes="$(jq -r '.incremental_passes_total // 0' "$lifecycle_info_path")"
@@ -294,8 +303,10 @@ if ((status == 0)); then
       printf '[%s] [make] Backup timing monitor deferred: %s/%s planned incremental passes complete for VM=%s.\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_passes" "$planned_passes" "$vm_name"
     else
-      printf '[%s] [make] Collecting API-recorded backup timings for VM=%s.\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name"
+      if [[ "$DEBUG" == true ]]; then
+        printf '[%s] [make] Collecting API-recorded backup timings for VM=%s.\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name"
+      fi
       if ! run_profiled_make monitor VM="$vm_name"; then
         printf '[%s] [make] WARNING: E2E passed but the backup timing monitor failed for VM=%s.\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name" >&2

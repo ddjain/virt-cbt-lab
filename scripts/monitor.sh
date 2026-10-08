@@ -8,7 +8,7 @@ usage() {
   printf 'Usage: %s <vm_name>\n' "$(basename "$0")" >&2
   printf 'Read-only on the cluster: watches the full backup and all incremental passes in the saved VM lifecycle plan.\n' >&2
   printf 'Prints API creation/Done timestamps and durations, then persists timing records to report JSON.\n' >&2
-  printf 'Run after vm-info.json exists; backup objects are watched even before lifecycle records are written.\n' >&2
+  printf 'Run the monitor after runs/<run-id>/run.json exists; backup objects are watched even before lifecycle records are written.\n' >&2
 }
 
 if (($# != 1)) || [[ "$1" == "-h" || "$1" == "--help" ]]; then
@@ -33,7 +33,6 @@ if [[ ! -r "$VM_INFO_PATH" ]]; then
 fi
 vm_info_load "$RUN_ID"
 NAMESPACE="$(jq -r '.namespace' "$VM_INFO_PATH")"
-load_report_id
 full_name="$(jq -r '.backups.full.name // empty' "$VM_INFO_PATH")"
 if [[ -z "$full_name" ]]; then
   full_name="$FULL_BACKUP_NAME"
@@ -73,7 +72,7 @@ declare -A reported_duration=()
 failed_backup=0
 
 workflow_step "Watching $NAMESPACE for run $RUN_ID"
-workflow_action "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
+workflow_progress "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
 
 # Prints "<label> <name> started at <ts>" once creationTimestamp is first seen,
 # then "<label> <name> done in <duration>s (reason: <reason>)" once the Done
@@ -104,7 +103,7 @@ poll_backup() {
   fi
   if [[ -z "${reported_created[$backup_name]:-}" ]]; then
     reported_created[$backup_name]="$created"
-    workflow_success "$label ($backup_name) started at $created"
+    workflow_action "$label ($backup_name) started at $created"
   fi
 
   done_status="$(jq -r '.status.conditions[]? | select(.type=="Done") | .status // empty' <<<"$backup_json")"
@@ -128,7 +127,7 @@ poll_backup() {
     printf '  ✗ %s (%s) failed after %ss [measured: lastTransitionTime %s - creationTimestamp %s] (reason: %s)\n' \
       "$label" "$backup_name" "$duration_seconds" "$done_time" "$created" "$done_reason" >&2
   else
-    workflow_success "$label ($backup_name) done in ${duration_seconds}s [measured: lastTransitionTime $done_time - creationTimestamp $created] (reason: $done_reason)"
+    workflow_progress "$label ($backup_name) done in ${duration_seconds}s [measured: lastTransitionTime $done_time - creationTimestamp $created] (reason: $done_reason)"
   fi
   return 0
 }
@@ -187,9 +186,9 @@ persist_backup_timings() {
     report_tmp="${report_path}.tmp.$$"
     jq --argjson timings "$timings_json" '.backup_timings = $timings' "$report_path" > "$report_tmp"
     mv -f "$report_tmp" "$report_path"
-    workflow_success "Backup timings saved to $report_path"
+    workflow_action "Backup timings saved to $report_path"
   else
-    workflow_success "Backup timings saved to $REPORT_DIR/fragments/backup-timings.json"
+    workflow_action "Backup timings saved to $REPORT_DIR/fragments/backup-timings.json"
   fi
 }
 
@@ -216,4 +215,4 @@ if ((failed_backup)); then
   exit 1
 fi
 
-workflow_success "All ${#backup_names[@]} backups reached Done=True for run $RUN_ID"
+workflow_action "All ${#backup_names[@]} backups reached Done=True for run $RUN_ID"

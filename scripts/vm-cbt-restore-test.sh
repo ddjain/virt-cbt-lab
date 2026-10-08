@@ -8,7 +8,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/restore-lib.sh"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workload-manifest.sh"
 WORKFLOW_NAME="vm-cbt-restore-test"
 load_run_id
-load_report_id
 vm_info_load "$RUN_ID"
 require_restore_helper_image
 
@@ -54,7 +53,7 @@ if workload_manifest_validate "$manifest_path" true; then
       "$planned_pass_count completed/$planned_pass_count planned" "$expected_pass_count manifest"
     restore_passed=false
   fi
-  workflow_success "Manifest expects $expected_full_count baseline files and $expected_pass_count incremental prefix(es)"
+  workflow_status "Manifest expects $expected_full_count baseline files and $expected_pass_count incremental prefix(es)"
 else
   manifest_valid=false
   record_restore_check "workload_manifest_valid" false
@@ -99,11 +98,15 @@ for ((pass = 1; pass <= expected_pass_count; pass++)); do
 done
 if [[ "$full_pvc_status" == Bound && "$incremental_pvcs_bound" == true &&
       "$expected_pass_count" == "$planned_pass_count" && "$manifest_valid" == true ]]; then
-  workflow_success "Full and all incremental backup PVCs are Bound"
+  workflow_status "Full and all incremental backup PVCs are Bound"
   workflow_step "3/5 Reconstruct full-only and cumulative incremental disks"
   workflow_action "Rebase each pass onto the preceding checkpoint and hash each restored workload directory"
   if restore_log="$(run_restore_verify_pod "$full_pvc_name" "${incremental_pvcs[@]}")"; then
-    printf '%s\n' "$restore_log"
+    if [[ "$DEBUG" == true ]]; then
+      printf '%s\n' "$restore_log"
+    else
+      workflow_status "Restore verifier completed; checking full-only disk and $expected_pass_count cumulative prefix(es)"
+    fi
     full_actual_count="$(restore_log_field "$restore_log" "FULL_WORKLOAD_FILE_COUNT")"
     full_actual_bytes="$(restore_log_field "$restore_log" "FULL_WORKLOAD_PAYLOAD_BYTES")"
     full_actual_manifest="$(restore_log_field "$restore_log" "FULL_WORKLOAD_MANIFEST_SHA256")"
@@ -127,9 +130,11 @@ if [[ "$full_pvc_status" == Bound && "$incremental_pvcs_bound" == true &&
       record_workload_comparison "pass_${pass_suffix}_restore_manifest_match" "$expected_manifest" "$actual_manifest"
     done
   else
-    record_restore_check "restore_pod_completed" false "Succeeded" "Failed"
+    restore_pod_phase="${RESTORE_POD_PHASE:-unknown}"
+    record_restore_check "restore_pod_completed" false "Succeeded" "$restore_pod_phase"
     restore_passed=false
-    printf 'Restore pod failed; pass-prefix restore checks could not complete.\n' >&2
+    printf 'Restore pod did not complete successfully (phase: %s); pass-prefix restore checks could not complete.\n' \
+      "$restore_pod_phase" >&2
   fi
 else
   workflow_action "Skipping disk reconstruction: valid full/pass manifests and all Bound PVCs are required"

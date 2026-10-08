@@ -151,7 +151,7 @@ Use `make windows-vm-setup` when you want a single verified VM before taking bac
 make windows-vm-setup
 ```
 
-The target runs Windows preflight, builds the cache only if absent, generates a run ID/report ID, and creates a run-scoped OOBE Secret from `WINDOWS_ADMIN_PASSWORD_FILE`. It applies `manifests/windows-vm.yaml`, which clones DataSource `vm-cbt-images/windows-server-2022` into a 40Gi Block DataVolume in `vm-cbt-demo`. The VM uses 4 vCPUs, 8Gi memory, Q35, EFI without Secure Boot, SATA for the root disk and Sysprep CD, QEMU Guest Agent, and masquerade pod networking.
+The target runs Windows preflight, builds the cache only if absent, generates a run ID, initializes the per-run lifecycle directory, and creates a run-scoped OOBE Secret from `WINDOWS_ADMIN_PASSWORD_FILE`. It applies `manifests/windows-vm.yaml`, which clones DataSource `vm-cbt-images/windows-server-2022` into a 40Gi Block DataVolume in `vm-cbt-demo`. The VM uses 4 vCPUs, 8Gi memory, Q35, EFI without Secure Boot, SATA for the root disk and Sysprep CD, QEMU Guest Agent, and masquerade pod networking.
 
 The clone is sysprepped in OOBE state. Its run-scoped Secret supplies `unattend.xml` so OOBE completes unattended and does not stop at the interactive “Hi there” screen. The script waits for:
 
@@ -163,7 +163,7 @@ The clone is sysprepped in OOBE state. Its run-scoped Secret supplies `unattend.
 The runtime OOBE template also applies `en-US` locale/UTC, hides interactive
 OOBE pages, and sets the built-in Administrator password from the Secret.
 
-After startup verification, PowerShell through QEMU Guest Agent creates `GUEST_BASE_FILE_COUNT` deterministic files under `C:\cbt-data\workload`. Each size is selected from the configured inclusive whole-MiB range. Setup records the file paths, byte sizes, and SHA-256 values in `report/<REPORT_ID>/workload-manifest.json`.
+After startup verification, PowerShell through QEMU Guest Agent creates `GUEST_BASE_FILE_COUNT` deterministic files under `C:\cbt-data\workload`. Each size is selected from the configured inclusive whole-MiB range. Setup records file paths, byte sizes, and SHA-256 values in `runs/<run-id>/workload-manifest.json`.
 
 ## 5. Run the Windows CBT E2E flow
 
@@ -181,7 +181,7 @@ The full stage creates the run-labeled full-backup PVC, tracker, and backup obje
 
 ### 5.2 Mutate the guest and create the incremental backup
 
-After the full checkpoint, the guest-agent helper adds `GUEST_INCREMENTAL_FILE_COUNT` new deterministic files under `C:\cbt-data\workload`, using the same inclusive per-file size range. It flushes the writes, records each addition in the run manifest, and verifies the resulting file set. The incremental stage creates a 30Gi PVC and backup object on `ocs-storagecluster-ceph-rbd`, waits for `Done=True`, requires type `Incremental`, checks for a distinct checkpoint, and confirms the tracker has advanced to that checkpoint.
+After the full checkpoint, the guest-agent helper adds `GUEST_INCREMENTAL_FILE_COUNT` new deterministic files under `C:\cbt-data\workload` and modifies one deterministic baseline file, using the same inclusive per-file size range. It flushes the writes, records added and modified hashes in the run manifest, and verifies the resulting file set. The incremental stage creates a 30Gi PVC and backup object on `ocs-storagecluster-ceph-rbd`, waits for `Done=True`, requires type `Incremental`, checks for a distinct checkpoint, and confirms the tracker has advanced to that checkpoint.
 
 ### 5.3 Verify API state and restored guest bytes
 

@@ -4,12 +4,11 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 WORKFLOW_NAME="vm-cbt-verify"
 load_run_id
-load_report_id
 
 workflow_step "1/4 Read VM CBT state"
 workflow_action "oc get vm $VM_NAME -n $NAMESPACE -o jsonpath=.status.changedBlockTracking.state"
 vm_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
-workflow_success "VM $VM_NAME CBT state: ${vm_state:-unknown}"
+workflow_status "VM $VM_NAME CBT state: ${vm_state:-unknown}"
 
 vm_info_load "$RUN_ID"
 
@@ -107,8 +106,8 @@ if [[ "$verify_passed" != true ]]; then
     "$vm_state" "$full_type" "$full_done" "$incremental_pass_count" \
     "$incremental_passes_total" "$latest_checkpoint" >&2
 else
-  workflow_success "CBT verification passed; all incremental checkpoints are distinct and the tracker matches the final pass"
-  printf 'Full checkpoint: %s\nFinal incremental checkpoint: %s\n' \
+  workflow_progress "CBT verification passed; all incremental checkpoints are distinct and the tracker matches the final pass"
+  printf 'Checkpoint chain: full=%s final_incremental=%s\n' \
     "$full_checkpoint" "$previous_checkpoint"
 fi
 
@@ -116,7 +115,7 @@ workflow_step "4/4 Verify the backups actually restore the correct guest data"
 workflow_action "Running scripts/vm-cbt-restore-test.sh to rebuild and read the guest disk"
 restore_test_passed=true
 if "$ROOT_DIR/scripts/vm-cbt-restore-test.sh"; then
-  workflow_success "Restore test passed; full and all cumulative incremental prefixes match their workload manifests"
+  workflow_status "Restore test passed; full and all cumulative incremental prefixes match their workload manifests"
 else
   restore_test_passed=false
   printf 'Restore test failed; the backup does not reconstruct the expected guest data.\n' >&2
@@ -155,10 +154,11 @@ overall_passed=false
 if [[ "$verify_passed" == true && "$restore_test_passed" == true ]]; then
   overall_passed=true
 fi
-jq --arg run_id "$RUN_ID" --arg report_id "$REPORT_ID" --argjson overall_passed "$overall_passed" \
-  '.run_id = $run_id | .report_id = $report_id | .verification.overall_passed = $overall_passed |
+jq --arg run_id "$RUN_ID" --argjson overall_passed "$overall_passed" \
+  '.run_id = $run_id | .verification.overall_passed = $overall_passed |
    .verification.restore_log_path = "logs/restore-verify-pod.log" |
-   .logs = {virt_launcher: "logs/virt-launcher.log", restore_verify_pod: "logs/restore-verify-pod.log"}' \
+   .logs = {workflow: "logs/workflow.log", virt_launcher: "logs/virt-launcher.log",
+            restore_verify_pod: "logs/restore-verify-pod.log"}' \
   "$report_path" > "$report_path.tmp" && mv "$report_path.tmp" "$report_path"
 if [[ "$overall_passed" == true ]]; then
   vm_info_update \
@@ -174,7 +174,7 @@ else
   vm_info_update '.status = "verification_failed" | .verification_failed_at = $updated_at'
 fi
 
-workflow_success "Run report written to $report_path"
+workflow_progress "Run report written to $report_path"
 
 if [[ "$overall_passed" != true ]]; then
   exit 1

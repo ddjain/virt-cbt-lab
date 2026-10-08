@@ -16,7 +16,7 @@
 | **Namespace** | {{NAMESPACE}} |
 | **VM** | {{VM_NAME}} |
 | **Chaos tool** | {{CHAOS_TOOL}} (e.g. `krknctl run pod-scenarios` via `chaos-trigger-v2.sh`) |
-| **Report artifact** | `report/{{REPORT_ID}}/report.json` |
+| **Report artifact** | `runs/{{RUN_ID}}/report.json` |
 
 ## Result at a glance
 

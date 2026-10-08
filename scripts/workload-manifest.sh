@@ -5,6 +5,7 @@ set -euo pipefail
 WORKLOAD_MANIFEST_NAME="workload-manifest.json"
 WORKLOAD_SIZE_ALGORITHM="sha256-filename-v1"
 WORKLOAD_CONTENT_ALGORITHM="repeated-ascii-identity-v1"
+WORKLOAD_MODIFICATION_CONTENT_ALGORITHM="pass-versioned-baseline-v1"
 
 workload_manifest_path() {
   printf '%s/%s' "$REPORT_DIR" "$WORKLOAD_MANIFEST_NAME"
@@ -51,6 +52,93 @@ workload_file_plan() {
     size_bytes="$(workload_file_size_bytes "$path")"
     printf '%s|%s\n' "$path" "$size_bytes"
   done
+}
+
+workload_modified_file_plan() {
+  local pass="$1" pass_number index path size_bytes
+  if ! [[ "$pass" =~ ^[1-9][0-9]*$ ]] || ((pass > 99)); then
+    printf 'Workload modification planning requires a pass number from 1 to 99 (got: %s).\n' "$pass" >&2
+    return 2
+  fi
+  if ! [[ "$GUEST_BASE_FILE_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'GUEST_BASE_FILE_COUNT must be positive to choose a modification target.\n' >&2
+    return 1
+  fi
+  pass_number=$((10#$pass))
+  index=$(((pass_number - 1) % GUEST_BASE_FILE_COUNT + 1))
+  printf -v path 'base-%06d.dat' "$index"
+  size_bytes="$(workload_file_size_bytes "$path")"
+  printf '%s|%s\n' "$path" "$size_bytes"
+}
+
+workload_modified_content_pattern() {
+  local path="$1" pass="$2"
+  if ! [[ "$pass" =~ ^[1-9][0-9]*$ ]] || ((pass > 99)); then
+    printf 'Modified workload content requires a pass number from 1 to 99 (got: %s).\n' "$pass" >&2
+    return 2
+  fi
+  printf 'CBT-WORKLOAD-V1:%s:MODIFIED-PASS-%02d' "$path" "$pass"
+}
+
+workload_modified_file_sha256() {
+  local path="$1" pass="$2" size_bytes="$3" pattern
+  pattern="$(workload_modified_content_pattern "$path" "$pass")"
+  (
+    set +o pipefail
+    yes "$pattern" | head -c "$size_bytes" | workload_sha256_stdin
+  )
+}
+
+workload_validate_modified_records() {
+  local records="$1" pass="$2" plan name size_bytes expected_hash expected actual
+  local count
+  count="$(workload_records_count "$records")"
+  if [[ "$count" != 1 ]]; then
+    printf 'Expected exactly one modified baseline file in pass %s; found %s.\n' "$pass" "$count" >&2
+    return 1
+  fi
+  plan="$(workload_modified_file_plan "$pass")"
+  IFS='|' read -r name size_bytes <<< "$plan"
+  expected_hash="$(workload_modified_file_sha256 "$name" "$pass" "$size_bytes")"
+  expected="$(printf '%s\t%s\tbaseline\t0\t%s\n' "$name" "$size_bytes" "$expected_hash")"
+  actual="$(jq -r 'sort_by(.path)[] |
+    [.path, (.size_bytes | tostring), .phase, (.pass | tostring), .sha256] | @tsv' <<< "$records")"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'Modified file in pass %s does not match its deterministic target, size, or content.\n' "$pass" >&2
+    return 1
+  fi
+}
+
+# Replace each path with its latest deterministic content record.
+workload_records_apply_modifications() {
+  local records="$1" modifications="$2"
+  jq -cn \
+    --slurpfile current <(printf '%s\n' "$records") \
+    --slurpfile changes <(printf '%s\n' "$modifications") \
+    'reduce $changes[0][] as $change
+      ($current[0]; map(if .path == $change.path then $change else . end))'
+}
+
+# Rebuild the expected guest inventory at a cumulative checkpoint.
+workload_manifest_current_records() {
+  local manifest="$1" pass_total="$2" records pass entry modifications added
+  if ! [[ "$pass_total" =~ ^[0-9]+$ ]] || ((pass_total > 99)); then
+    printf 'Cumulative workload reconstruction requires a pass count from 0 to 99 (got: %s).\n' "$pass_total" >&2
+    return 2
+  fi
+  records="$(jq -c '.baseline.files' "$manifest")"
+  for ((pass = 1; pass <= pass_total; pass++)); do
+    entry="$(jq -c --argjson pass "$pass" '.incrementals[]? | select(.pass == $pass)' "$manifest")"
+    if [[ -z "$entry" ]]; then
+      printf 'Workload manifest is missing incremental pass %s.\n' "$pass" >&2
+      return 1
+    fi
+    modifications="$(jq -c '.files_modified // []' <<< "$entry")"
+    records="$(workload_records_apply_modifications "$records" "$modifications")"
+    added="$(jq -c '.files' <<< "$entry")"
+    records="$(workload_records_concat "$records" "$added")"
+  done
+  printf '%s' "$records"
 }
 
 # Convert guest FILE_RECORD=path|size_bytes|sha256 output into a validated
@@ -179,6 +267,7 @@ workload_manifest_initialize() {
     --argjson max_mib "$GUEST_FILE_SIZE_MAX_MIB" \
     --arg size_algorithm "$WORKLOAD_SIZE_ALGORITHM" \
     --arg content_algorithm "$WORKLOAD_CONTENT_ALGORITHM" \
+    --arg modification_algorithm "$WORKLOAD_MODIFICATION_CONTENT_ALGORITHM" \
     --argjson count "$GUEST_BASE_FILE_COUNT" \
     --argjson total_bytes "$baseline_bytes" \
     --arg manifest_sha256 "$baseline_hash" \
@@ -191,6 +280,7 @@ workload_manifest_initialize() {
       size_range_mib: {min_inclusive: $min_mib, max_inclusive: $max_mib},
       size_assignment_algorithm: $size_algorithm,
       content_algorithm: $content_algorithm,
+      modification_content_algorithm: $modification_algorithm,
       incremental_passes_total: $passes_total,
       incremental_file_count_per_pass: $files_per_pass,
       baseline: {file_count: $count, total_payload_bytes: $total_bytes,
@@ -204,8 +294,10 @@ workload_manifest_initialize() {
 }
 
 workload_manifest_append_incremental() {
-  local pass="$1" incremental_records="$2" manifest tmp_path added added_bytes added_hash
-  local prior_count baseline_files prior_files combined_files total_count total_bytes total_hash captured_at="${3:-}"
+  local pass="$1" incremental_records="$2" modified_records="$3" manifest tmp_path
+  local added added_bytes added_hash modified_count modified_hash
+  local prior_count records_before modifications_applied combined_files total_count total_bytes total_hash
+  local captured_at="${4:-}"
   manifest="$(workload_manifest_path)"
   if [[ ! -r "$manifest" ]]; then
     printf 'Missing baseline workload manifest: %s\n' "$manifest" >&2
@@ -218,12 +310,15 @@ workload_manifest_append_incremental() {
       "$pass" "$prior_count" "$GUEST_INCREMENTAL_PASSES" >&2
     return 1
   fi
+  workload_validate_modified_records "$modified_records" "$pass"
   added="$(workload_records_for_phase "$incremental_records" incremental "$pass")"
   added_bytes="$(workload_records_bytes "$added")"
   added_hash="$(workload_records_digest "$added")"
-  baseline_files="$(jq -c '.baseline.files' "$manifest")"
-  prior_files="$(jq -c '[.incrementals[]?.files[]?]' "$manifest")"
-  combined_files="$(workload_records_concat "$baseline_files" "$prior_files" "$added")"
+  modified_count="$(workload_records_count "$modified_records")"
+  modified_hash="$(workload_records_digest "$modified_records")"
+  records_before="$(workload_manifest_current_records "$manifest" "$prior_count")"
+  modifications_applied="$(workload_records_apply_modifications "$records_before" "$modified_records")"
+  combined_files="$(workload_records_concat "$modifications_applied" "$added")"
   total_count="$(workload_records_count "$combined_files")"
   total_bytes="$(workload_records_bytes "$combined_files")"
   total_hash="$(workload_records_digest "$combined_files")"
@@ -232,12 +327,16 @@ workload_manifest_append_incremental() {
   jq --argjson pass "$pass" \
      --argjson added_count "$GUEST_INCREMENTAL_FILE_COUNT" \
      --argjson added_bytes "$added_bytes" --arg added_hash "$added_hash" \
+     --argjson modified_count "$modified_count" --arg modified_hash "$modified_hash" \
      --argjson total_count "$total_count" --argjson total_bytes "$total_bytes" \
      --arg total_hash "$total_hash" --arg captured_at "$captured_at" \
      --slurpfile added_files <(printf '%s\n' "$added") \
+     --slurpfile modified_files <(printf '%s\n' "$modified_records") \
      '.incrementals += [{
         pass: $pass, files_added: $added_count,
         added_payload_bytes: $added_bytes, added_manifest_sha256: $added_hash,
+        files_modified: $modified_files[0], modified_file_count: $modified_count,
+        modified_manifest_sha256: $modified_hash,
         total_file_count: $total_count, total_payload_bytes: $total_bytes,
         manifest_sha256: $total_hash, files: $added_files[0], captured_at: $captured_at
       }] |
@@ -322,9 +421,9 @@ workload_manifest_verify_inventory() {
 
 workload_manifest_validate() {
   local manifest="$1" require_incremental="${2:-false}"
-  local baseline_files baseline_digest incrementals_json incremental_files item
+  local baseline_files baseline_digest incrementals_json incremental_files modified_files item
   local all_files unique_count pass pass_count incremental_digest cumulative_files cumulative_digest
-  local added_bytes cumulative_bytes cumulative_count
+  local added_bytes cumulative_bytes cumulative_count modified_count modified_digest
   if [[ ! -r "$manifest" ]] || ! jq -e \
       --argjson require_incremental "$([[ "$require_incremental" == true ]] && printf true || printf false)" '
         def valid_file($phase; $pass; $pattern; $min_bytes; $max_bytes):
@@ -340,6 +439,8 @@ workload_manifest_validate() {
         and ($m.run_id | type == "string" and length > 0)
         and $m.size_assignment_algorithm == "sha256-filename-v1"
         and $m.content_algorithm == "repeated-ascii-identity-v1"
+        and ($m.modification_content_algorithm == null or
+             $m.modification_content_algorithm == "pass-versioned-baseline-v1")
         and ($m.guest_directory | type == "string" and length > 0)
         and ($m.size_range_mib.min_inclusive | type == "number" and . > 0)
         and ($m.size_range_mib.max_inclusive | type == "number")
@@ -368,14 +469,23 @@ workload_manifest_validate() {
           and $inc.files_added == $m.incremental_file_count_per_pass
           and ($inc.added_payload_bytes | type == "number" and . > 0)
           and ($inc.added_manifest_sha256 | test("^[0-9a-f]{64}$"))
-          and ($inc.total_file_count | type == "number")
-          and ($inc.total_payload_bytes | type == "number")
-          and ($inc.manifest_sha256 | test("^[0-9a-f]{64}$"))
+          and (($inc.files_modified // []) | type == "array")
+          and (($inc.files_modified // []) | length) == ($inc.modified_file_count // 0)
+          and ([$inc.files_modified[]?.path] | unique | length) == (($inc.files_modified // []) | length)
+          and (if (($inc.files_modified // []) | length) == 0 then true
+               else ($inc.modified_manifest_sha256 | test("^[0-9a-f]{64}$")) end)
+          and all(($inc.files_modified // [])[];
+            valid_file("baseline"; 0; "^base-[0-9]{6}[.]dat$";
+              ($m.size_range_mib.min_inclusive * 1048576);
+              ($m.size_range_mib.max_inclusive * 1048576)))
           and all($inc.files[];
             valid_file("incremental"; $inc.pass;
               ("^incremental-" + ($inc.pass | tostring | if length == 1 then "0" + . else . end) + "-[0-9]{6}[.]dat$");
               ($m.size_range_mib.min_inclusive * 1048576);
-              ($m.size_range_mib.max_inclusive * 1048576))))
+              ($m.size_range_mib.max_inclusive * 1048576)))
+          and ($inc.total_file_count | type == "number")
+          and ($inc.total_payload_bytes | type == "number")
+          and ($inc.manifest_sha256 | test("^[0-9a-f]{64}$")))
         and ($m.combined | type == "object")
         and ($m.combined.total_file_count | type == "number")
         and ($m.combined.total_payload_bytes | type == "number")
@@ -406,6 +516,21 @@ workload_manifest_validate() {
       printf 'Incremental pass %s summary does not match its file entries: %s\n' "$pass" "$manifest" >&2
       return 1
     fi
+    modified_files="$(jq -c '.files_modified // []' <<< "$item")"
+    modified_count="$(workload_records_count "$modified_files")"
+    if [[ "$modified_count" != "$(jq -r '.modified_file_count // 0' <<< "$item")" ]]; then
+      printf 'Modified file count for pass %s does not match its records: %s\n' "$pass" "$manifest" >&2
+      return 1
+    fi
+    if ((modified_count > 0)); then
+      workload_validate_modified_records "$modified_files" "$pass"
+      modified_digest="$(workload_records_digest "$modified_files")"
+      if [[ "$modified_digest" != "$(jq -r '.modified_manifest_sha256' <<< "$item")" ]]; then
+        printf 'Modified file summary for pass %s does not match its records: %s\n' "$pass" "$manifest" >&2
+        return 1
+      fi
+    fi
+    cumulative_files="$(workload_records_apply_modifications "$cumulative_files" "$modified_files")"
     cumulative_files="$(workload_records_concat "$cumulative_files" "$incremental_files")"
     cumulative_count="$(workload_records_count "$cumulative_files")"
     cumulative_bytes="$(workload_records_bytes "$cumulative_files")"

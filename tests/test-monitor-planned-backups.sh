@@ -10,29 +10,39 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_TMP="$(mktemp -d)"
 RUN_ID="monitor-pending-test-$$"
 VM_NAME="vm-$RUN_ID"
-REPORT_ID="run_monitor_test_$$"
-VM_INFO_DIR="$ROOT_DIR/report/vms/$RUN_ID"
-REPORT_DIR="$ROOT_DIR/report/$REPORT_ID"
+RUN_DIR="$ROOT_DIR/runs/$RUN_ID"
+REPORT_DIR="$RUN_DIR"
 cleanup() {
-  rm -rf "$TEST_TMP" "$VM_INFO_DIR" "$REPORT_DIR"
+  rm -rf "$TEST_TMP" "$RUN_DIR"
 }
 trap cleanup EXIT INT TERM
 unset KUBECONFIG KUBECONFIG_PATH || true
-mkdir -p "$TEST_TMP/bin" "$VM_INFO_DIR" "$REPORT_DIR"
+mkdir -p "$TEST_TMP/bin" "$RUN_DIR/fragments"
 
-jq -n --arg run_id "$RUN_ID" --arg vm_name "$VM_NAME" --arg report_id "$REPORT_ID" \
-  '{schema_version:1, run_id:$run_id, vm_name:$vm_name,
-    namespace:"vm-cbt-demo", report_id:$report_id,
+jq -n --arg run_id "$RUN_ID" --arg vm_name "$VM_NAME" \
+  '{schema_version:1, run_id:$run_id, vm_name:$vm_name, vm_uid:("uid-" + $run_id),
+    namespace:"vm-cbt-demo", os_profile:"debian", manifest_variant:"default",
     status:"baseline_ready", incremental_passes_total:2,
     incremental_passes_completed:0, next_incremental_pass:1,
-    backups:{full:null, incrementals:[]}}' > "$VM_INFO_DIR/vm-info.json"
+    guest:{baseline:{file_count:2}, incremental_file_count_per_pass:1,
+           size_range_mib:{min_inclusive:1, max_inclusive:1}},
+    backups:{full:null, incrementals:[]}}' > "$RUN_DIR/run.json"
 jq -n --arg run_id "$RUN_ID" \
-  '{run_id:$run_id, verification:{overall_passed:true}}' > "$REPORT_DIR/report.json"
+  '{run_id:$run_id, verification:{overall_passed:true}}' > "$RUN_DIR/report.json"
 
 cat > "$TEST_TMP/bin/oc" <<'FAKE_OC'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" != get || "${2:-}" != vmbackup ]]; then
+if [[ "${1:-}" != get ]]; then
+  printf 'Unexpected fake oc command: %s\n' "$*" >&2
+  exit 2
+fi
+if [[ "${2:-}" == vm ]]; then
+  vm_name="${3:?VM name required}"
+  printf '{"metadata":{"uid":"uid-%s"}}\n' "${vm_name#vm-}"
+  exit 0
+fi
+if [[ "${2:-}" != vmbackup ]]; then
   printf 'Unexpected fake oc command: %s\n' "$*" >&2
   exit 2
 fi
@@ -67,7 +77,7 @@ jq -e --arg full_name "vm-backup-$RUN_ID" '
 jq -e '
   .backup_timings.full.duration_seconds == 5 and
   (.backup_timings.incrementals | length) == 2
-' "$VM_INFO_DIR/vm-info.json" >/dev/null
+' "$RUN_DIR/run.json" >/dev/null
 jq -e '
   .backup_timings.full.duration_seconds == 5 and
   (.backup_timings.incrementals | length) == 2

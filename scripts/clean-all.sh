@@ -58,7 +58,7 @@ else
   workflow_success "All managed PVs are reclaimed"
 fi
 
-workflow_step "3/3 Remove only the workflow-managed guest key and local run state"
+workflow_step "3/3 Remove only the workflow-managed guest key and transient lock"
 workflow_action "Check ownership marker $GUEST_KEY.vm-cbt-managed before deleting key files"
 marker="$GUEST_KEY.vm-cbt-managed"
 if [[ -f "$marker" ]]; then
@@ -71,7 +71,7 @@ else
 fi
 workflow_action "Mark VM lifecycle records cleaned while preserving per-run report history"
 cleaned_at="$(workflow_timestamp)"
-for vm_info in "$VM_INFO_ROOT_DIR"/*/vm-info.json; do
+for vm_info in "$RUNS_ROOT_DIR"/*/run.json; do
   [[ -f "$vm_info" ]] || continue
   if jq -e --arg namespace "$NAMESPACE" \
       '.namespace == $namespace and .status != "cleaned"' "$vm_info" >/dev/null; then
@@ -86,8 +86,8 @@ for vm_info in "$VM_INFO_ROOT_DIR"/*/vm-info.json; do
   fi
 done
 workflow_success "VM lifecycle records retained with cleaned status"
-workflow_action "Removing local run state (recorded run ID and guest hashes) in $STATE_DIR"
+workflow_action "Removing checkout-local E2E lock state from $STATE_DIR"
 rm -rf "$STATE_DIR"
-# report/ is intentionally left in place: it holds each run's JSON report and
-# restore-test log for post-run debugging, and survives cleanup on purpose.
+# runs/ is intentionally retained: it holds lifecycle state, reports, and
+# restore-test logs for post-run debugging.
 printf '[clean-all] Demo cleanup complete; namespace %s and shared KubeVirt/storage resources were left intact.\n' "$NAMESPACE" >&2

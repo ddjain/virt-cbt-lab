@@ -13,15 +13,18 @@ unset KUBECONFIG KUBECONFIG_PATH || true
 
 source "$ROOT_DIR/scripts/common.sh"
 source "$ROOT_DIR/scripts/workload-manifest.sh"
+if valid_run_id '../outside'; then
+  printf 'A path-like run ID passed validation.\n' >&2
+  exit 1
+fi
+
 
 RUN_ID=multi-pass-test
 VM_NAME="vm-$RUN_ID"
 NAMESPACE=vm-cbt-demo
 VM_OS=debian
-REPORT_ID=run_test_multi_pass
-REPORT_ROOT_DIR="$TEST_TMP/report"
-VM_INFO_ROOT_DIR="$REPORT_ROOT_DIR/vms"
-REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
+RUNS_ROOT_DIR="$TEST_TMP/runs"
+REPORT_DIR="$RUNS_ROOT_DIR/$RUN_ID"
 WORKLOAD_MANIFEST_NAME=workload-manifest.json
 GUEST_WORKLOAD_DIR=/home/cbt-demo/cbt-workload
 GUEST_BASE_FILE_COUNT=2
@@ -30,8 +33,13 @@ GUEST_INCREMENTAL_PASSES=3
 GUEST_FILE_SIZE_MIN_MIB=1
 GUEST_FILE_SIZE_MAX_MIB=2
 MANIFEST_VARIANT=default
-mkdir -p "$REPORT_DIR"
-
+set_resource_names
+initialize_run_directory
+[[ "$VM_INFO_PATH" == "$RUNS_ROOT_DIR/$RUN_ID/run.json" ]]
+if initialize_run_directory >/dev/null 2>&1; then
+  printf 'An existing run directory was unexpectedly reusable.\n' >&2
+  exit 1
+fi
 records_for_plan() {
   local phase="$1" count="$2" pass="${3:-}" plan name size hash
   if [[ "$phase" == baseline ]]; then
@@ -45,6 +53,14 @@ records_for_plan() {
     printf 'FILE_RECORD=%s|%s|%s\n' "$name" "$size" "$hash"
   done <<< "$plan"
 }
+records_for_modification() {
+  local pass="$1" plan name size_bytes sha256
+  plan="$(workload_modified_file_plan "$pass")"
+  IFS='|' read -r name size_bytes <<< "$plan"
+  sha256="$(workload_modified_file_sha256 "$name" "$pass" "$size_bytes")"
+  printf 'FILE_RECORD=%s|%s|%s\n' "$name" "$size_bytes" "$sha256"
+}
+
 
 (
   RUN_NAME=multi-pass-chaos-test
@@ -62,7 +78,10 @@ printf 'PASS: chaos triggers target pass-specific backup and PVC names.\n'
 
 baseline_records="$(workload_records_from_output "$(records_for_plan baseline "$GUEST_BASE_FILE_COUNT")")"
 workload_manifest_initialize "$baseline_records"
-vm_info_initialize
+vm_info_initialize "test-vm-uid"
+jq -e --arg run_id "$RUN_ID" --arg vm_uid "test-vm-uid" \
+  '.run_id == $run_id and .vm_uid == $vm_uid and .vm_name == ("vm-" + $run_id)' \
+  "$VM_INFO_PATH" >/dev/null
 vm_info_update '.backups.full = {name:"vm-backup-test", type:"Full", checkpoint_name:"checkpoint-full"} | .status="incremental_ready"'
 [[ "$(vm_info_previous_checkpoint)" == "checkpoint-full" ]]
 workload_manifest_validate "$(workload_manifest_path)" false
@@ -75,19 +94,35 @@ manifest_path="$(workload_manifest_path)"
 expected_cumulative_payload_bytes="$(jq -r '.baseline.total_payload_bytes' "$manifest_path")"
 manifest_snapshot="$(jq -c . "$manifest_path")"
 pass_two_records="$(workload_records_from_output "$(records_for_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" 2)")"
-if workload_manifest_append_incremental 2 "$pass_two_records" >/dev/null 2>&1; then
+pass_two_modified_records="$(workload_records_from_output "$(records_for_modification 2)")"
+if workload_manifest_append_incremental 2 "$pass_two_records" "$pass_two_modified_records" "2026-01-01T00:00:02Z" >/dev/null 2>&1; then
   printf 'Out-of-order incremental pass unexpectedly modified the workload manifest.\n' >&2
   exit 1
 fi
 [[ "$(jq -c . "$manifest_path")" == "$manifest_snapshot" ]]
 
 
+expected_cumulative_records="$baseline_records"
 for pass in 1 2 3; do
   [[ "$(vm_info_next_pass)" == "$pass" ]]
   pass_records="$(workload_records_from_output "$(records_for_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$pass")")"
-  workload_manifest_append_incremental "$pass" "$pass_records" "2026-01-01T00:00:0${pass}Z"
+  pass_modified_records="$(workload_records_from_output "$(records_for_modification "$pass")")"
+  modification_plan="$(workload_modified_file_plan "$pass")"
+  IFS='|' read -r modified_path modified_size <<< "$modification_plan"
+  previous_modified_hash="$(jq -r --arg path "$modified_path" \
+    '[.[] | select(.path == $path) | .sha256] | last // empty' <<< "$expected_cumulative_records")"
+  modified_hash="$(jq -r '.[0].sha256' <<< "$pass_modified_records")"
+  [[ -n "$previous_modified_hash" && "$previous_modified_hash" != "$modified_hash" ]]
+  expected_cumulative_records="$(workload_records_apply_modifications "$expected_cumulative_records" "$pass_modified_records")"
+  expected_cumulative_records="$(workload_records_concat "$expected_cumulative_records" "$pass_records")"
+  workload_manifest_append_incremental "$pass" "$pass_records" "$pass_modified_records" "2026-01-01T00:00:0${pass}Z"
+  manifest_state_records="$(workload_manifest_current_records "$manifest_path" "$pass")"
+  workload_manifest_verify_inventory "$manifest_state_records" "$expected_cumulative_records" "Pass $pass manifest"
   record="$(jq -cn --argjson pass "$pass" --arg name "vm-incremental-${RUN_ID}-p$(printf '%02d' "$pass")" \
-    --arg checkpoint "checkpoint-$pass" '{pass:$pass,name:$name,checkpoint_name:$checkpoint,status:"done"}')"
+    --arg checkpoint "checkpoint-$pass" --arg modified_hash "$modified_hash" \
+    --arg modified_path "$modified_path" \
+    '{pass:$pass,name:$name,checkpoint_name:$checkpoint,status:"done",
+      files_modified:1,modified_manifest_sha256:$modified_hash,modified_path:$modified_path}')"
   vm_info_update \
     '.backups.incrementals += [$record] |
      .incremental_passes_completed = $pass |
@@ -100,6 +135,8 @@ for pass in 1 2 3; do
   added_payload_bytes="$(jq -r ".incrementals[$pass_index].added_payload_bytes" "$manifest_path")"
   added_files_payload_bytes="$(jq -r ".incrementals[$pass_index].files | map(.size_bytes) | add // 0" "$manifest_path")"
   [[ "$added_payload_bytes" == "$added_files_payload_bytes" ]]
+  [[ "$(jq -r ".incrementals[$pass_index].modified_file_count" "$manifest_path")" == 1 ]]
+  [[ "$(jq -r ".incrementals[$pass_index].files_modified[0].path" "$manifest_path")" == "$modified_path" ]]
   expected_cumulative_payload_bytes=$((expected_cumulative_payload_bytes + added_payload_bytes))
   [[ "$(jq -r ".incrementals[$pass_index].pass" "$manifest_path")" == "$pass" ]]
   [[ "$(jq -r ".incrementals[$pass_index].total_file_count" "$manifest_path")" == "$((GUEST_BASE_FILE_COUNT + pass * GUEST_INCREMENTAL_FILE_COUNT))" ]]
@@ -142,7 +179,14 @@ workload_manifest_extend_plan "$manifest_path" 3 4
 [[ "$(jq -c . "$manifest_path")" == "$manifest_after_extension" ]]
 GUEST_INCREMENTAL_PASSES=4
 pass_four_records="$(workload_records_from_output "$(records_for_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" 4)")"
-workload_manifest_append_incremental 4 "$pass_four_records" "2026-01-01T00:00:04Z"
+pass_four_modified_records="$(workload_records_from_output "$(records_for_modification 4)")"
+modification_plan="$(workload_modified_file_plan 4)"
+IFS='|' read -r modified_path modified_size <<< "$modification_plan"
+expected_cumulative_records="$(workload_records_apply_modifications "$expected_cumulative_records" "$pass_four_modified_records")"
+expected_cumulative_records="$(workload_records_concat "$expected_cumulative_records" "$pass_four_records")"
+workload_manifest_append_incremental 4 "$pass_four_records" "$pass_four_modified_records" "2026-01-01T00:00:04Z"
+manifest_state_records="$(workload_manifest_current_records "$manifest_path" 4)"
+workload_manifest_verify_inventory "$manifest_state_records" "$expected_cumulative_records" "Pass 4 manifest"
 workload_manifest_validate "$manifest_path" true
 [[ "$(jq -r '.incrementals | length' "$manifest_path")" == 4 ]]
 [[ "$(jq -r '.combined.total_file_count' "$manifest_path")" == 10 ]]
@@ -152,6 +196,7 @@ stage_checkout="$TEST_TMP/stage-checkout"
 stage_script="$stage_checkout/scripts/e2e-stage.sh"
 mkdir -p "$stage_checkout/scripts"
 cp "$ROOT_DIR/scripts/e2e-stage.sh" "$stage_script"
+cp "$ROOT_DIR/scripts/run-id.sh" "$stage_checkout/scripts/run-id.sh"
 fake_make="$TEST_TMP/fake-make"
 cat > "$fake_make" <<'FAKE_MAKE'
 #!/usr/bin/env bash
@@ -174,8 +219,6 @@ case "$target" in
       printf 'Fake Make received an incomplete VM setup request.\n' >&2
       exit 90
     fi
-    mkdir -p "$TEST_STAGE_ROOT/state"
-    printf '%s\n' "$run_id_arg" > "$TEST_STAGE_ROOT/state/run-id"
     ;;
   vm-backup)
     ;;
@@ -228,11 +271,11 @@ chmod +x "$fake_make"
 
 prepare_stage_state() {
   local run_id="$1" passes="$2" info_path
-  info_path="$stage_checkout/report/vms/$run_id/vm-info.json"
+  info_path="$stage_checkout/runs/$run_id/run.json"
   mkdir -p "$(dirname "$info_path")"
   jq -n --arg run_id "$run_id" --argjson passes "$passes" '
     {schema_version: 1, run_id: $run_id, vm_name: ("vm-" + $run_id),
-     namespace: "saved-namespace", os_profile: "rhel9", report_id: "run_stage_test",
+     vm_uid: ("uid-" + $run_id), namespace: "saved-namespace", os_profile: "rhel9",
      manifest_variant: "large-odf", status: "incremental_ready",
      incremental_passes_total: $passes, incremental_passes_completed: 0,
      next_incremental_pass: 1,
@@ -245,7 +288,7 @@ prepare_stage_state() {
 
 run_incremental_stage() {
   local run_id="$1" fail_backup="${2:-false}" info_path calls_path
-  info_path="$stage_checkout/report/vms/$run_id/vm-info.json"
+  info_path="$stage_checkout/runs/$run_id/run.json"
   calls_path="$TEST_TMP/$run_id-make-calls.targets"
   : > "$calls_path"
   env \
@@ -259,7 +302,7 @@ run_incremental_stage() {
 }
 run_extend_stage() {
   local run_id="$1" target_pass="$2" info_path calls_path
-  info_path="$stage_checkout/report/vms/$run_id/vm-info.json"
+  info_path="$stage_checkout/runs/$run_id/run.json"
   calls_path="$TEST_TMP/$run_id-make-calls.targets"
   : > "$calls_path"
   env \
@@ -274,7 +317,7 @@ run_extend_stage() {
 }
 run_full_stage() {
   local run_id="$1" info_path calls_path
-  info_path="$stage_checkout/report/vms/$run_id/vm-info.json"
+  info_path="$stage_checkout/runs/$run_id/run.json"
   calls_path="$TEST_TMP/$run_id-make-calls.targets"
   : > "$calls_path"
   env \
@@ -386,8 +429,8 @@ jq -e '
 # covers the filename-derived size algorithm.
 RUN_ID=large-manifest-test
 VM_NAME="vm-$RUN_ID"
-REPORT_ID=run_test_large_manifest
-REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
+set_resource_names
+REPORT_DIR="$RUN_DIR"
 WORKLOAD_MANIFEST_NAME=workload-manifest.json
 GUEST_WORKLOAD_DIR=/home/cbt-demo/cbt-workload
 GUEST_BASE_FILE_COUNT=1000
@@ -412,6 +455,13 @@ large_records_for_plan() {
       "$name" "$size"
   done <<< "$plan"
 }
+large_modified_records_for_pass() {
+  local pass="$1" plan name size sha256
+  plan="$(workload_modified_file_plan "$pass")"
+  IFS='|' read -r name size <<< "$plan"
+  sha256="$(workload_modified_file_sha256 "$name" "$pass" "$size")"
+  printf 'FILE_RECORD=%s|%s|%s\n' "$name" "$size" "$sha256"
+}
 large_baseline_records="$(workload_records_from_output "$(large_records_for_plan baseline "$GUEST_BASE_FILE_COUNT")")"
 [[ "$(workload_records_count "$large_baseline_records")" == 1000 ]]
 workload_manifest_initialize "$large_baseline_records"
@@ -419,10 +469,13 @@ large_manifest="$(workload_manifest_path)"
 large_combined_records="$large_baseline_records"
 for pass in 1 2 3; do
   large_pass_records="$(workload_records_from_output "$(large_records_for_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$pass")")"
+  large_modified_records="$(workload_records_from_output "$(large_modified_records_for_pass "$pass")")"
   [[ "$(workload_records_count "$large_pass_records")" == 500 ]]
-  workload_manifest_append_incremental "$pass" "$large_pass_records" "2026-01-01T00:00:0${pass}Z"
+  large_combined_records="$(workload_records_apply_modifications "$large_combined_records" "$large_modified_records")"
   large_combined_records="$(workload_records_concat "$large_combined_records" "$large_pass_records")"
-  [[ "$(workload_records_count "$large_combined_records")" == "$((1000 + pass * 500))" ]]
+  workload_manifest_append_incremental "$pass" "$large_pass_records" "$large_modified_records" "2026-01-01T00:00:0${pass}Z"
+  large_manifest_state="$(workload_manifest_current_records "$large_manifest" "$pass")"
+  workload_manifest_verify_inventory "$large_manifest_state" "$large_combined_records" "Large pass $pass manifest"
 done
 workload_manifest_validate "$large_manifest" true
 [[ "$(jq -r '.combined.total_file_count' "$large_manifest")" == 2500 ]]

@@ -115,14 +115,14 @@ make e2e
    |
    +--> vm-cbt-backup
    |      +--> wait tracker == full checkpoint
-   |      +--> add incremental files; extend manifest and sync guest writes
+   |      +--> add files, modify one baseline file; verify and extend manifest
    |      +--> create incremental destination PVC and backup
    |      +--> wait Done; tracker gets incremental checkpoint
    |
    +--> vm-cbt-verify
           +--> verify CBT, types, Done, checkpoints, tracker
           +--> rebase/convert backup images and hash restored files
-          +--> write report/<run>/report.json
+          +--> write runs/<run-id>/report.json
 ```
 
 ## Control plane versus data plane

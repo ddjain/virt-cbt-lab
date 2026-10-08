@@ -180,7 +180,7 @@ A Windows SSH Service is unnecessary when all guest operations use QEMU Guest Ag
 
 The Windows setup script should:
 
-1. Generate the run ID and report ID.
+1. Generate a run ID and initialize `runs/<run-id>/run.json` plus its workload manifest.
 2. Create a run-labeled OOBE Secret from `WINDOWS_ADMIN_PASSWORD_FILE`.
 3. Apply the Windows VM and DataVolume.
 4. Wait for the VM to become ready.
@@ -208,19 +208,21 @@ Require `Done=True`, inspect the terminal reason, require `.status.type == Full`
 
 ### Guest mutation
 
-The existing Windows guest-agent stage adds the deterministic file set. It reuses the generic backup orchestration rather than duplicating it.
+The existing Windows guest-agent stage uses the shared deterministic mutation logic rather than duplicating backup orchestration.
 
 The CBT workload is separate from the startup file/SQLite/HTTP services and is
-created under `C:\cbt-data\workload`. Create M new files after the full
-checkpoint using the same deterministic naming/content rules and inclusive
-per-file size range as the baseline. Flush guest writes and extend
-`report/<REPORT_ID>/workload-manifest.json` with their sizes and hashes before
-requesting the incremental backup.
+created under `C:\cbt-data\workload`. Each incremental pass adds M deterministically
+named files and modifies one deterministic baseline file using the same size
+range. Flush guest writes and extend
+`runs/<run-id>/workload-manifest.json` with added and modified file hashes plus
+the cumulative manifest before requesting the incremental backup.
 
 Retries retain an existing addition only when its size and SHA-256 match the
-deterministic payload, create missing additions, and fail on unexpected names or
-changed contents. The manifest records baseline and combined file counts,
-payload-byte totals, per-file SHA-256 values, and canonical hashes.
+deterministic payload. The selected baseline file is rewritten with the
+pass-specific deterministic content; verification rejects unexpected names or
+any unexpected file content. The manifest records per-pass additions,
+modifications, baseline and combined file counts, payload-byte totals,
+per-file SHA-256 values, and canonical hashes.
 
 ### Incremental backup
 

@@ -8,7 +8,6 @@ WORKFLOW_NAME="vm-setup"
 require_command ssh
 require_command ssh-keygen
 new_run_id
-new_report_id
 
 workflow_step "1/5 Prepare the $VM_OS image source"
 case "$VM_OS" in
@@ -17,7 +16,7 @@ case "$VM_OS" in
     sed "s|__NAMESPACE__|$NAMESPACE|g" "$ROOT_DIR/manifests/debian-image.yaml" | oc_cmd apply -f - >/dev/null
     workflow_action "oc wait dv/debian-golden -n vm-cbt-images --for=jsonpath={.status.phase}=Succeeded --timeout=20m"
     oc_cmd wait dv/debian-golden -n vm-cbt-images --for=jsonpath='{.status.phase}'=Succeeded --timeout=20m >/dev/null
-    workflow_success "Debian golden image is ready (downloaded once, reused on subsequent runs)"
+    workflow_status "Debian golden image is ready (downloaded once, reused on subsequent runs)"
     ;;
   rhel9)
     workflow_action "Read DataSource $VM_DATA_SOURCE_NAME in namespace $VM_DATA_SOURCE_NAMESPACE"
@@ -31,7 +30,7 @@ case "$VM_OS" in
     fi
     workflow_action "oc wait pvc/$source_pvc_name -n $VM_DATA_SOURCE_NAMESPACE --for=jsonpath={.status.phase}=Bound --timeout=20m"
     oc_cmd wait "pvc/$source_pvc_name" -n "$VM_DATA_SOURCE_NAMESPACE" --for=jsonpath='{.status.phase}'=Bound --timeout=20m >/dev/null
-    workflow_success "RHEL 9 DataSource $VM_DATA_SOURCE_NAME is ready"
+    workflow_status "RHEL 9 DataSource $VM_DATA_SOURCE_NAME is ready"
     ;;
   *)
     printf 'scripts/vm-setup.sh requires VM_OS=debian or rhel9 (got %s).\n' "$VM_OS" >&2
@@ -64,18 +63,24 @@ sed \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-  "$(manifest_path vm)" | oc_cmd apply -f -
-workflow_success "VM resources applied in namespace $NAMESPACE"
+  "$(manifest_path vm)" | oc_cmd apply -f - >/dev/null
+workflow_progress "VM resources applied in namespace $NAMESPACE"
 
 workflow_step "4/5 Wait for VM readiness and confirm CBT"
 workflow_action "oc wait vm/$VM_NAME -n $NAMESPACE --for=jsonpath=.status.ready=true --timeout=20m"
-oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=20m
-cbt_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
+oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=20m >/dev/null
+vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json)"
+cbt_state="$(jq -r '.status.changedBlockTracking.state // empty' <<< "$vm_json")"
+vm_uid="$(jq -r '.metadata.uid // empty' <<< "$vm_json")"
+if [[ -z "$vm_uid" ]]; then
+  printf 'Could not read Kubernetes UID for VM %s.\n' "$VM_NAME" >&2
+  exit 1
+fi
 if [[ "$cbt_state" != Enabled ]]; then
   printf 'CBT is not enabled for %s (state: %s). Check the cluster CBT feature gate and VM label selector.\n' "$VM_NAME" "$cbt_state" >&2
   exit 1
 fi
-workflow_success "VM $VM_NAME is ready; CBT state is $cbt_state"
+workflow_progress "VM $VM_NAME is ready; CBT state is $cbt_state"
 
 workflow_step "5/5 Initialize and validate the baseline file workload"
 workflow_action "Create $GUEST_BASE_FILE_COUNT deterministic files in $LINUX_GUEST_WORKLOAD_DIR with sizes from ${GUEST_FILE_SIZE_MIN_MIB}-${GUEST_FILE_SIZE_MAX_MIB}MiB"
@@ -119,7 +124,7 @@ done
 guest_output="$(guest_ssh "$guest_setup_command")"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
-vm_info_initialize
+vm_info_initialize "$vm_uid"
 baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
 baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
 baseline_total_mib=$((baseline_total_bytes / 1048576))
@@ -144,4 +149,4 @@ write_report_fragment "setup" "$(jq -n \
                        incremental_passes_total: $incremental_passes_total,
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
-workflow_success "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"
+workflow_progress "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"

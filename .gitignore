@@ -17,6 +17,7 @@ kubeconfig
 /keys/
 /state/
 /report/
+/report-*.tar.gz
 vm-cbt-demo/
 *.vm-cbt-managed
 *.log
@@ -25,6 +26,10 @@ tmp/
 tmp-*/
 /screenshot/
 # CBT generated run artifacts
+# Run-scoped workflow state, reports, and evidence are local artifacts.
+
+/runs/
+
 /cbt-chaos/scenarios/*/runs/
 
 # Tool and OS metadata

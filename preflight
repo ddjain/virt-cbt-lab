@@ -42,15 +42,20 @@ trap cleanup EXIT INT TERM
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbt-preflight.XXXXXX")"
 section() {
   SECTION_NUMBER=$((SECTION_NUMBER + 1))
-  printf '\n[%s] [preflight %d/%d] %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SECTION_NUMBER" "$TOTAL_SECTIONS" "$1"
+  if ((VERBOSE)); then
+    printf '\n[%s] [preflight %d/%d] %s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SECTION_NUMBER" "$TOTAL_SECTIONS" "$1"
+  fi
 }
 
 result() {
   local state="$1" message="$2"
   CHECKS=$((CHECKS + 1))
   case "$state" in
-    PASS) PASSED=$((PASSED + 1)); printf 'PASS  %s\n' "$message" ;;
+    PASS)
+      PASSED=$((PASSED + 1))
+      if ((VERBOSE)); then printf 'PASS  %s\n' "$message"; fi
+      ;;
     WARN) WARNINGS=$((WARNINGS + 1)); printf 'WARN  %s\n' "$message" ;;
     FAIL) FAILURES=$((FAILURES + 1)); printf 'FAIL  %s\n' "$message" ;;
     *) printf 'FAIL  Internal preflight error\n' >&2; exit 2 ;;
@@ -73,10 +78,10 @@ check_command() {
   [[ -n "$version" ]] && result PASS "$name is available ($version)" || result PASS "$name is available"
 }
 load_dotenv_defaults "$ROOT_DIR/.env"
-VM_OS="${VM_OS:-debian}"
+VM_OS="${VM_OS:-rhel9}"
 WINDOWS_ISO_PATH="${WINDOWS_ISO_PATH:-}"
 WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
-if [[ -z "$VM_OS" ]]; then VM_OS=debian; fi
+if [[ -z "$VM_OS" ]]; then VM_OS=rhel9; fi
 TYPE="${TYPE:-all}"
 VM="${VM:-}"
 EXTEND_TO_PASS="${EXTEND_TO_PASS:-}"
@@ -267,7 +272,7 @@ check_cluster_capabilities() {
     fi
   else
     local demo_storage_class
-    case "${MANIFEST_VARIANT:-odf}" in
+    case "${MANIFEST_VARIANT:-large-odf}" in
       odf | large-odf) demo_storage_class="ocs-storagecluster-ceph-rbd" ;;
       *) demo_storage_class="cbt-demo-hpp" ;;
     esac
@@ -392,7 +397,7 @@ check_permissions() {
 }
 
 print_summary() {
-  printf '\nSummary: %d checks; %d passed; %d warnings; %d failures\n' "$CHECKS" "$PASSED" "$WARNINGS" "$FAILURES"
+  printf 'Summary: %d checks; %d passed; %d warnings; %d failures\n' "$CHECKS" "$PASSED" "$WARNINGS" "$FAILURES"
   if ((VERBOSE)); then
     printf 'Diagnostics: detailed command errors were suppressed to avoid exposing credentials or kubeconfig data.\n'
   fi
