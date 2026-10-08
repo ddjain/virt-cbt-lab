@@ -175,8 +175,8 @@ oc_cmd() {
 
 set -E
 CURRENT_STEP="workflow startup"
+WORKFLOW_PHASE_PRINTED=false
 
-# UTC timestamps match the timestamps recorded by the Kubernetes API.
 workflow_timestamp() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -184,18 +184,36 @@ workflow_timestamp() {
 workflow_record_log() {
   local level="$1" timestamp="$2" message="$3"
   if [[ -n "${RUN_DIR:-}" && -d "$RUN_DIR/logs" ]]; then
-    printf '[%s] [%s] [%s] %s\n' "$timestamp" "$WORKFLOW_NAME" "$level" "$message" \
+    printf '[%s] [%s] [%s] %s\n' "$timestamp" "${WORKFLOW_NAME:-workflow}" "$level" "$message" \
       >> "$RUN_DIR/logs/workflow.log"
   fi
 }
 
 workflow_step() {
-  local timestamp
+  local timestamp phase_label
   CURRENT_STEP="$1"
   timestamp="$(workflow_timestamp)"
   workflow_record_log step "$timestamp" "$CURRENT_STEP"
   if [[ "$DEBUG" == true ]]; then
     printf '\n[%s] [%s] %s\n' "$timestamp" "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
+  else
+    if [[ "$WORKFLOW_PHASE_PRINTED" != true ]]; then
+      case "${WORKFLOW_NAME:-workflow}" in
+        vm-setup|windows-vm-setup) phase_label="VM SETUP" ;;
+        vm-backup) phase_label="FULL BACKUP" ;;
+        vm-cbt-backup) phase_label="INCREMENTAL BACKUP" ;;
+        vm-cbt-verify|vm-cbt-restore-test) phase_label="VERIFICATION" ;;
+        vm-cbt-extend) phase_label="INCREMENTAL EXTENSION" ;;
+        monitor) phase_label="BACKUP TIMINGS" ;;
+        clean-all) phase_label="CLEANUP" ;;
+        windows-golden-image) phase_label="WINDOWS GOLDEN IMAGE" ;;
+        *) phase_label="$(printf '%s' "${WORKFLOW_NAME:-WORKFLOW}" | tr '[:lower:]-' '[:upper:] ')" ;;
+      esac
+      printf '\n────────────────────────────────────────────────────────\n %s\n────────────────────────────────────────────────────────\n' \
+        "$phase_label" >&2
+      WORKFLOW_PHASE_PRINTED=true
+    fi
+    printf '  [%s] %s\n' "$CURRENT_STEP" >&2
   fi
 }
 
@@ -221,7 +239,9 @@ workflow_progress() {
   local timestamp
   timestamp="$(workflow_timestamp)"
   workflow_record_log progress "$timestamp" "$1"
-  printf '  [%s] [status] %s\n' "$timestamp" "$1" >&2
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] [status] %s\n' "$timestamp" "$1" >&2
+  fi
 }
 
 workflow_debug() {
@@ -238,6 +258,19 @@ workflow_success() {
   workflow_record_log success "$timestamp" "$1"
   if [[ "$DEBUG" == true ]]; then
     printf '  [%s] ✓ %s\n' "$timestamp" "$1" >&2
+  else
+    printf '        ✓ %s\n' "$1" >&2
+  fi
+}
+
+workflow_warning() {
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log warning "$timestamp" "$1"
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] [warning] %s\n' "$timestamp" "$1" >&2
+  else
+    printf '        ⚠ %s\n' "$1" >&2
   fi
 }
 
@@ -245,11 +278,16 @@ workflow_failed() {
   local status=$? timestamp
   timestamp="$(workflow_timestamp)"
   workflow_record_log failure "$timestamp" "$CURRENT_STEP (exit $status)"
-  printf '  [%s] ✗ Failed: %s (exit %d)\n' "$timestamp" "$CURRENT_STEP" "$status" >&2
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] ✗ Failed: %s (exit %d)\n' "$timestamp" "$CURRENT_STEP" "$status" >&2
+  else
+    printf '        ✗ %s failed (exit %d)\n' "$CURRENT_STEP" "$status" >&2
+  fi
   return "$status"
 }
 
 trap workflow_failed ERR
+
 
 require_command() {
   local command_name="$1"
@@ -545,6 +583,7 @@ ensure_guest_key() {
   workflow_action "Ensuring the guest SSH key is available at $GUEST_KEY"
   mkdir -p "$(dirname "$GUEST_KEY")"
   if [[ ! -f "$GUEST_KEY" ]]; then
+    workflow_warning "Guest private key missing; generating a new key at $GUEST_KEY"
     rm -f "$GUEST_KEY.pub"
     ssh-keygen -q -t ed25519 -N '' -f "$GUEST_KEY"
     touch "$GUEST_KEY.vm-cbt-managed"
@@ -554,6 +593,7 @@ ensure_guest_key() {
   chmod 600 "$GUEST_KEY"
   cat "$GUEST_KEY.pub"
 }
+
 
 ssh_guest_command() {
   local port="$1" remote_command="$2"

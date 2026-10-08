@@ -54,11 +54,11 @@ result() {
   case "$state" in
     PASS)
       PASSED=$((PASSED + 1))
-      if ((VERBOSE)); then printf 'PASS  %s\n' "$message"; fi
+      if ((VERBOSE)); then printf '✓ PASS  %s\n' "$message"; fi
       ;;
-    WARN) WARNINGS=$((WARNINGS + 1)); printf 'WARN  %s\n' "$message" ;;
-    FAIL) FAILURES=$((FAILURES + 1)); printf 'FAIL  %s\n' "$message" ;;
-    *) printf 'FAIL  Internal preflight error\n' >&2; exit 2 ;;
+    WARN) WARNINGS=$((WARNINGS + 1)); printf '⚠ WARNING  %s\n' "$message" ;;
+    FAIL) FAILURES=$((FAILURES + 1)); printf '✗ FAIL  %s\n' "$message" ;;
+    *) printf '✗ FAIL  Internal preflight error\n' >&2; exit 2 ;;
   esac
 }
 
@@ -77,6 +77,8 @@ check_command() {
   fi
   [[ -n "$version" ]] && result PASS "$name is available ($version)" || result PASS "$name is available"
 }
+printf '\n────────────────────────────────────────────────────────\n PREFLIGHT\n────────────────────────────────────────────────────────\n'
+
 load_dotenv_defaults "$ROOT_DIR/.env"
 VM_OS="${VM_OS:-rhel9}"
 WINDOWS_ISO_PATH="${WINDOWS_ISO_PATH:-}"
@@ -402,10 +404,10 @@ print_summary() {
     printf 'Diagnostics: detailed command errors were suppressed to avoid exposing credentials or kubeconfig data.\n'
   fi
   if ((FAILURES == 0)); then
-    printf 'READY: environment is prepared for the repository workflow.\n'
+    printf '✓ READY: environment is prepared for the repository workflow.\n'
     return 0
   fi
-  printf 'NOT READY: resolve the failed checks before running make e2e.\n'
+  printf '✗ NOT READY: resolve the failed checks before running make e2e.\n'
   return 1
 }
 

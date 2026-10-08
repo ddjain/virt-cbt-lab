@@ -21,7 +21,11 @@ RUNS_ROOT_DIR="$ROOT_DIR/runs"
 
 start_epoch="$(date +%s)"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-printf '[%s] [make] E2E pipeline started for TYPE=%s (preflight included).\n' "$started_at" "$TYPE"
+if [[ "$DEBUG" == true ]]; then
+  printf '[%s] [make] E2E pipeline started for TYPE=%s (preflight included).\n' "$started_at" "$TYPE"
+else
+  printf 'E2E · TYPE=%s · VM_OS=%s\n' "$TYPE" "$VM_OS"
+fi
 
 status=0
 run_id=""
@@ -47,6 +51,39 @@ mark_incremental_failure() {
      .current_incremental_pass.failed_at = $failed_at |
      .updated_at = $failed_at' "$vm_info_path" > "$tmp_path"
   mv -f "$tmp_path" "$vm_info_path"
+}
+log_final_verdict() {
+  local outcome="$1" message="$2" elapsed="$3" lifecycle="$4"
+  local timestamp line log_path box_width=52 index result_row result_symbol
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf -v line '[%s] [make] Final verdict: %s' "$timestamp" "$message"
+  if [[ "$DEBUG" == true ]]; then printf '%s\n' "$line"; fi
+  if [[ -n "$run_id" ]]; then
+    log_path="$RUNS_ROOT_DIR/$run_id/logs/workflow.log"
+    if [[ -d "$(dirname "$log_path")" ]]; then
+      printf '%s\n' "$line" >> "$log_path"
+    fi
+  fi
+
+  case "$outcome" in
+    PASS) result_symbol=✓ ;;
+    FAIL) result_symbol=✗ ;;
+    INCOMPLETE) result_symbol=◌ ;;
+  esac
+  printf '╭'
+  for ((index = 0; index < box_width; index++)); do printf '─'; done
+  printf '╮\n'
+  printf '│ %-52s │\n' 'E2E RESULT'
+  printf '│ %-52s │\n' ''
+  result_row="Result: $result_symbol $outcome"
+  printf '│ %s%*s │\n' "$result_row" "$((box_width - ${#result_row}))" ''
+  printf '│ %-52s │\n' "Type: $TYPE"
+  printf '│ %-52s │\n' "Lifecycle: $lifecycle"
+  printf '│ %-52s │\n' "Total elapsed: $elapsed"
+  printf '╰'
+  for ((index = 0; index < box_width; index++)); do printf '─'; done
+  printf '╯\n'
+  if [[ "$DEBUG" != true ]]; then printf 'Details: %s\n' "$message"; fi
 }
 
 resolve_new_run_id() {
@@ -283,8 +320,18 @@ end_epoch="$(date +%s)"
 ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 elapsed_seconds=$((end_epoch - start_epoch))
 if ((status == 0)); then result=passed; else result=failed; fi
-printf '[%s] [make] E2E pipeline %s for TYPE=%s VM_OS=%s; total_elapsed_seconds=%s; started_at=%s.\n' \
-  "$ended_at" "$result" "$TYPE" "$VM_OS" "$elapsed_seconds" "$started_at"
+if [[ "$DEBUG" == true ]]; then
+  printf '[%s] [make] E2E pipeline %s for TYPE=%s VM_OS=%s; total_elapsed_seconds=%s; started_at=%s.\n' \
+    "$ended_at" "$result" "$TYPE" "$VM_OS" "$elapsed_seconds" "$started_at"
+fi
+if ((elapsed_seconds >= 3600)); then
+  printf -v elapsed_display '%dh %02dm %02ds' \
+    "$((elapsed_seconds / 3600))" "$(((elapsed_seconds % 3600) / 60))" "$((elapsed_seconds % 60))"
+elif ((elapsed_seconds >= 60)); then
+  printf -v elapsed_display '%dm %02ds' "$((elapsed_seconds / 60))" "$((elapsed_seconds % 60))"
+else
+  printf -v elapsed_display '%ds' "$elapsed_seconds"
+fi
 
 if ((status == 0)); then
   if [[ -z "$vm_name" && -n "$run_id" ]]; then vm_name="vm-${run_id}"; fi
@@ -300,18 +347,72 @@ if ((status == 0)); then
       fi
     fi
     if [[ "$monitor_deferred" == true ]]; then
-      printf '[%s] [make] Backup timing monitor deferred: %s/%s planned incremental passes complete for VM=%s.\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_passes" "$planned_passes" "$vm_name"
+      if [[ "$DEBUG" == true ]]; then
+        printf '[%s] [make] Backup timing monitor deferred: %s/%s planned incremental passes complete for VM=%s.\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_passes" "$planned_passes" "$vm_name"
+      else
+        printf 'Backup timing monitor deferred · %s/%s incremental passes complete\n' \
+          "$completed_passes" "$planned_passes"
+      fi
     else
       if [[ "$DEBUG" == true ]]; then
         printf '[%s] [make] Collecting API-recorded backup timings for VM=%s.\n' \
           "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name"
       fi
       if ! run_profiled_make monitor VM="$vm_name"; then
-        printf '[%s] [make] WARNING: E2E passed but the backup timing monitor failed for VM=%s.\n' \
-          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name" >&2
+        if [[ "$DEBUG" == true ]]; then
+          printf '[%s] [make] WARNING: E2E passed but the backup timing monitor failed for VM=%s.\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$vm_name" >&2
+        else
+          printf '⚠ Backup timing monitor failed for VM=%s; E2E passed.\n' "$vm_name" >&2
+        fi
       fi
     fi
   fi
 fi
+report_path="unavailable (run ID not resolved)"
+if [[ -n "$run_id" ]]; then
+  report_path="$RUNS_ROOT_DIR/$run_id/report.json"
+fi
+lifecycle_summary="not available"
+if [[ -n "$run_id" && -r "$RUNS_ROOT_DIR/$run_id/run.json" ]]; then
+  lifecycle_completed="$(jq -r '.incremental_passes_completed // 0' "$RUNS_ROOT_DIR/$run_id/run.json")"
+  lifecycle_planned="$(jq -r '.incremental_passes_total // 0' "$RUNS_ROOT_DIR/$run_id/run.json")"
+  lifecycle_summary="${lifecycle_completed}/${lifecycle_planned} incremental passes complete"
+fi
+if ((status != 0)); then
+  final_outcome=FAIL
+  final_verdict="FAIL: E2E pipeline failed for TYPE=$TYPE; inspect the preceding error output."
+elif [[ "$TYPE" == full ]]; then
+  completed_passes=0
+  planned_passes="$GUEST_INCREMENTAL_PASSES"
+  lifecycle_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
+  if [[ -r "$lifecycle_info_path" ]]; then
+    completed_passes="$(jq -r '.incremental_passes_completed // 0' "$lifecycle_info_path")"
+    planned_passes="$(jq -r '.incremental_passes_total // 0' "$lifecycle_info_path")"
+  fi
+  final_outcome=INCOMPLETE
+  final_verdict="FULL BACKUP PASS; lifecycle INCOMPLETE (${completed_passes}/${planned_passes} planned incremental passes complete); report pending verification: $report_path"
+elif [[ "$TYPE" == incremental ]]; then
+  completed_passes=0
+  planned_passes=0
+  lifecycle_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
+  if [[ -r "$lifecycle_info_path" ]]; then
+    completed_passes="$(jq -r '.incremental_passes_completed // 0' "$lifecycle_info_path")"
+    planned_passes="$(jq -r '.incremental_passes_total // 0' "$lifecycle_info_path")"
+  fi
+  if ((completed_passes < planned_passes)); then
+    final_outcome=INCOMPLETE
+    final_verdict="INCREMENTAL PASS (${completed_passes}/${planned_passes}); lifecycle INCOMPLETE; final verification/report pending: $report_path"
+  else
+    final_outcome=PASS
+    final_verdict="PASS; backup chain and restore verification passed; report: $report_path"
+  fi
+else
+  final_outcome=PASS
+  final_verdict="PASS; lifecycle and restore verification passed; report: $report_path"
+fi
+log_final_verdict "$final_outcome" "$final_verdict" "$elapsed_display" "$lifecycle_summary"
+
+
 exit "$status"

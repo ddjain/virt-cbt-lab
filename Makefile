@@ -34,8 +34,7 @@ VM ?=
 .PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e e2e-incremental clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync pull-reports help test
 
 preflight:
-	@printf '[%s] [make] [1/1] Preflight: check local tools and cluster access for VM_OS=%s (read-only).\n' "$(UTC_TIMESTAMP)" "$(VM_OS)"
-	@./preflight
+	@if [[ "$(DEBUG)" == true ]]; then ./preflight --verbose; else ./preflight; fi
 
 sync:
 	@./sync.sh
@@ -84,14 +83,14 @@ vm-cbt-demo:
 	    if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] %s\n' "$$timing_timestamp" "$$timing_line" >&2; fi; \
 	    return "$$step_status"; \
 	  }; \
-	  printf '[%s] [make] Demo: setup, full backup, and %s incremental pass(es).\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(GUEST_INCREMENTAL_PASSES)"; \
+	  if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] Demo: setup, full backup, and %s incremental pass(es).\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(GUEST_INCREMENTAL_PASSES)"; fi; \
 	  run_timed_step 'VM setup and baseline workload' $(MAKE) --no-print-directory vm-setup VM_OS=$(VM_OS) RUN_ID=$$run_id; \
 	  run_timed_step 'Full backup' $(MAKE) --no-print-directory vm-backup VM_OS=$(VM_OS) RUN_ID=$$run_id; \
 	  for ((pass = 1; pass <= $(GUEST_INCREMENTAL_PASSES); pass++)); do \
 	    if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] Incremental pass %d/%s for run %s.\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$pass" "$(GUEST_INCREMENTAL_PASSES)" "$$run_id"; fi; \
 	    run_timed_step "Incremental backup pass $$pass/$(GUEST_INCREMENTAL_PASSES)" $(MAKE) --no-print-directory vm-cbt-backup VM_OS=$(VM_OS) RUN_ID=$$run_id; \
 	  done; \
-	  printf '[%s] [make] Demo: verify checkpoint chain and restored prefixes.\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	  if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] Demo: verify checkpoint chain and restored prefixes.\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; fi; \
 	  run_timed_step 'CBT verification and restore test' $(MAKE) --no-print-directory vm-cbt-verify VM_OS=$(VM_OS) RUN_ID=$$run_id
 e2e:
 	@MAKE_COMMAND="$(MAKE)" ./scripts/e2e-stage.sh

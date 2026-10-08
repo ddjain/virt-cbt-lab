@@ -18,39 +18,65 @@ mkdir -p "$RUN_DIR/logs" "$RUN_DIR/evidence"
 WORKFLOW_NAME=workflow-evidence-test
 
 DEBUG=false
-quiet_output="$(workflow_action 'routine action detail' 2>&1)"
-quiet_step="$(workflow_step 'routine step detail' 2>&1)"
-quiet_success="$(workflow_success 'routine success detail' 2>&1)"
+quiet_action="$(workflow_action 'routine action detail' 2>&1)"
+visible_step="$(workflow_step '[1/2] routine step detail' 2>&1)"
+visible_success="$(workflow_success 'routine success detail' 2>&1)"
+visible_warning="$(workflow_warning 'routine warning detail' 2>&1)"
 quiet_status="$(workflow_status 'routine status detail' 2>&1)"
-if [[ -n "$quiet_output$quiet_step$quiet_success$quiet_status" ]]; then
-  printf 'Routine workflow details should be hidden from normal terminal output.\n%s%s%s%s\n' \
-    "$quiet_output" "$quiet_step" "$quiet_success" "$quiet_status" >&2
+quiet_progress="$(workflow_progress 'routine progress detail' 2>&1)"
+if [[ -n "$quiet_action$quiet_status$quiet_progress" ||
+      "$visible_step" != *'WORKFLOW EVIDENCE TEST'* ||
+      "$visible_step" != *'[1/2] routine step detail'* ||
+      "$visible_success" != *'✓ routine success detail'* ||
+      "$visible_warning" != *'⚠ routine warning detail'* ]]; then
+  printf 'Normal output must show steps, successes, and warnings while hiding routine details.\n' >&2
   exit 1
 fi
-progress_output="$(workflow_progress 'important progress' 2>&1)"
-if [[ "$progress_output" != *'important progress'* ]]; then
-  printf 'Important progress should remain visible in normal output.\n' >&2
+CURRENT_STEP='[2/2] simulated failure'
+failure_status=0
+if failure_output="$(false || workflow_failed 2>&1)"; then
+  failure_status=0
+else
+  failure_status=$?
+fi
+if [[ "$failure_status" -eq 0 ||
+      "$failure_output" != *'✗ [2/2] simulated failure failed'* ]]; then
+  printf 'Normal output must show a concise failed-step marker.\n' >&2
   exit 1
 fi
 workflow_log="$(<"$RUN_DIR/logs/workflow.log")"
+if [[ "$workflow_log" != *'[failure] [2/2] simulated failure (exit 1)'* ]]; then
+  printf 'Step failure was not retained in workflow.log.\n' >&2
+  exit 1
+fi
 if [[ "$workflow_log" != *'[action] routine action detail'* ||
-      "$workflow_log" != *'[step] routine step detail'* ||
+      "$workflow_log" != *'[step] [1/2] routine step detail'* ||
       "$workflow_log" != *'[success] routine success detail'* ||
+      "$workflow_log" != *'[warning] routine warning detail'* ||
       "$workflow_log" != *'[status] routine status detail'* ||
-      "$workflow_log" != *'[progress] important progress'* ]]; then
-  printf 'Routine workflow detail was not retained in workflow.log.\n' >&2
+      "$workflow_log" != *'[progress] routine progress detail'* ]]; then
+  printf 'Workflow details and timestamps were not retained in workflow.log.\n' >&2
   exit 1
 fi
 DEBUG=true
+WORKFLOW_PHASE_PRINTED=false
 visible_action="$(workflow_action 'debug action detail' 2>&1)"
 visible_step="$(workflow_step 'debug step detail' 2>&1)"
 visible_success="$(workflow_success 'debug success detail' 2>&1)"
 visible_status="$(workflow_status 'debug status detail' 2>&1)"
+visible_progress="$(workflow_progress 'Backup heartbeat: backup=vm-backup-test phase=progressing conditions=Progressing=True pvc=backup-pvc:Bound elapsed_since_watch=30s' 2>&1)"
+visible_warning="$(workflow_warning 'debug warning detail' 2>&1)"
+visible_debug="$(workflow_debug 'backup=vm-backup-test conditions=[{"type":"Done","status":"False"}] vmi_backup_status={"completed":false,"failed":false}' 2>&1)"
 if [[ "$visible_action" != *'debug action detail'* ||
       "$visible_step" != *'debug step detail'* ||
       "$visible_success" != *'debug success detail'* ||
-      "$visible_status" != *'debug status detail'* ]]; then
-  printf 'DEBUG=true did not print routine workflow detail.\n' >&2
+      "$visible_status" != *'debug status detail'* ||
+      "$visible_progress" != *'Backup heartbeat:'* ||
+      "$visible_progress" != *'conditions=Progressing=True'* ||
+      "$visible_warning" != *'debug warning detail'* ||
+      "$visible_debug" != *'"type":"Done"'* ||
+      "$visible_debug" != *'vmi_backup_status={"completed":false'* ]]; then
+  printf 'DEBUG=true did not print routine workflow diagnostics.\n' >&2
   exit 1
 fi
 

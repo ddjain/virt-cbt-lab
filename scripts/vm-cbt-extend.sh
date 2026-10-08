@@ -114,6 +114,7 @@ if [[ -z "$pending_extension" && "$vm_status" == complete &&
     extension_error 'the completed workload manifest is invalid; no pass was added.'
   fi
   workflow_progress "Lifecycle already includes $current_total incremental pass(es); no new backup was created. Use EXTEND_TO_PASS=$((current_total + 1)) to add one more."
+  workflow_success "Lifecycle already includes $current_total incremental pass(es); no backup created"
   exit 0
 fi
 
@@ -279,3 +280,4 @@ fi
 extension_requested_at="$(jq -r '.extension_pending.requested_at // empty' "$VM_INFO_PATH")"
 write_extension_fragment "$pending_from" "$pending_target" "$extension_requested_at"
 workflow_progress "Extension target $pending_target is prepared; the dispatcher will add that pass or verify it if already recorded."
+workflow_success "Extension target $pending_target is prepared"

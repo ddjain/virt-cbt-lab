@@ -54,6 +54,7 @@ if workload_manifest_validate "$manifest_path" true; then
     restore_passed=false
   fi
   workflow_status "Manifest expects $expected_full_count baseline files and $expected_pass_count incremental prefix(es)"
+  workflow_success "Manifest valid · $expected_full_count baseline files · $expected_pass_count incremental prefixes"
 else
   manifest_valid=false
   record_restore_check "workload_manifest_valid" false
@@ -99,6 +100,7 @@ done
 if [[ "$full_pvc_status" == Bound && "$incremental_pvcs_bound" == true &&
       "$expected_pass_count" == "$planned_pass_count" && "$manifest_valid" == true ]]; then
   workflow_status "Full and all incremental backup PVCs are Bound"
+  workflow_success "Full and incremental backup PVCs are Bound"
   workflow_step "3/5 Reconstruct full-only and cumulative incremental disks"
   workflow_action "Rebase each pass onto the preceding checkpoint and hash each restored workload directory"
   if restore_log="$(run_restore_verify_pod "$full_pvc_name" "${incremental_pvcs[@]}")"; then
@@ -145,8 +147,9 @@ write_report_fragment "restore-test" "$(jq -n --arg manifest_path "$WORKLOAD_MAN
   '{guest: {workload_manifest_path: $manifest_path}, verification: {checks: $checks}}')"
 
 if [[ "$restore_passed" == true ]]; then
-  printf '\n[%s] Restore verification passed: full-only and every incremental prefix match their workload manifests.\n' "$WORKFLOW_NAME" >&2
+  workflow_success "Full-only and all $expected_pass_count incremental prefixes match"
 else
-  printf '\n[%s] Restore verification failed; see checks above and %s/logs/restore-verify-pod.log for details.\n' "$WORKFLOW_NAME" "$REPORT_DIR" >&2
+  printf '        ✗ Restore verification failed; see checks above and %s/logs/restore-verify-pod.log for details.\n' \
+    "$REPORT_DIR" >&2
   exit 1
 fi

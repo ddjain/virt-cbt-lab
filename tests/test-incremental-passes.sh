@@ -273,6 +273,7 @@ prepare_stage_state() {
   local run_id="$1" passes="$2" info_path
   info_path="$stage_checkout/runs/$run_id/run.json"
   mkdir -p "$(dirname "$info_path")"
+  mkdir -p "$(dirname "$info_path")/logs"
   jq -n --arg run_id "$run_id" --argjson passes "$passes" '
     {schema_version: 1, run_id: $run_id, vm_name: ("vm-" + $run_id),
      vm_uid: ("uid-" + $run_id), namespace: "saved-namespace", os_profile: "rhel9",
@@ -355,12 +356,42 @@ prepare_completed_stage_state() {
   mv "$info_path.tmp" "$info_path"
   printf '%s' "$info_path"
 }
+assert_final_verdict() {
+  local run_id="$1" expected="$2" output log_path log_output outcome terminal_message
+  output="$(<"$TEST_TMP/$run_id-e2e-stage.log")"
+  log_path="$stage_checkout/runs/$run_id/logs/workflow.log"
+  case "$expected" in
+    "Final verdict: FULL BACKUP PASS;"*) outcome=INCOMPLETE ;;
+    "Final verdict: INCREMENTAL PASS "*INCOMPLETE*) outcome=INCOMPLETE ;;
+    "Final verdict: PASS;"*) outcome=PASS ;;
+    "Final verdict: FAIL:"*) outcome=FAIL ;;
+    *) printf 'Unexpected final verdict expectation: %s\n' "$expected" >&2; return 1 ;;
+  esac
+  terminal_message="${expected#Final verdict: }"
+  if [[ "$output" != *'E2E RESULT'* ||
+        "$output" != *"Result:"*"$outcome"* ||
+        "$output" != *'Total elapsed:'* ||
+        "$output" != *"Details: $terminal_message"* ||
+        ! -f "$log_path" ]]; then
+    printf 'Expected final result box and detail in terminal output for %s:\n%s\n' \
+      "$run_id" "$expected" >&2
+    return 1
+  fi
+  log_output="$(<"$log_path")"
+  if [[ "$log_output" != *"$expected"* ]]; then
+    printf 'Expected timestamped verdict in workflow log for %s:\n%s\n' \
+      "$run_id" "$expected" >&2
+    return 1
+  fi
+}
 
 full_run_id=full-stage-test
 full_info_path="$(prepare_stage_state "$full_run_id" 1)"
 run_full_stage "$full_run_id"
 assert_stage_targets "$full_run_id" '["preflight","vm-setup","vm-backup"]'
 [[ "$(jq -r '.incremental_passes_completed' "$full_info_path")" == 0 ]]
+assert_final_verdict "$full_run_id" \
+  "Final verdict: FULL BACKUP PASS; lifecycle INCOMPLETE (0/1 planned incremental passes complete); report pending verification: $stage_checkout/runs/$full_run_id/report.json"
 
 stage_run_id=stage-test
 stage_info_path="$(prepare_stage_state "$stage_run_id" 3)"
@@ -369,13 +400,18 @@ for pass in 1 2 3; do
   if ((pass < 3)); then
     assert_stage_targets "$stage_run_id" '["preflight","vm-cbt-backup"]'
     expected_stage_status=incremental_ready
+    assert_final_verdict "$stage_run_id" \
+      "Final verdict: INCREMENTAL PASS ($pass/3); lifecycle INCOMPLETE; final verification/report pending: $stage_checkout/runs/$stage_run_id/report.json"
   else
     assert_stage_targets "$stage_run_id" '["preflight","vm-cbt-backup","vm-cbt-verify","monitor"]'
     expected_stage_status=verification_pending
+    assert_final_verdict "$stage_run_id" \
+      "Final verdict: PASS; backup chain and restore verification passed; report: $stage_checkout/runs/$stage_run_id/report.json"
   fi
   [[ "$(jq -r '.incremental_passes_completed' "$stage_info_path")" == "$pass" ]]
   [[ "$(jq -r '.status' "$stage_info_path")" == "$expected_stage_status" ]]
 done
+
 
 failure_run_id=failed-stage-test
 failure_info_path="$(prepare_stage_state "$failure_run_id" 3)"
@@ -387,6 +423,8 @@ else
 fi
 [[ "$failed_stage_status" == 42 ]]
 assert_stage_targets "$failure_run_id" '["preflight","vm-cbt-backup"]'
+assert_final_verdict "$failure_run_id" \
+  "Final verdict: FAIL: E2E pipeline failed for TYPE=incremental; inspect the preceding error output."
 jq -e '
   .status == "incremental_failed" and
   .current_incremental_pass.status == "failed" and
