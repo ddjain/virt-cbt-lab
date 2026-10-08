@@ -137,6 +137,87 @@ load_vm_info() {
   GUEST_FILE_SIZE_MAX_MIB="$(jq -r '.guest.size_range_mib.max_inclusive' "$vm_info_path")"
   MANIFEST_VARIANT="$(jq -r '.manifest_variant' "$vm_info_path")"
 }
+print_pipeline_summary() {
+  local next_pass
+  printf '\nPipeline configuration\n'
+  printf '  TYPE=%s\n' "$TYPE"
+  printf '  VM_OS=%s\n' "$VM_OS"
+  printf '  MANIFEST_VARIANT=%s\n' "$MANIFEST_VARIANT"
+  printf '  NAMESPACE=%s\n' "$run_namespace"
+  printf '  DEBUG=%s\n' "$DEBUG"
+  printf '  GUEST_BASE_FILE_COUNT=%s\n' "$GUEST_BASE_FILE_COUNT"
+  printf '  GUEST_INCREMENTAL_FILE_COUNT=%s (new files/pass; modifies 1 baseline file)\n' \
+    "$GUEST_INCREMENTAL_FILE_COUNT"
+  printf '  GUEST_INCREMENTAL_PASSES=%s\n' "$GUEST_INCREMENTAL_PASSES"
+  printf '  GUEST_FILE_SIZE_MIN_MIB=%s\n' "$GUEST_FILE_SIZE_MIN_MIB"
+  printf '  GUEST_FILE_SIZE_MAX_MIB=%s\n' "$GUEST_FILE_SIZE_MAX_MIB"
+  printf '  EXTEND_TO_PASS=%s\n' "${EXTEND_TO_PASS:-none}"
+  if [[ -n "${RESTORE_HELPER_IMAGE:-}" ]]; then
+    printf '  RESTORE_HELPER_IMAGE=configured (reference omitted)\n'
+  else
+    printf '  RESTORE_HELPER_IMAGE=unset\n'
+  fi
+  printf '  RUN_ID=%s\n' "$RUN_ID"
+  printf '  VM_NAME=%s\n' "$VM_NAME"
+  printf '\nResource plan\n'
+
+  case "$TYPE" in
+    all|full)
+      printf '  Namespace: %s (created only if absent)\n' "$run_namespace"
+      printf '  VirtualMachine: %s\n' "$VM_NAME"
+      printf '  Root DataVolume/PVC: %s\n' "$DV_NAME"
+      if [[ "$VM_OS" == windows ]]; then
+        printf '  Run-scoped OOBE Secret: windows-oobe-%s\n' "$RUN_ID"
+      else
+        printf '  Guest SSH service: %s\n' "$SSH_SERVICE"
+      fi
+      printf '  Backup tracker: %s\n' "$TRACKER_NAME"
+      printf '  Full VirtualMachineBackup: %s\n' "$FULL_BACKUP_NAME"
+      printf '  Full backup PVC: %s\n' "$FULL_BACKUP_PVC_NAME"
+      if [[ "$TYPE" == all ]]; then
+        printf '  Incremental backups: %s pass(es), %s-pNN\n' \
+          "$GUEST_INCREMENTAL_PASSES" "${INCREMENTAL_BACKUP_NAME%-p01}"
+        printf '  Incremental backup PVCs: %s-pNN\n' \
+          "${INCREMENTAL_BACKUP_PVC_NAME%-p01}"
+        printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
+      else
+        printf '  Incremental backup/PVC resources: deferred; %s pass(es) planned for later stages\n' \
+          "$GUEST_INCREMENTAL_PASSES"
+        printf '    Backup pattern: %s-pNN\n' "${INCREMENTAL_BACKUP_NAME%-p01}"
+        printf '    PVC pattern: %s-pNN\n' "${INCREMENTAL_BACKUP_PVC_NAME%-p01}"
+      fi
+      ;;
+    incremental)
+      printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
+      next_pass="$(jq -r '.next_incremental_pass // empty' "$vm_info_path")"
+      if [[ "$next_pass" =~ ^[1-9][0-9]?$ ]]; then
+        printf '  New incremental VirtualMachineBackup: %s\n' \
+          "$(incremental_backup_name_for_pass "$next_pass")"
+        printf '  New incremental backup PVC: %s\n' \
+          "$(incremental_backup_pvc_name_for_pass "$next_pass")"
+        if [[ "$next_pass" == "$GUEST_INCREMENTAL_PASSES" ]]; then
+          printf '  Restore verification pod: %s (temporary, final pass)\n' "$RESTORE_POD_NAME"
+        fi
+      else
+        printf '  No incremental backup/PVC planned; the saved pass plan is complete\n'
+      fi
+      ;;
+    extend)
+      printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
+      if [[ "$EXTEND_TO_PASS" =~ ^[1-9][0-9]?$ ]]; then
+        printf '  Extension VirtualMachineBackup: %s\n' \
+          "$(incremental_backup_name_for_pass "$EXTEND_TO_PASS")"
+        printf '  Extension backup PVC: %s\n' \
+          "$(incremental_backup_pvc_name_for_pass "$EXTEND_TO_PASS")"
+      fi
+      printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
+      ;;
+    verify)
+      printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
+      printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
+      ;;
+  esac
+}
 
 run_make() {
   "$MAKE_COMMAND" --no-print-directory "$@"
@@ -194,6 +275,11 @@ case "$TYPE" in
     fail "TYPE must be all, full, incremental, extend, or verify (got: $TYPE)."
     ;;
 esac
+if ((status == 0)); then
+  RUN_ID="$run_id"
+  set_resource_names
+  vm_info_path="$VM_INFO_PATH"
+fi
 
 if ((status == 0)); then
   if [[ "$TYPE" == extend ]]; then
@@ -224,6 +310,9 @@ if ((status == 0)); then
     release_e2e_lock() { rm -rf "$lock_dir"; }
     trap release_e2e_lock EXIT
   fi
+fi
+if ((status == 0)); then
+  print_pipeline_summary
 fi
 
 
@@ -413,6 +502,16 @@ else
   final_verdict="PASS; lifecycle and restore verification passed; report: $report_path"
 fi
 log_final_verdict "$final_outcome" "$final_verdict" "$elapsed_display" "$lifecycle_summary"
+if [[ "$final_outcome" == INCOMPLETE &&
+      ( "$TYPE" == full || "$TYPE" == incremental ) ]]; then
+  next_vm="${vm_name:-vm-${run_id}}"
+  printf '\nNext command:\n  make e2e TYPE=incremental VM=%s\n' "$next_vm"
+  if ((completed_passes + 1 < planned_passes)); then
+    printf 'Repeat this command for the remaining passes; the final pass runs verification.\n'
+  else
+    printf 'The next incremental pass is final and will run verification automatically.\n'
+  fi
+fi
 
 
 exit "$status"
