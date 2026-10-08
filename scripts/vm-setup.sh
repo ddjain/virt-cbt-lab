@@ -17,6 +17,7 @@ case "$VM_OS" in
     workflow_action "oc wait dv/debian-golden -n vm-cbt-images --for=jsonpath={.status.phase}=Succeeded --timeout=20m"
     oc_cmd wait dv/debian-golden -n vm-cbt-images --for=jsonpath='{.status.phase}'=Succeeded --timeout=20m >/dev/null
     workflow_status "Debian golden image is ready (downloaded once, reused on subsequent runs)"
+    workflow_success "Debian image source is ready"
     ;;
   rhel9)
     workflow_action "Read DataSource $VM_DATA_SOURCE_NAME in namespace $VM_DATA_SOURCE_NAMESPACE"
@@ -31,6 +32,7 @@ case "$VM_OS" in
     workflow_action "oc wait pvc/$source_pvc_name -n $VM_DATA_SOURCE_NAMESPACE --for=jsonpath={.status.phase}=Bound --timeout=20m"
     oc_cmd wait "pvc/$source_pvc_name" -n "$VM_DATA_SOURCE_NAMESPACE" --for=jsonpath='{.status.phase}'=Bound --timeout=20m >/dev/null
     workflow_status "RHEL 9 DataSource $VM_DATA_SOURCE_NAME is ready"
+    workflow_success "RHEL 9 DataSource is ready"
     ;;
   *)
     printf 'scripts/vm-setup.sh requires VM_OS=debian or rhel9 (got %s).\n' "$VM_OS" >&2
@@ -65,6 +67,7 @@ sed \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
   "$(manifest_path vm)" | oc_cmd apply -f - >/dev/null
 workflow_progress "VM resources applied in namespace $NAMESPACE"
+workflow_success "VM resources created"
 
 workflow_step "4/5 Wait for VM readiness and confirm CBT"
 workflow_action "oc wait vm/$VM_NAME -n $NAMESPACE --for=jsonpath=.status.ready=true --timeout=20m"
@@ -77,10 +80,12 @@ if [[ -z "$vm_uid" ]]; then
   exit 1
 fi
 if [[ "$cbt_state" != Enabled ]]; then
+  printf '        ✗ VM is ready but CBT is not enabled\n' >&2
   printf 'CBT is not enabled for %s (state: %s). Check the cluster CBT feature gate and VM label selector.\n' "$VM_NAME" "$cbt_state" >&2
   exit 1
 fi
 workflow_progress "VM $VM_NAME is ready; CBT state is $cbt_state"
+workflow_success "VM ready · CBT $cbt_state"
 
 workflow_step "5/5 Initialize and validate the baseline file workload"
 workflow_action "Create $GUEST_BASE_FILE_COUNT deterministic files in $LINUX_GUEST_WORKLOAD_DIR with sizes from ${GUEST_FILE_SIZE_MIN_MIB}-${GUEST_FILE_SIZE_MAX_MIB}MiB"
@@ -150,3 +155,4 @@ write_report_fragment "setup" "$(jq -n \
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
 workflow_progress "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"
+workflow_success "Baseline workload · $baseline_file_count files · ${baseline_total_mib} MiB"

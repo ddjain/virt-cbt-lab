@@ -24,6 +24,7 @@ fi
 oc_cmd wait dv/windows-golden -n "$WINDOWS_IMAGES_NAMESPACE" \
   --for=jsonpath='{.status.phase}'=Succeeded --timeout=30m >/dev/null
 workflow_status "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
+workflow_success "Windows DataSource is ready"
 
 workflow_step "2/5 Generate the run-scoped OOBE secret"
 OOBE_SECRET="windows-oobe-${RUN_ID}"
@@ -85,6 +86,7 @@ sed \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
   "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f - >/dev/null
 workflow_progress "Windows VM resources applied in namespace $NAMESPACE"
+workflow_success "Windows VM resources created"
 
 # shellcheck source=scripts/windows-guest-agent.sh
 source "$ROOT_DIR/scripts/windows-guest-agent.sh"
@@ -108,6 +110,7 @@ oc_cmd wait "vmi/$VM_NAME" -n "$NAMESPACE" --for=condition=AgentConnected --time
 workflow_action "Probe the QEMU Guest Agent socket before guest operations"
 wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
 workflow_progress "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
+workflow_success "Windows VM ready · CBT $cbt_state · QEMU Guest Agent connected"
 
 workflow_step "5/5 Verify startup workloads and initialize the baseline file workload"
 workflow_action "Verify Python 3.12.4, file/SQLite writes, HTTP 8080, and the SYSTEM startup task on this clone"
@@ -197,3 +200,4 @@ write_report_fragment "setup" "$(jq -n \
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
 workflow_progress "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"
+workflow_success "Baseline workload · $baseline_file_count files · ${baseline_total_mib} MiB"

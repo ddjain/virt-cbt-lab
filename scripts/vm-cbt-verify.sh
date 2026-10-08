@@ -9,6 +9,11 @@ workflow_step "1/4 Read VM CBT state"
 workflow_action "oc get vm $VM_NAME -n $NAMESPACE -o jsonpath=.status.changedBlockTracking.state"
 vm_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
 workflow_status "VM $VM_NAME CBT state: ${vm_state:-unknown}"
+if [[ "$vm_state" == Enabled ]]; then
+  workflow_success "CBT Enabled"
+else
+  workflow_warning "CBT state is ${vm_state:-unknown}"
+fi
 
 vm_info_load "$RUN_ID"
 
@@ -25,6 +30,7 @@ latest_checkpoint="$(get_tracker_checkpoint 2>/dev/null || true)"
 workflow_action "Full: type=$full_type done=$full_done checkpoint=$full_checkpoint"
 workflow_action "Incremental passes recorded=$incremental_pass_count completed=$incremental_passes_completed planned=$incremental_passes_total"
 workflow_action "Tracker $TRACKER_NAME latest checkpoint=${latest_checkpoint:-missing}"
+workflow_success "Backups read · full $full_type · incrementals $incremental_passes_completed/$incremental_passes_total"
 
 workflow_step "3/4 Validate CBT and incremental checkpoint chain"
 verify_checks_json='[]'
@@ -102,11 +108,13 @@ else
 fi
 
 if [[ "$verify_passed" != true ]]; then
+  printf '        ✗ CBT/checkpoint validation failed\n' >&2
   printf 'CBT verification failed. VM=%s full=%s/%s passes=%s/%s tracker=%s\n' \
     "$vm_state" "$full_type" "$full_done" "$incremental_pass_count" \
     "$incremental_passes_total" "$latest_checkpoint" >&2
 else
   workflow_progress "CBT verification passed; all incremental checkpoints are distinct and the tracker matches the final pass"
+  workflow_success "CBT and checkpoint chain verified"
   printf 'Checkpoint chain: full=%s final_incremental=%s\n' \
     "$full_checkpoint" "$previous_checkpoint"
 fi
@@ -116,8 +124,10 @@ workflow_action "Running scripts/vm-cbt-restore-test.sh to rebuild and read the 
 restore_test_passed=true
 if "$ROOT_DIR/scripts/vm-cbt-restore-test.sh"; then
   workflow_status "Restore test passed; full and all cumulative incremental prefixes match their workload manifests"
+  workflow_success "Restored full and incremental workload prefixes verified"
 else
   restore_test_passed=false
+  printf '        ✗ Restore verification failed\n' >&2
   printf 'Restore test failed; the backup does not reconstruct the expected guest data.\n' >&2
 fi
 
@@ -175,6 +185,7 @@ else
 fi
 
 workflow_progress "Run report written to $report_path"
+workflow_success "Verification report written"
 
 if [[ "$overall_passed" != true ]]; then
   exit 1

@@ -97,6 +97,7 @@ fi
 workflow_action "Wait for tracker $TRACKER_NAME to retain prior checkpoint $previous_checkpoint"
 wait_for_checkpoint_in_tracker "$previous_checkpoint"
 workflow_status "Tracker is at the prior checkpoint for pass $incremental_pass"
+workflow_success "Prior checkpoint confirmed"
 
 vm_info_update \
   '.status = "incremental_running" |
@@ -189,6 +190,7 @@ before_records="$(workload_records_from_output "$before_guest_output")"
 expected_before_records="$(workload_manifest_current_records "$manifest_path" "$completed_passes")"
 workload_manifest_verify_inventory "$before_records" "$expected_before_records" "Guest before pass $incremental_pass"
 workflow_status "Baseline and $manifest_passes_completed prior incremental pass(es) match the manifest"
+workflow_success "Existing workload matches the saved manifest"
 
 incremental_plan="$(workload_file_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$incremental_pass")"
 modification_plan="$(workload_modified_file_plan "$incremental_pass")"
@@ -379,6 +381,7 @@ combined_total_bytes="$(workload_records_bytes "$expected_combined_records")"
 combined_manifest_sha256="$(workload_records_digest "$expected_combined_records")"
 guest_captured_at="$(workflow_timestamp)"
 workflow_progress "Incremental pass $incremental_pass payload: $incremental_file_count files added and $modified_file_count baseline file modified"
+workflow_success "Pass $incremental_pass workload updated · $incremental_file_count files added · $modified_file_count modified"
 workflow_action "Combined workload after pass $incremental_pass: ${combined_file_count} files, ${combined_total_bytes} bytes; manifest SHA-256: $combined_manifest_sha256"
 
 
@@ -395,16 +398,24 @@ sed \
   -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
   "$(manifest_path incremental-backup)" | oc_cmd apply -f - >/dev/null
 workflow_status "Incremental pass resources applied (PVC=$INCREMENTAL_BACKUP_PVC_NAME backup=$INCREMENTAL_BACKUP_NAME)"
+workflow_success "Incremental backup resources created"
 workflow_step "4/5 Wait for incremental pass $incremental_pass completion"
 workflow_action "oc wait vmbackup/$INCREMENTAL_BACKUP_NAME -n $NAMESPACE --for=condition=Done --timeout=20m"
+backup_wait_started=$SECONDS
 wait_for_backup_done "$INCREMENTAL_BACKUP_NAME" "$INCREMENTAL_BACKUP_PVC_NAME" Incremental "$previous_checkpoint"
+backup_wait_elapsed=$((SECONDS - backup_wait_started))
 incremental_backup_done_reason="$(get_backup_done_reason "$INCREMENTAL_BACKUP_NAME")"
 workflow_status "$INCREMENTAL_BACKUP_NAME reports Done=True (reason: $incremental_backup_done_reason)"
+case "$incremental_backup_done_reason" in
+  *warning*|*Warning*|*WARNING*) workflow_warning "$incremental_backup_done_reason" ;;
+esac
 if backup_done_reason_is_failure "$incremental_backup_done_reason"; then
+  printf '        ✗ Incremental backup failed\n' >&2
   printf '%s reached Done=True but the backup actually failed: %s\n' \
     "$INCREMENTAL_BACKUP_NAME" "$incremental_backup_done_reason" >&2
   exit 1
 fi
+workflow_success "Incremental backup completed · ${backup_wait_elapsed}s"
 
 workflow_step "5/5 Validate incremental pass $incremental_pass checkpoint"
 incremental_backup_type="$(get_backup_type "$INCREMENTAL_BACKUP_NAME")"
@@ -484,3 +495,4 @@ write_report_fragment "incremental-pass-$pass_suffix" "$(jq -n \
     evidence: {vm_backup_status: {incrementals: {($status_evidence_key):
       (if $status_evidence_path == "" then null else $status_evidence_path end)}}}}')"
 workflow_status "Incremental pass $incremental_pass/$stored_passes_total recorded at checkpoint $incremental_checkpoint"
+workflow_success "Pass $incremental_pass checkpoint recorded"

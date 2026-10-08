@@ -73,6 +73,7 @@ failed_backup=0
 
 workflow_step "Watching $NAMESPACE for run $RUN_ID"
 workflow_progress "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
+workflow_success "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
 
 # Prints "<label> <name> started at <ts>" once creationTimestamp is first seen,
 # then "<label> <name> done in <duration>s (reason: <reason>)" once the Done
@@ -128,6 +129,7 @@ poll_backup() {
       "$label" "$backup_name" "$duration_seconds" "$done_time" "$created" "$done_reason" >&2
   else
     workflow_progress "$label ($backup_name) done in ${duration_seconds}s [measured: lastTransitionTime $done_time - creationTimestamp $created] (reason: $done_reason)"
+    workflow_success "$label ($backup_name) done in ${duration_seconds}s"
   fi
   return 0
 }
