@@ -1,6 +1,6 @@
 # KubeVirt CBT VM backup workflow
 
-This guide explains the repository's `make e2e` demonstration: create one VM, write a deterministic baseline file set and manifest, take one full backup, then add new files and take the configured number of sequential incremental backups on that same VM. The workflow verifies every checkpoint and restored workload prefix.
+This guide explains the repository's `make e2e` demonstration: create one VM, write a deterministic baseline file set and manifest, take one full backup, then add new files and modify one baseline file per pass before taking the configured sequential incremental backups on that same VM. The workflow verifies every checkpoint and restored workload prefix.
 For the component/control-plane, network, storage, checkpoint, and failure-boundary model behind the workflow, see the [modular CBT knowledgebase](cbt/README.md), starting with [`cbt-architecture.md`](cbt-architecture.md). The [chaos-test design](cbt/10-chaos-test-design.md) page maps lifecycle boundaries to injection and verification points.
 
 ## What the demo proves
@@ -27,8 +27,8 @@ The target server needs:
 
 - OpenShift Virtualization/KubeVirt with the `backup.kubevirt.io/v1alpha1` backup APIs.
 - The `IncrementalBackup` feature gate.
-- The `ocs-storagecluster-ceph-rbd` virtualization storage class for the default `MANIFEST_VARIANT=odf` (see `docs/odf-setup-plan.md`), or `cbt-demo-hpp` with `MANIFEST_VARIANT=default`/`large`. RHEL 9 maps either backend to large manifests with an 80Gi root/full-backup request.
-- Outbound HTTPS access from the cluster's CDI importer to `cloud.debian.org` for the first Debian golden-image import. RHEL 9 instead requires the cluster-provided `rhel9` DataSource and a `Bound` source PVC in `openshift-virtualization-os-images`.
+- The default `rhel9`/`large-odf` profile requires the cluster-provided RHEL 9 DataSource and a `Bound` source PVC in `openshift-virtualization-os-images`, plus the `ocs-storagecluster-ceph-rbd` storage class.
+- Debian overrides require `cbt-demo-hpp` or an ODF storage class; the cluster's CDI importer needs outbound HTTPS to `cloud.debian.org` only for the first Debian golden-image import.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for the per-run workload manifest, plus access to the local kubeconfig.
 - For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
 
@@ -71,7 +71,7 @@ make e2e TYPE=full VM=vm-foo GUEST_INCREMENTAL_PASSES=3
 make e2e TYPE=incremental VM=vm-foo  # repeat three times
 ```
 
-The staged commands use the profile saved in `report/vms/foo/vm-info.json`;
+The staged commands use the profile saved in `runs/foo/run.json`;
 the third planned pass verifies the checkpoint chain and restore prefixes.
 After the lifecycle is complete, add exactly one pass to the same VM:
 
@@ -90,15 +90,17 @@ a pass.
 Each step can also be run separately:
 
 ```sh
+make preflight
 make vm-setup
-make vm-backup
-make vm-cbt-backup
-make vm-cbt-verify
+# Replace vm-my-run with the run VM name printed during setup.
+make vm-backup VM=vm-my-run
+make vm-cbt-backup VM=vm-my-run
+make vm-cbt-verify VM=vm-my-run
 ```
 
-Workflow logs use UTC timestamps on numbered steps, actions, successes, and failures. `make e2e` prints elapsed seconds for preflight and each top-level target; `vm-cbt-demo` separately times setup/baseline workload, the full backup, each incremental pass, and verification/restore. The E2E summary reports total elapsed time including preflight, setup, all backup passes, and restore verification.
+The `logs/workflow.log` file records UTC timestamps for numbered steps, actions, successes, and failures. Terminal output keeps the top-level Make stages and status changes; routine substeps are recorded to the run log. `make e2e` prints elapsed seconds for preflight and each top-level target; `vm-cbt-demo` separately times setup/baseline workload, the full backup, each incremental pass, and verification/restore.
 
-During full and incremental backup waits, logs show observed backup-condition and PVC-state changes, matching VM backup-status timestamps/results, and a 30-second heartbeat while the state is unchanged. `DEBUG=true` adds detailed condition and VM backup-status snapshots. The Backup API exposes no copied-byte counter, so logs report phase and elapsed time rather than a percentage. `Done=True` still requires checking its reason, type, checkpoint, and tracker.
+During backup waits, terminal output shows observed backup-condition and PVC-state changes plus a 30-second heartbeat when state is unchanged. `DEBUG=true` prints routine steps/actions and detailed condition/VM backup-status snapshots. The Backup API exposes no copied-byte counter, so logs report phase and elapsed time rather than a percentage. `Done=True` still requires checking its reason, type, checkpoint, and tracker.
 
 After a successful workflow with all planned incrementals complete, the automatic cluster-read-only monitor reports API-object creation-to-Done durations for the full and every planned incremental backup; these include controller/PVC work, not only QEMU's data-copy interval. It also persists `created_at`, `done_at`, `duration_seconds`, and `done_reason` under `backup_timings` in the report, VM lifecycle JSON, and a `backup-timings.json` fragment for report regeneration. `TYPE=full` and non-final `TYPE=incremental` defer automatic timing collection until the plan is complete, so the staged command exits instead of waiting for backups created by later commands. A separate live monitor started with `make monitor VM=vm-<run-id>` waits for every planned backup object to appear; run it alongside the workflow or after all planned passes are complete.
 
@@ -113,10 +115,10 @@ After a successful workflow with all planned incrementals complete, the automati
 3. `TYPE=all` generates a fresh run ID (or uses the supplied `NAME`); staged `TYPE=full VM=vm-<run-id>` starts the specified lifecycle. It applies the selected VM manifest and creates the VM, root disk, and SSH service with run ownership labels.
 4. Creates a root `DataVolume` from the profile's DataSource. Debian uses the selected standard size (5Gi on `cbt-demo-hpp` or 6Gi on ODF). RHEL 9 maps HPP and ODF settings to large manifests with an 80Gi root DataVolume request, sized to clone the larger platform source; CDI may expand the resulting ODF PVC request. The target disk must still be at least as large as the source PVC. The VM has one vCPU, 2 GiB memory for the small Debian profile or 4 GiB for RHEL 9, pod networking, and cloud-init SSH access for `cbt-demo`.
 5. Labels the VM `cbt-demo=enabled`, waits for the VM `Ready` condition, and checks `.status.changedBlockTracking.state == Enabled`.
-6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file, logs the baseline file count and payload bytes, and records the file list, sizes, and hashes in `report/<REPORT_ID>/workload-manifest.json` before the full backup.
-7. Initializes `report/vms/<run-id>/vm-info.json` with the report ID, workload settings, configured pass count, and lifecycle status. Later stages update this record atomically.
+6. Connects through a local `oc port-forward`, creates `GUEST_BASE_FILE_COUNT` (default 8) deterministic files in `/home/cbt-demo/cbt-workload`, with each size selected reproducibly from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range (defaults 4–12 MiB). It hashes every file, logs the baseline file count and payload bytes, and records the file list, sizes, and hashes in `runs/<run-id>/workload-manifest.json` before the full backup.
+7. Initializes `runs/<run-id>/run.json` with the VM UID, workload/profile configuration, planned pass count, and lifecycle status. Later stages update the lifecycle fields atomically without changing the saved VM identity or configuration.
 
-One-shot and staged commands resolve the same run ID and per-lifecycle report. In staged use, `TYPE=incremental VM=vm-<run-id>` selects the existing VM and loads its profile and workload settings from `report/vms/<run-id>/vm-info.json`; it does not recreate the VM or baseline workload. `make clean-all` removes transient `state/` but retains per-VM lifecycle records as `cleaned` and retains run reports.
+One-shot and staged commands select the same run directory. In staged use, `TYPE=incremental VM=vm-<run-id>` selects the existing lifecycle and loads its profile and workload settings from `runs/<run-id>/run.json`; it does not recreate the VM or baseline workload. `make clean-all` removes the transient checkout lock under `state/` but retains each run directory with its lifecycle status marked `cleaned`.
 
 `guest_ssh` uses a temporary randomized local port-forward, retries VM startup,
 and cleans up the port-forward when the command finishes.
@@ -136,11 +138,11 @@ All three are labeled with the run's ownership labels. The script waits for the 
 
 1. Confirms the full backup completed as `Full`.
 2. Confirms the tracker still holds the latest successful checkpoint (the full checkpoint for pass 1, the preceding incremental checkpoint thereafter).
-3. Adds `GUEST_INCREMENTAL_FILE_COUNT` (default 4) unique deterministic files for the next pass; verifies the baseline and earlier passes, then appends the new files and cumulative totals to the workload manifest.
+3. Adds `GUEST_INCREMENTAL_FILE_COUNT` (default 4) unique deterministic files and modifies one deterministic baseline file for the next pass; verifies the complete guest inventory against the saved manifest, then appends added and modified file hashes plus cumulative totals.
 4. Creates pass-specific backup and output PVC names (`vm-incremental-<run-id>-pNN` and `vm-incremental-pvc-<run-id>-pNN`) using the same tracker.
 5. Waits for `Done=True`, requires `.status.type == Incremental`, verifies the new checkpoint is distinct and recorded by the tracker, then advances lifecycle state only after success.
 
-File names, sizes, and bytes are stable across retries. Existing incremental files are retained only if their sizes and hashes match the deterministic payload; missing files are created, and unexpected or changed files fail before the incremental backup.
+File names, sizes, and bytes are stable across retries. Prior files must match their latest recorded hashes; each pass deliberately rewrites one baseline file with deterministic pass-specific content. Missing files are created, and unexpected or changed unrelated files fail before the incremental backup.
 
 **Extend a completed lifecycle.** For a completed three-pass VM, add pass four
 without recreating the VM or full backup:
@@ -156,7 +158,9 @@ all cumulative prefixes. Repeating the completed target creates no new pass.
 File counts, size range, OS, and storage variant remain fixed.
 **100/50-file run profile.** The normal defaults remain 8 baseline files, 4 incremental files, and a 4–12 MiB range. For a larger per-run payload, pass `GUEST_BASE_FILE_COUNT=100 GUEST_INCREMENTAL_FILE_COUNT=50 GUEST_FILE_SIZE_MIN_MIB=5 GUEST_FILE_SIZE_MAX_MIB=10` to `make e2e`. The deterministic filename assignment totals 739 MiB baseline and 380 MiB incremental (1,119 MiB combined). The run manifest and console output record the exact counts and payload bytes.
 
-**ODF-backed variant (default).** `make e2e` defaults to `MANIFEST_VARIANT=odf` (see `.env.example`), which uses `manifests/vm-odf.yaml`, `manifests/full-backup-odf.yaml`, and `manifests/incremental-backup-odf.yaml` — same structure as the plain manifests apart from `storageClassName: ocs-storagecluster-ceph-rbd` instead of `cbt-demo-hpp`, and larger PVC sizing (6Gi/6Gi/4Gi vs. the plain 5Gi/5Gi/3Gi). The larger sizing was found necessary by running `make e2e MANIFEST_VARIANT=odf` against the target ODF cluster: CDI's clone-time filesystem-overhead reservation inflates the root disk past the nominal 5Gi, and Ceph RBD enforces PVC capacity strictly (unlike `cbt-demo-hpp`, which silently tolerates the same overcommit), so a flat 5Gi backup-target PVC failed the full backup with `Backup has failed: No space left on device`. Requires ODF/Ceph deployed on the cluster first (see `docs/odf-setup-plan.md`); it does not affect the golden image cache, which stays on `cbt-demo-hpp` regardless of variant. Set `MANIFEST_VARIANT=default` to fall back to plain `cbt-demo-hpp` manifests on clusters without ODF.
+**Default RHEL 9 large-ODF profile.** With no overrides, `make e2e` uses the cluster-provided `rhel9` DataSource and ODF large manifests. It requests an 80Gi root/full disk and 30Gi per incremental pass. Check available ODF capacity before multi-pass runs.
+
+**Small Debian ODF variant.** For Debian on ODF, set `VM_OS=debian MANIFEST_VARIANT=odf`. It uses the 6Gi/6Gi/4Gi manifests. The margin is required because CDI clone-time filesystem overhead can inflate the root PVC and Ceph RBD enforces PVC capacity strictly; a flat 5Gi backup target failed with `No space left on device`.
 
 **Large-disk variant.** Setting `MANIFEST_VARIANT=large` swaps in `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp`. `MANIFEST_VARIANT=large-odf` uses `manifests/vm-large-odf.yaml` (48Gi), `manifests/full-backup-large-odf.yaml` (48Gi), and `manifests/incremental-backup-large-odf.yaml` (30Gi) on ODF/Ceph. Those are the Debian large-profile requests. RHEL 9 resolves the selected backend's large root and full-backup requests to 80Gi; incremental PVC requests remain 25Gi on HPP or 30Gi on ODF.
 
@@ -199,7 +203,9 @@ It prints `CBT verification passed` only when every configured pass is complete 
 
 This is the step that actually proves the backups contain correct, restorable data, rather than only checking backup/PVC status:
 
-1. Reads and validates `report/<REPORT_ID>/workload-manifest.json`, including the baseline, each incremental pass, and cumulative manifest hashes.
+The verifier waits up to 30 minutes for a terminal pod phase before failing. A timeout records the current pod phase and preserves the pod logs in the run directory; a pod that reaches `Failed` remains an immediate failure.
+
+1. Reads and validates `runs/<run-id>/workload-manifest.json`, including the baseline, each incremental pass, and cumulative manifest hashes.
 2. Confirms the full backup PVC and every pass-specific incremental PVC are `Bound`.
 3. Applies the OS-appropriate restore pod with all backup PVCs mounted read-only, then:
    - Converts the full backup's qcow2 to raw and verifies the baseline file set.
@@ -212,18 +218,18 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 
 ## Run report
 
-`vm-setup.sh` generates a `REPORT_ID` (`run_<UTC timestamp>`, with a run-ID suffix if needed) and stores it in both the transient state and `report/vms/<run-id>/vm-info.json`. Every later stage resolves that lifecycle's report ID from its VM info record and appends JSON under `report/<REPORT_ID>/fragments/`.
+`vm-setup.sh` creates `runs/<run-id>/` and stores the VM UID and saved profile in `run.json`. Later stages append JSON fragments under `runs/<run-id>/fragments/`; the workload manifest, final report, workflow trace, diagnostic evidence, and restore artifacts stay with that run.
 
 - `vm-setup.sh` → `setup.json`: namespace, VM profile, workload directory/range, baseline count/bytes/hash, and planned pass count.
-- `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint and its output PVC request/capacity.
-- Each `vm-cbt-backup.sh` invocation → `incremental-pass-NN.json`: pass number, files/bytes/hash added, cumulative workload totals/hash, backup name/type/checkpoint, output PVC, and available API status fields.
+- `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint and output PVC request/capacity. If matching VM `backupStatus` is available, its snapshot is stored under `evidence/` and referenced from the report.
+- Each `vm-cbt-backup.sh` invocation → `incremental-pass-NN.json`: pass number, files/bytes/hash added, modified-file count/hash, cumulative workload totals/hash, backup name/type/checkpoint, and output PVC. When the VM exposes a matching `backupStatus`, its snapshot is saved under `runs/<run-id>/evidence/` and its path is referenced from the report; otherwise the evidence path is `null`.
 - `vm-cbt-verify.sh` → `verify.json`: tracker and final checkpoint plus CBT/checkpoint checks; it collects the VM's `virt-launcher` log.
 - `vm-cbt-restore-test.sh` → `restore-test.json`: PVC-bound and full/prefix file-count, payload-byte, and manifest-hash checks; the restore pod log is saved alongside the report.
 
-`vm-cbt-verify.sh` merges the fragments into `report/<REPORT_ID>/report.json`, concatenates pass records and check arrays, adds `run_id`/`report_id`, and sets `verification.overall_passed` from all API and restore checks. `report/vms/<run-id>/vm-info.json` is the resumable lifecycle index; `make clean-all` marks it `cleaned` while preserving it and all run reports.
+`vm-cbt-verify.sh` merges the fragments into `runs/<run-id>/report.json`, concatenates pass records and check arrays, adds `run_id`, and sets `verification.overall_passed` from all API and restore checks. Available VM backup-status snapshots are kept separately under `evidence/`; `.logs.workflow` points to the complete action trace at `logs/workflow.log`. `runs/<run-id>/run.json` is the resumable lifecycle index; `make clean-all` marks it `cleaned` while preserving the run directory and report.
 ## Resources and names
 
-All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental` and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. Resource names derive from the run ID, so different runs coexist without collisions:
+All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental` and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. `make e2e-incremental VM=vm-<run-id>` is the semantic alias for `TYPE=incremental`. Resource names derive from the run ID, so different runs coexist without collisions:
 
 | Resource | Name | Purpose |
 |---|---|---|
@@ -237,7 +243,7 @@ All workflow objects live in the shared, globally configured `$NAMESPACE` (defau
 | PVC | `vm-incremental-pvc-<run-id>-pNN` | Retained output PVC for that pass |
 | Pod (short-lived) | `vm-restore-verify-<run-id>` | Reconstructs and reads the guest disk during `vm-cbt-restore-test` |
 
-Every resource above is labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`; those labels, not the namespace, are the ownership mechanism `clean-all` uses. The VM lifecycle state and report ID live under `report/vms/<run-id>/`; the incremental backup and PVC names use `p01`, `p02`, … suffixes. `make clean-all` reclaims every pass PVC; until cleanup, provisioned backup storage grows with the pass count.
+Every resource above is labeled `app.kubernetes.io/managed-by=virt-cbt-lab` and `virt-cbt-lab/run-id=<run-id>`; those labels, not the namespace, are the ownership mechanism `clean-all` uses. The VM UID, lifecycle state, workload manifest, report, and evidence live under `runs/<run-id>/`; incremental backup and PVC names use `p01`, `p02`, … suffixes. `make clean-all` reclaims every pass PVC; until cleanup, provisioned backup storage grows with the pass count.
 
 The Debian golden image (`DataVolume`/`DataSource` `debian-golden`/`debian`) lives in namespace `vm-cbt-images`, deliberately outside `$NAMESPACE`, so it survives `make clean-all` and is downloaded only once. RHEL 9 uses the cluster-managed `rhel9` DataSource in `openshift-virtualization-os-images`; the workflow waits for its backing PVC and leaves it unchanged.
 
@@ -249,7 +255,7 @@ make e2e
 make e2e
 ```
 
-Each `TYPE=full` invocation creates one VM and full checkpoint; each `TYPE=incremental` invocation adds exactly one pass using that VM's saved state. Commands must run sequentially within a checkout. The E2E lock prevents concurrent lifecycle commands from cross-wiring state, and `report/vms/<run-id>/vm-info.json` keeps each staged lifecycle attached to its own report. Run `make clean-all` any time to remove every run's resources from the namespace.
+Each `TYPE=full` invocation creates one VM and full checkpoint; each `TYPE=incremental` invocation adds exactly one pass using that VM's saved state. Commands must run sequentially within a checkout. The E2E lock prevents concurrent lifecycle commands from cross-wiring state, and `runs/<run-id>/run.json` keeps each staged lifecycle attached to its VM identity and report. Run `make clean-all` any time to remove every run's resources from the namespace.
 
 ## Cleanup
 
@@ -257,7 +263,7 @@ Each `TYPE=full` invocation creates one VM and full checkpoint; each `TYPE=incre
 make clean-all
 ```
 
-`scripts/clean-all.sh` does **not** delete the namespace. It deletes run-labeled VMs, DataVolumes, backups, trackers, PVCs, services, pods, and Windows OOBE Secrets from `$NAMESPACE`, waits for managed PV reclamation, removes only the workflow-owned guest SSH key, and clears transient `state/`. It marks lifecycle records under `report/vms/` as `cleaned`; those records, per-run reports, and shared golden images remain. Unrelated namespace resources are preserved.
+`scripts/clean-all.sh` does **not** delete the namespace. It deletes run-labeled VMs, DataVolumes, backups, trackers, PVCs, services, pods, and Windows OOBE Secrets from `$NAMESPACE`, waits for managed PV reclamation, removes only the workflow-owned guest SSH key, and clears the transient `state/` lock. It marks lifecycle records under `runs/` as `cleaned`; those records, per-run reports, and shared golden images remain. Unrelated namespace resources are preserved.
 
 ## RHEL 9 VM setup and CBT profile
 
@@ -322,5 +328,5 @@ After the single-VM setup is validated, run `make e2e VM_OS=windows NAME=windows
 - Debian golden-image import stuck or failing: check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
 - RHEL 9 DataSource missing or not ready: check `oc get datasource rhel9 -n openshift-virtualization-os-images` and the referenced PVC's phase; preflight reports either condition before creating demo resources.
 - PVC remains pending: verify `cbt-demo-hpp` is available and can provision local demo volumes.
-- `vm-incremental-<run-id>-pNN` already exists: the selected pass-specific backup name conflicts with an existing resource. Check `next_incremental_pass` in `report/vms/<run-id>/vm-info.json`; do not reuse a completed pass name.
+- `vm-incremental-<run-id>-pNN` already exists: the selected pass-specific backup name conflicts with an existing resource. Check `next_incremental_pass` in `runs/<run-id>/run.json`; do not reuse a completed pass name.
 - Incremental type is not `Incremental`: check that the full checkpoint reached the tracker and inspect the `VirtualMachineBackup` conditions and tracker status.

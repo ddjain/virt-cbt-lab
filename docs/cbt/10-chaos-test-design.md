@@ -13,7 +13,7 @@ A test passes only when both claims are checked. `Done=True`, an event, or an `I
 
 ## Before injecting failure
 
-1. Use one repository checkout per workflow. The files under `state/` and `report/` are shared.
+1. Use a unique immutable run ID for each workflow. Per-run artifacts live under `runs/<run-id>/`; the `make e2e` wrapper serializes its own invocations, and direct lifecycle commands for one VM must remain sequential.
 2. Use a deterministic run name and record `RUN_ID`, VM, launcher pod, tracker, full backup, incremental backup, and PVC names.
 3. Prefer `MANIFEST_VARIANT=large` with increased `GUEST_BASE_FILE_COUNT`, `GUEST_INCREMENTAL_FILE_COUNT`, or `GUEST_FILE_SIZE_MIN_MIB`/`GUEST_FILE_SIZE_MAX_MIB` when a scenario needs a sustained copy window. The old single-file timing measurements do not predict this workload; confirm the actual window with `scripts/monitor.sh`. PVC size alone is not a timing control.
 4. Confirm the VM reports `changedBlockTracking.state=Enabled`, the VMI is `Running`, and `AgentConnected=True` before testing guest-consistency behavior.

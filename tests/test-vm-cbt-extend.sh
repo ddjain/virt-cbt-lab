@@ -9,6 +9,7 @@ TEST_REPO_DIR="$TEST_TMP/repo"
 mkdir -p "$FAKE_BIN" "$TEST_REPO_DIR/scripts"
 cp "$SOURCE_ROOT_DIR/scripts/common.sh" "$TEST_REPO_DIR/scripts/common.sh"
 cp "$SOURCE_ROOT_DIR/scripts/workload-manifest.sh" "$TEST_REPO_DIR/scripts/workload-manifest.sh"
+cp "$SOURCE_ROOT_DIR/scripts/run-id.sh" "$TEST_REPO_DIR/scripts/run-id.sh"
 cp "$SOURCE_ROOT_DIR/scripts/vm-cbt-extend.sh" "$TEST_REPO_DIR/scripts/vm-cbt-extend.sh"
 
 cat > "$FAKE_BIN/oc" <<'FAKE_OC'
@@ -33,7 +34,7 @@ fi
 case "$resource" in
   vm)
     [[ "$output" == json ]] || exit 91
-    printf '{"status":{"ready":%s,"changedBlockTracking":{"state":"Enabled"}}}\n' "${TEST_VM_READY:-true}"
+    printf '{"metadata":{"uid":"%s"},"status":{"ready":%s,"changedBlockTracking":{"state":"Enabled"}}}\n' "${TEST_VM_UID:-test-vm-uid}" "${TEST_VM_READY:-true}"
     ;;
   vmbackup)
     if [[ "$name" == "${TEST_FULL_BACKUP_NAME:-}" ]]; then
@@ -76,7 +77,6 @@ PATH="$FAKE_BIN:$PATH"
 export PATH
 unset KUBECONFIG KUBECONFIG_PATH || true
 
-export REPORT_ROOT_DIR="$TEST_REPO_DIR/report"
 export VM_OS=debian
 export NAMESPACE=vm-cbt-demo
 export GUEST_BASE_FILE_COUNT=2
@@ -91,10 +91,10 @@ source "$TEST_REPO_DIR/scripts/workload-manifest.sh"
 
 RUN_ID=extension-state-transition-test
 VM_NAME="vm-$RUN_ID"
-REPORT_ID=run_test_extension_state_transition
-REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
-mkdir -p "$REPORT_DIR/fragments"
+RUNS_ROOT_DIR="$TEST_REPO_DIR/runs"
+REPORT_DIR="$RUNS_ROOT_DIR/$RUN_ID"
 set_resource_names
+mkdir -p "$REPORT_DIR/fragments"
 
 records_from_plan() {
   local phase="$1" count="$2" pass="${3:-}" plan name size_bytes sha256
@@ -109,8 +109,16 @@ records_from_plan() {
 baseline_records="$(workload_records_from_output "$(records_from_plan baseline "$GUEST_BASE_FILE_COUNT")")"
 workload_manifest_initialize "$baseline_records"
 pass_one_records="$(workload_records_from_output "$(records_from_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" 1)")"
-workload_manifest_append_incremental 1 "$pass_one_records" "2026-01-01T00:00:01Z"
-vm_info_initialize
+pass_one_modification_plan="$(workload_modified_file_plan 1)"
+IFS='|' read -r pass_one_modified_name pass_one_modified_size <<< "$pass_one_modification_plan"
+pass_one_modified_hash="$(workload_modified_file_sha256 "$pass_one_modified_name" 1 "$pass_one_modified_size")"
+pass_one_modified_records="$(jq -cn \
+  --arg path "$pass_one_modified_name" \
+  --argjson size "$pass_one_modified_size" \
+  --arg hash "$pass_one_modified_hash" \
+  '[{path:$path,phase:"baseline",pass:0,size_bytes:$size,sha256:$hash}]')"
+workload_manifest_append_incremental 1 "$pass_one_records" "$pass_one_modified_records" "2026-01-01T00:00:01Z"
+vm_info_initialize "test-vm-uid"
 
 TEST_FULL_BACKUP_NAME="$FULL_BACKUP_NAME"
 TEST_INCREMENTAL_BACKUP_NAME="$(incremental_backup_name_for_pass 1)"
@@ -140,10 +148,10 @@ run_real_extension() {
   env \
     PATH="$FAKE_BIN:$PATH" \
     RUN_ID="$RUN_ID" VM="$VM_NAME" EXTEND_TO_PASS=2 \
-    REPORT_ROOT_DIR="$REPORT_ROOT_DIR" REPORT_ID="$REPORT_ID" \
-    VM_OS=debian NAMESPACE=vm-cbt-demo MANIFEST_VARIANT=default \
+    VM_OS=rhel9 NAMESPACE=wrong-namespace MANIFEST_VARIANT=large-odf \
     GUEST_BASE_FILE_COUNT=2 GUEST_INCREMENTAL_FILE_COUNT=2 GUEST_INCREMENTAL_PASSES=1 \
     GUEST_FILE_SIZE_MIN_MIB=1 GUEST_FILE_SIZE_MAX_MIB=2 \
+    TEST_VM_UID="${TEST_VM_UID:-test-vm-uid}" \
     TEST_VM_READY="${TEST_VM_READY:-true}" \
     TEST_FULL_BACKUP_NAME="$TEST_FULL_BACKUP_NAME" \
     TEST_INCREMENTAL_BACKUP_NAME="$TEST_INCREMENTAL_BACKUP_NAME" \
@@ -151,6 +159,23 @@ run_real_extension() {
     TEST_INCREMENTAL_CHECKPOINT="$TEST_INCREMENTAL_CHECKPOINT" \
     bash "$ROOT_DIR/scripts/vm-cbt-extend.sh" > "$log_path" 2>&1
 }
+
+TEST_VM_UID=wrong-vm-uid
+state_before_uid_mismatch="$(jq -c . "$VM_INFO_PATH")"
+if run_real_extension "$TEST_TMP/vm-identity-mismatch.log"; then
+  printf 'Extension unexpectedly accepted a VM whose UID differs from run.json.\n' >&2
+  exit 1
+else
+  identity_mismatch_status=$?
+fi
+[[ "$identity_mismatch_status" == 1 ]]
+identity_mismatch_output="$(cat "$TEST_TMP/vm-identity-mismatch.log")"
+if [[ "$identity_mismatch_output" != *'VM identity mismatch for run extension-state-transition-test'* ]]; then
+  printf 'VM UID mismatch was not reported clearly.\n%s\n' "$identity_mismatch_output" >&2
+  exit 1
+fi
+[[ "$(jq -c . "$VM_INFO_PATH")" == "$state_before_uid_mismatch" ]]
+TEST_VM_UID=test-vm-uid
 
 run_real_extension "$TEST_TMP/extension.log"
 jq -e '

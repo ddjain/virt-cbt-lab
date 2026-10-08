@@ -1,6 +1,6 @@
 # Restore verification: proving the CBT backups contain the expected guest files
 
-This guide describes the data-plane assertion in `make vm-cbt-restore-test`. It reconstructs the full-only disk and every cumulative full-plus-incremental prefix, mounts each read-only, and compares the guest workload directory against the run's manifest. Backup API status and PVC binding alone are not restore proof.
+This guide describes the data-plane assertion in `make vm-cbt-restore-test`. It reconstructs the full-only disk and every cumulative full-plus-incremental prefix, mounts each read-only, and compares the guest workload directory against the run's manifest. Each incremental prefix contains both newly added files and one deterministically modified baseline file. Backup API status and PVC binding alone are not restore proof.
 
 ## Why this uses a custom restore path
 
@@ -20,9 +20,9 @@ The CBT workload is a dedicated, flat guest directory:
 - Debian and RHEL 9: `/home/cbt-demo/cbt-workload`
 - Windows: `C:\cbt-data\workload`
 
-Setup creates `GUEST_BASE_FILE_COUNT` baseline files before the full backup. Each incremental pass adds `GUEST_INCREMENTAL_FILE_COUNT` new files. Every file has a deterministic name and content, and a reproducibly selected whole-MiB size from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range. Defaults are 8 baseline files, 4 files per pass, and a 4–12 MiB size range.
+Setup creates `GUEST_BASE_FILE_COUNT` baseline files before the full backup. Each incremental pass adds `GUEST_INCREMENTAL_FILE_COUNT` new files and deterministically modifies one existing baseline file. Every file has a deterministic name and content, and a reproducibly selected whole-MiB size from the inclusive `GUEST_FILE_SIZE_MIN_MIB`–`GUEST_FILE_SIZE_MAX_MIB` range. Defaults are 8 baseline files, 4 additions per pass, one modified baseline file per pass, and a 4–12 MiB size range.
 
-Each run records `report/<REPORT_ID>/workload-manifest.json`. It includes the guest directory, size range, baseline entries, every incremental addition, per-file sizes and SHA-256 hashes, payload totals, and the baseline plus cumulative-prefix manifest hashes. The manifest is kept outside the guest workload directory and survives `make clean-all`.
+Each run records `runs/<run-id>/workload-manifest.json`. It includes the guest directory, size range, baseline entries, every incremental addition and per-pass baseline modification, per-file sizes and SHA-256 hashes, payload totals, and the baseline plus cumulative-prefix manifest hashes. The manifest is kept outside the guest workload directory and survives `make clean-all`.
 
 A canonical manifest hash is SHA-256 over sorted rows of:
 
@@ -39,12 +39,12 @@ The incremental PVC contains only its disk delta; it is not a standalone cumulat
 ```text
 VM workload directory
   baseline files (N) -> full checkpoint -> full.qcow2
-  pass 01 files (M1) -> incremental checkpoint 01 -> overlay based on full
-  pass 02 files (M2) -> incremental checkpoint 02 -> overlay based on pass 01
+  pass 01: add M1 files + modify one baseline file -> overlay based on full
+  pass 02: add M2 files + modify one baseline file -> overlay based on pass 01
   ...
 
 scripts/vm-cbt-restore-test.sh
-  validate report/<REPORT_ID>/workload-manifest.json
+  validate runs/<run-id>/workload-manifest.json
   confirm the full and every pass PVC are Bound
   convert full qcow2 -> full.raw; validate baseline
   for each pass in order:
@@ -55,55 +55,53 @@ scripts/vm-cbt-restore-test.sh
 | Restore image | Expected file count | Expected manifest |
 |---|---:|---|
 | Full-only | N | `baseline.manifest_sha256` |
-| Prefix through pass k | N + sum of `files_added` for passes 1..k | The `.incrementals[]` entry whose `pass` is k |
+| Prefix through pass k | N + sum of `files_added` for passes 1..k | The `.incrementals[]` entry whose `pass` is k; its digest includes all baseline modifications through k |
 
-A mismatch fails the workflow and is added to `verification.checks` in the report. The checks include expected and observed values. The restore pod log is retained at `report/<REPORT_ID>/logs/restore-verify-pod.log`.
+A mismatch fails the workflow and is added to `verification.checks` in the report. The checks include expected and observed values. The restore pod log is retained at `runs/<run-id>/logs/restore-verify-pod.log`.
 
 ## Reproduce and inspect a run
 
-Run the workflow stages, or use `make e2e` to run the sequence after preflight:
+Run the full workflow or execute a lifecycle in stages:
 
 ```sh
-make vm-setup
-make vm-backup
-make vm-cbt-backup
-make vm-cbt-verify
+make e2e TYPE=full NAME=restore-demo GUEST_INCREMENTAL_PASSES=3
+make e2e-incremental VM=vm-restore-demo  # repeat three times
 ```
 
-Inspect the baseline and each cumulative pass summary:
+Inspect the baseline, additions, modifications, and each cumulative pass:
 
 ```sh
-report_id="$(cat state/report-id)"
-manifest="report/$report_id/workload-manifest.json"
+manifest="runs/restore-demo/workload-manifest.json"
 jq '{guest_directory, size_range_mib,
      baseline: {file_count: .baseline.file_count,
                 total_payload_bytes: .baseline.total_payload_bytes,
                 manifest_sha256: .baseline.manifest_sha256},
      incrementals: [.incrementals[] |
-       {pass: .pass, files_added: .files_added,
-        added_payload_bytes: .added_payload_bytes,
-        total_file_count: .total_file_count,
-        total_payload_bytes: .total_payload_bytes,
-        manifest_sha256: .manifest_sha256}]}' "$manifest"
+       {pass, files_added, modified_paths: [.files_modified[].path],
+        added_payload_bytes, modified_manifest_sha256,
+        total_file_count, total_payload_bytes, manifest_sha256}]}' "$manifest"
 ```
 
-Independently confirm the backup objects and destination PVCs:
+
+Independently confirm the backup objects and destination PVCs for that run:
 
 ```sh
+vm=vm-restore-demo
+run_id="${vm#vm-}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
-RUN_ID="$(cat state/run-id)"
-oc get vmbackup -n "$NAMESPACE" -l "virt-cbt-lab/run-id=$RUN_ID" \
+oc get vmbackup -n "$NAMESPACE" -l "virt-cbt-lab/run-id=$run_id" \
   -o custom-columns=NAME:.metadata.name,TYPE:.status.type,DONE:'.status.conditions[?(@.type=="Done")].status',CHECKPOINT:.status.checkpointName,PVC:.spec.pvcName
-oc get pvc -n "$NAMESPACE" -l "virt-cbt-lab/run-id=$RUN_ID" \
+oc get pvc -n "$NAMESPACE" -l "virt-cbt-lab/run-id=$run_id" \
   -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,CAPACITY:.status.capacity.storage
 ```
 
 For a direct restore-only run:
 
 ```sh
-make vm-cbt-restore-test
-oc logs "pod/vm-restore-verify-$RUN_ID" -n "$NAMESPACE"
+make vm-cbt-restore-test VM="$vm"
+oc logs "pod/vm-restore-verify-$run_id" -n "$NAMESPACE"
 ```
+
 
 The pod emits these fields for the full image and every cumulative incremental prefix:
 
@@ -120,7 +118,7 @@ PASS_NN_WORKLOAD_PAYLOAD_BYTES=...
 PASS_NN_WORKLOAD_MANIFEST_SHA256=...
 ```
 
-Compare the full fields with `.baseline` and each `PASS_NN` set with the matching `.incrementals[]` entry. The script records every comparison in `report/<REPORT_ID>/fragments/restore-test.json`, which is merged into `report/<REPORT_ID>/report.json` by `make vm-cbt-verify`.
+Compare the full fields with `.baseline` and each `PASS_NN` set with the matching `.incrementals[]` entry, including deterministic modifications. The script records every comparison in `runs/<run-id>/fragments/restore-test.json`, which is merged into `runs/<run-id>/report.json` by `make vm-cbt-verify`.
 
 The restore pod is deleted automatically on success and failure. To rebuild the helper image when needed:
 
@@ -133,7 +131,7 @@ Set `RESTORE_HELPER_IMAGE` in `.env` to the pushed image. The image provides `qe
 
 ## What this proves and what it does not
 
-**Proven:** the full backup reconstructs the exact baseline file set, and the full backup plus incremental overlay reconstructs the exact combined file set. Matching the canonical digest checks every expected filename, exact size, and per-file SHA-256.
+**Proven:** the full backup reconstructs the exact baseline file set. For every cumulative prefix, the full backup plus incremental overlays reconstructs the exact new-file set, modified baseline content, and unchanged file content. Matching the canonical digest checks every expected filename, exact size, and per-file SHA-256.
 
 **Not proven:** that the restored disk boots as a VM, or that the incremental qcow2 stores only the minimum changed blocks. This test reads the reconstructed guest filesystem; it does not boot a second VM or assert the physical delta representation.
 

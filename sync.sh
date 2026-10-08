@@ -7,7 +7,7 @@ Usage: ./sync.sh [--pull-reports]
 
 Without flags: push the repository working tree to REMOTE_HOST:REMOTE_DIR.
 The push excludes .env files, local credentials, and generated artifacts.
---pull-reports: pull REMOTE_HOST:REMOTE_DIR/report/ back into ./report/
+--pull-reports: pull REMOTE_HOST:REMOTE_DIR/runs/ back into ./runs/
                 (read-only on the remote; never touches REMOTE_DIR).
 USAGE
 }
@@ -43,11 +43,11 @@ if [[ "$MODE" == pull-reports ]]; then
     return "$status"
   }
   trap sync_failed ERR
-  printf '[sync] Pull %s:%s/report/ into %s/report/.\n' "$REMOTE_HOST" "$REMOTE_DIR" "$ROOT_DIR" >&2
-  mkdir -p "$ROOT_DIR/report"
+  printf '[sync] Pull %s:%s/runs/ into %s/runs/.\n' "$REMOTE_HOST" "$REMOTE_DIR" "$ROOT_DIR" >&2
+  mkdir -p "$ROOT_DIR/runs"
   rsync -a --human-readable --itemize-changes \
-    "$REMOTE_HOST:$REMOTE_DIR/report/" "$ROOT_DIR/report/"
-  printf '  ✓ Reports pulled to %s/report/.\n' "$ROOT_DIR" >&2
+    "$REMOTE_HOST:$REMOTE_DIR/runs/" "$ROOT_DIR/runs/"
+  printf '  ✓ Run artifacts pulled to %s/runs/.\n' "$ROOT_DIR" >&2
   exit 0
 fi
 
@@ -100,9 +100,11 @@ rsync -a --human-readable --itemize-changes \
   --exclude '/keys/' \
   --exclude '/state/' \
   --exclude '/report/' \
+  --exclude '/report-*.tar.gz' \
   --exclude '/logs/' \
   --exclude '/screenshot/' \
   --exclude '/tmp/' \
+  --exclude '/runs/' \
   --exclude '/tmp-*/' \
   "$ROOT_DIR/" "$REMOTE_HOST:$REMOTE_DIR/"
 printf '  ✓ Repository synchronization complete.\n' >&2

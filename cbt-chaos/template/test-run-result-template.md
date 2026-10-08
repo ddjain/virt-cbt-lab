@@ -30,7 +30,7 @@
 | Checkpoint chain intact (full → incremental → tracker) | PASS / FAIL / N/A | |
 | VM/virt-launcher recovery after chaos | PASS / FAIL | `oc get pod`/`oc get vm -o jsonpath='{.status.ready}'` post-run |
 | Chaos tooling exit status | PASS / FAIL | krknctl / trigger script exit code |
-| Report captured `done_reason` for every backup CR touched | PASS / FAIL | `report/<REPORT_ID>/report.json` → `backups.full.done_reason` and every `backups.incrementals[].done_reason` populated |
+| Report captured `done_reason` for every backup CR touched | PASS / FAIL | `runs/<run-id>/report.json` → `backups.full.done_reason` and every `backups.incrementals[].done_reason` populated |
 
 ## Key timings
 

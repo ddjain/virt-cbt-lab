@@ -139,9 +139,8 @@ guest_exec_wait() {
       fi
     else
       exited=false
-      if (( attempt == 1 || attempt % 5 == 0 )); then
-        printf 'QEMU Guest Agent status query failed for pid %s (attempt %d/%d); retrying.\n' \
-          "$pid" "$attempt" "$GUEST_EXEC_POLL_ATTEMPTS" >&2
+      if ((attempt == 1 || attempt % 30 == 0)); then
+        workflow_progress "QEMU Guest Agent status query failed for pid $pid (attempt $attempt/$GUEST_EXEC_POLL_ATTEMPTS); retrying"
       fi
     fi
     sleep "$GUEST_EXEC_POLL_INTERVAL"

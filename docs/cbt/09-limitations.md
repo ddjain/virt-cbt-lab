@@ -30,9 +30,7 @@ The VMI status also reported `AgentConnected=True`, `LiveMigratable=False` with 
 
 ## Concurrency limitation discovered on cloud05
 
-Kubernetes resource names are run-derived, so completed runs can coexist in one namespace. A single repository checkout is still not safe for concurrent workflow processes because `state/run-id`, `state/report-id`, and the active `report/<REPORT_ID>/` artifacts—including `workload-manifest.json` and report fragments—are shared.
-
-A concurrent run can overwrite another run's IDs or manifest and mix report fragments from different run IDs. Serialize runs per checkout or use separate repository copies.
+Run metadata, workload manifests, and reports are isolated in `runs/<run-id>/`, with immutable run IDs. The `make e2e` wrapper serializes its own invocations using `state/e2e.lock`; direct individual Make targets do not use that wrapper lock. Keep lifecycle operations sequential for the same VM and do not run destructive cleanup during an active workflow.
 
 ## Untested failure/recovery paths
 

@@ -7,7 +7,7 @@ make preflight
 make e2e
 ```
 
-Run one workflow sequence at a time per checkout. The Kubernetes resources have run-derived names, but `state/run-id`, `state/report-id`, and guest hashes are shared local files.
+Workflow artifacts are isolated under `runs/<run-id>/`; the checkout-wide `state/e2e.lock` prevents overlapping commands through the `make e2e` wrapper. Run staged lifecycle commands sequentially for each VM and pass its `VM=vm-<run-id>` explicitly.
 
 ## Observe a run
 
@@ -56,9 +56,9 @@ For a valid incremental result, check all of:
 
 The full and incremental scripts stream observed `VirtualMachineBackup` condition changes, destination PVC phase, and matching `VM.status.changedBlockTracking.backupStatus` timestamps/results while `oc wait` remains the terminal completion gate. A 30-second heartbeat makes an unchanged in-progress state visible without logging every poll.
 
-`DEBUG=true` adds detailed condition and VM backup-status snapshots. The API provides no copied-byte or percentage field, so the watcher reports observed phase and elapsed time, not a guessed progress bar. Treat events such as `HotplugFailed` as context; confirm the settled `Done` reason, type, checkpoint, and tracker before classifying the backup.
+`DEBUG=true` prints routine steps/actions/successes and detailed condition/VM backup-status snapshots; the full step/action/status trace is retained in `runs/<run-id>/logs/workflow.log`. The API provides no copied-byte or percentage field, so the watcher reports observed phase and elapsed time, not a guessed progress bar. Treat events such as `HotplugFailed` as context; confirm the settled `Done` reason, type, checkpoint, and tracker before classifying the backup.
 
-`make monitor VM=vm-<run-id>` is read-only and can run after the lifecycle state file is created; it derives the full and planned incremental backup names and waits for objects that have not yet been applied.
+`make monitor VM=vm-<run-id>` is read-only; it reads that run's `runs/<run-id>/run.json` and waits for planned backup objects that have not yet been applied.
 
 ## Deep inspection for CBT and chaos tests
 
@@ -107,18 +107,18 @@ Backup events are interim signals and may conflict with settled CR status. Check
 
 ## Reports
 
-Each workflow creates `report/run_<UTC timestamp>/` with:
+Each lifecycle creates `runs/<run-id>/` with:
 
-- stage JSON fragments;
-- merged `report.json`;
-- `virt-launcher` log, when available;
-- restore-verification pod log, when available.
+- `run.json` and `workload-manifest.json`;
+- stage JSON fragments and merged `report.json`;
+- restore outputs and diagnostic evidence;
+- workflow, launcher, and restore-verification logs under `logs/`, when available.
 
 ```sh
-jq . report/run_*/report.json
+jq . runs/<run-id>/report.json
 ```
 
-`state/` is transient workflow state. `report/` intentionally survives `make clean-all`.
+`state/` contains only the checkout operation lock. `runs/` intentionally survives `make clean-all`.
 
 ## Common symptoms
 
@@ -133,7 +133,7 @@ jq . report/run_*/report.json
 | Incremental type is wrong | tracker latest checkpoint, full backup terminal state, backup conditions |
 | Hotplug warning | attachment pod events, `VolumeMountedToPod`, final backup status |
 | Restore pod rejected | helper image, privileged permission, host `/dev` policy, PVC scheduling |
-| Hash mismatch | report/run mixing, concurrent checkout use, stale state files, actual restore pod log |
+| Restore hash mismatch | `report.json` expected/observed check, `workload-manifest.json`, and `logs/restore-verify-pod.log` |
 
 Do not classify a backup from a transient warning event alone. Compare settled status, reason, checkpoint, destination artifact, and restored data.
 ## Source-aware diagnosis

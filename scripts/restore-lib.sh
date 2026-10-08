@@ -12,6 +12,7 @@ set -euo pipefail
 # it and set RESTORE_HELPER_IMAGE in .env to your pushed reference.
 # shellcheck disable=SC2034
 RESTORE_HELPER_IMAGE="${RESTORE_HELPER_IMAGE:-}"
+RESTORE_VERIFY_TIMEOUT_SECONDS=1800
 
 require_restore_helper_image() {
   if [[ -z "$RESTORE_HELPER_IMAGE" ]]; then
@@ -29,6 +30,7 @@ run_restore_verify_pod() {
   local index pass pvc
   shift
   local -a incremental_pvcs=("$@")
+  RESTORE_POD_PHASE=unknown
   if ((${#incremental_pvcs[@]} == 0)); then
     printf 'Restore verification requires at least one incremental PVC.\n' >&2
     return 1
@@ -89,18 +91,28 @@ run_restore_verify_pod() {
     -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \
     -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
     -e "s|__RUN_ID_LABEL_KEY__|$RUN_LABEL_RUN_ID_KEY|g" \
-    "$rendered" | oc_cmd apply -f -
+    "$rendered" | oc_cmd apply -f - >/dev/null
 
-  workflow_action "Waiting for pod/$RESTORE_POD_NAME to reach phase Succeeded or Failed (timeout 10m)"
   local phase='' attempt
-  for ((attempt = 1; attempt <= 600; attempt++)); do
+  local timeout_minutes=$((RESTORE_VERIFY_TIMEOUT_SECONDS / 60))
+  workflow_progress "Waiting for pod/$RESTORE_POD_NAME to reach Succeeded or Failed (timeout ${timeout_minutes}m)"
+  for ((attempt = 1; attempt <= RESTORE_VERIFY_TIMEOUT_SECONDS; attempt++)); do
     phase="$(oc_cmd get pod "$RESTORE_POD_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.phase}' 2>/dev/null || echo '')"
     [[ "$phase" == Succeeded || "$phase" == Failed ]] && break
+    if ((attempt % 30 == 0)); then
+      workflow_progress "Restore-verification pod remains ${phase:-unknown} after ${attempt}s"
+    fi
     sleep 1
   done
+  RESTORE_POD_PHASE="${phase:-unknown}"
 
   if [[ "$phase" != Succeeded ]]; then
-    printf 'Restore-verify pod ended in phase %s (expected Succeeded); logs follow.\n' "${phase:-unknown}" >&2
+    if [[ "$phase" == Failed ]]; then
+      printf 'Restore-verify pod failed (phase Failed); logs follow.\n' >&2
+    else
+      printf 'Restore-verify pod did not reach Succeeded within %s seconds (current phase: %s); logs follow.\n' \
+        "$RESTORE_VERIFY_TIMEOUT_SECONDS" "$RESTORE_POD_PHASE" >&2
+    fi
     oc_cmd logs "pod/$RESTORE_POD_NAME" -n "$NAMESPACE" >&2 || true
     collect_pod_log "$RESTORE_POD_NAME" "restore-verify-pod.log"
     return 1

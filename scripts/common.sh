@@ -2,6 +2,7 @@
 set -euo pipefail
 # shellcheck disable=SC2034
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/run-id.sh"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-${KUBECONFIG:-}}"
 GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
 DEBUG="${DEBUG:-false}"
@@ -14,17 +15,13 @@ fi
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 GUEST_USER="cbt-demo"
 # shellcheck disable=SC2034
+# Transient state contains the checkout-wide operation lock only.
 STATE_DIR="$ROOT_DIR/state"
-# shellcheck disable=SC2034
-RUN_ID_FILE="$STATE_DIR/run-id"
-# shellcheck disable=SC2034
-REPORT_ROOT_DIR="$ROOT_DIR/report"
-# shellcheck disable=SC2034
-REPORT_ID_FILE="$STATE_DIR/report-id"
-# Persistent per-VM lifecycle state and per-lifecycle report artifacts.
-# `state/` remains transient; per-VM state survives clean-all for history.
-VM_INFO_ROOT_DIR="$REPORT_ROOT_DIR/vms"
+# Each run owns its metadata, workload manifest, reports, and evidence.
+RUNS_ROOT_DIR="$ROOT_DIR/runs"
+RUN_DIR=""
 VM_INFO_PATH=""
+REPORT_DIR=""
 # Ownership label applied to every resource created by an E2E run, so
 # scripts/clean-all.sh can delete them without deleting the shared namespace.
 # shellcheck disable=SC2034
@@ -57,72 +54,69 @@ GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
 # shellcheck disable=SC2034
 GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
 
-# Guest profile. Debian remains the default for backwards compatibility.
+# RHEL 9 is the standard profile; Debian remains an explicit override.
 # shellcheck disable=SC2034
-VM_OS="${VM_OS:-debian}"
+VM_OS="${VM_OS:-rhel9}"
 # shellcheck disable=SC2034
-case "$VM_OS" in
-  debian)
-    VM_DATA_SOURCE_NAME=debian
-    VM_DATA_SOURCE_NAMESPACE=vm-cbt-images
-    GUEST_LINUX_GROUP=sudo
-    GUEST_SSHD_SERVICE=ssh
-    GUEST_CLOUD_INIT_PACKAGE_UPDATE=true
-    GUEST_CLOUD_INIT_PACKAGES='[qemu-guest-agent]'
-    ;;
-  rhel9)
-    VM_DATA_SOURCE_NAME=rhel9
-    VM_DATA_SOURCE_NAMESPACE=openshift-virtualization-os-images
-    GUEST_LINUX_GROUP=wheel
-    GUEST_SSHD_SERVICE=sshd
-    GUEST_CLOUD_INIT_PACKAGE_UPDATE=false
-    GUEST_CLOUD_INIT_PACKAGES='[]'
-    ;;
-  windows) ;;
-  *)
-    printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
-    exit 1
-    ;;
-esac
-# shellcheck disable=SC2034
-if [[ "$VM_OS" == windows ]]; then
-  GUEST_WORKLOAD_DIR="$WINDOWS_GUEST_WORKLOAD_DIR"
-  RESTORE_WORKLOAD_MOUNT_DIR="/cbt-data/workload"
-else
-  GUEST_WORKLOAD_DIR="$LINUX_GUEST_WORKLOAD_DIR"
-  RESTORE_WORKLOAD_MOUNT_DIR="$LINUX_GUEST_WORKLOAD_DIR"
-fi
+set_vm_os_profile() {
+  case "$VM_OS" in
+    debian)
+      VM_DATA_SOURCE_NAME=debian
+      VM_DATA_SOURCE_NAMESPACE=vm-cbt-images
+      GUEST_LINUX_GROUP=sudo
+      GUEST_SSHD_SERVICE=ssh
+      GUEST_CLOUD_INIT_PACKAGE_UPDATE=true
+      GUEST_CLOUD_INIT_PACKAGES='[qemu-guest-agent]'
+      ;;
+    rhel9)
+      VM_DATA_SOURCE_NAME=rhel9
+      VM_DATA_SOURCE_NAMESPACE=openshift-virtualization-os-images
+      GUEST_LINUX_GROUP=wheel
+      GUEST_SSHD_SERVICE=sshd
+      GUEST_CLOUD_INIT_PACKAGE_UPDATE=false
+      GUEST_CLOUD_INIT_PACKAGES='[]'
+      ;;
+    windows) ;;
+    *)
+      printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
+      exit 1
+      ;;
+  esac
+  if [[ "$VM_OS" == windows ]]; then
+    GUEST_WORKLOAD_DIR="$WINDOWS_GUEST_WORKLOAD_DIR"
+    RESTORE_WORKLOAD_MOUNT_DIR="/cbt-data/workload"
+  else
+    GUEST_WORKLOAD_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+    RESTORE_WORKLOAD_MOUNT_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+  fi
+}
+set_vm_os_profile
 
 
-# Manifest variant to use for the vm/full-backup/incremental-backup
-# resources. "odf" (the default) swaps in manifests/vm-odf.yaml,
-# manifests/full-backup-odf.yaml, and manifests/incremental-backup-odf.yaml,
-# small demo sizing (6Gi/6Gi/4Gi) backed by the ocs-storagecluster-ceph-rbd
-# StorageClass (see docs/odf-setup-plan.md); requires ODF/Ceph deployed on
-# the cluster. "default" is the small/fast demo sizing (5Gi/5Gi/3Gi) on
-# cbt-demo-hpp instead, for clusters without ODF. "large" swaps in
-# manifests/vm-large.yaml, manifests/full-backup-large.yaml, and
-# manifests/incremental-backup-large.yaml on cbt-demo-hpp, for chaos-testing
-# scenarios that need a sustained, disk-bound backup-copy window (see
-# cbt-chaos/chaos-plan.md). "large-odf" is the same large sizing (scaled up
-# with the same ODF capacity margin) but on ocs-storagecluster-ceph-rbd.
+# Manifest variant defaults to large-odf for the RHEL 9 profile. On RHEL 9,
+# HPP variants map to large and ODF variants map to large-odf; both use an
+# 80Gi root/full disk and 25Gi/30Gi incremental PVCs (HPP/ODF).
+# For Debian, "odf" is the small 6Gi/6Gi/4Gi ODF profile, "default" is the
+# 5Gi/5Gi/3Gi HPP profile, "large" is 40Gi/40Gi/25Gi HPP, and "large-odf"
+# is 48Gi/48Gi/30Gi ODF. See docs/odf-setup-plan.md and
+# cbt-chaos/chaos-plan.md for backend and sustained-copy profile details.
 # shellcheck disable=SC2034
-MANIFEST_VARIANT="${MANIFEST_VARIANT:-odf}"
-case "$MANIFEST_VARIANT" in
-  default | large | odf | large-odf) ;;
-  *)
-    printf 'MANIFEST_VARIANT must be "default", "large", "odf", or "large-odf" (got: %s)\n' "$MANIFEST_VARIANT" >&2
-    exit 1
-    ;;
-esac
-# RHEL 9's source requires an 80Gi large disk on either backend. Debian keeps
-# its existing large-variant requests: 40Gi on HPP and 48Gi on ODF.
-# shellcheck disable=SC2034
-case "$VM_OS:$MANIFEST_VARIANT" in
-  rhel9:*) LARGE_MANIFEST_DISK_SIZE=80Gi ;;
-  *:odf|*:large-odf) LARGE_MANIFEST_DISK_SIZE=48Gi ;;
-  *) LARGE_MANIFEST_DISK_SIZE=40Gi ;;
-esac
+MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
+set_manifest_variant_settings() {
+  case "$MANIFEST_VARIANT" in
+    default | large | odf | large-odf) ;;
+    *)
+      printf 'MANIFEST_VARIANT must be "default", "large", "odf", or "large-odf" (got: %s)\n' "$MANIFEST_VARIANT" >&2
+      exit 1
+      ;;
+  esac
+  case "$VM_OS:$MANIFEST_VARIANT" in
+    rhel9:*) LARGE_MANIFEST_DISK_SIZE=80Gi ;;
+    *:odf|*:large-odf) LARGE_MANIFEST_DISK_SIZE=48Gi ;;
+    *) LARGE_MANIFEST_DISK_SIZE=40Gi ;;
+  esac
+}
+set_manifest_variant_settings
 
 validate_positive_integer() {
   local variable_name="$1" value="$2"
@@ -187,31 +181,70 @@ workflow_timestamp() {
   date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
+workflow_record_log() {
+  local level="$1" timestamp="$2" message="$3"
+  if [[ -n "${RUN_DIR:-}" && -d "$RUN_DIR/logs" ]]; then
+    printf '[%s] [%s] [%s] %s\n' "$timestamp" "$WORKFLOW_NAME" "$level" "$message" \
+      >> "$RUN_DIR/logs/workflow.log"
+  fi
+}
+
 workflow_step() {
+  local timestamp
   CURRENT_STEP="$1"
-  printf '\n[%s] [%s] %s\n' "$(workflow_timestamp)" "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log step "$timestamp" "$CURRENT_STEP"
+  if [[ "$DEBUG" == true ]]; then
+    printf '\n[%s] [%s] %s\n' "$timestamp" "$WORKFLOW_NAME" "$CURRENT_STEP" >&2
+  fi
 }
 
 workflow_action() {
-  printf '  [%s] → %s\n' "$(workflow_timestamp)" "$1" >&2
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log action "$timestamp" "$1"
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] → %s\n' "$timestamp" "$1" >&2
+  fi
 }
 
 workflow_status() {
-  printf '  [%s] [status] %s\n' "$(workflow_timestamp)" "$1" >&2
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log status "$timestamp" "$1"
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] [status] %s\n' "$timestamp" "$1" >&2
+  fi
+}
+
+workflow_progress() {
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log progress "$timestamp" "$1"
+  printf '  [%s] [status] %s\n' "$timestamp" "$1" >&2
 }
 
 workflow_debug() {
   [[ "$DEBUG" == true ]] || return 0
-  printf '  [%s] [debug] %s\n' "$(workflow_timestamp)" "$1" >&2
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log debug "$timestamp" "$1"
+  printf '  [%s] [debug] %s\n' "$timestamp" "$1" >&2
 }
 
 workflow_success() {
-  printf '  [%s] ✓ %s\n' "$(workflow_timestamp)" "$1" >&2
+  local timestamp
+  timestamp="$(workflow_timestamp)"
+  workflow_record_log success "$timestamp" "$1"
+  if [[ "$DEBUG" == true ]]; then
+    printf '  [%s] ✓ %s\n' "$timestamp" "$1" >&2
+  fi
 }
 
 workflow_failed() {
   local status=$? timestamp
   timestamp="$(workflow_timestamp)"
+  workflow_record_log failure "$timestamp" "$CURRENT_STEP (exit $status)"
   printf '  [%s] ✗ Failed: %s (exit %d)\n' "$timestamp" "$CURRENT_STEP" "$status" >&2
   return "$status"
 }
@@ -233,10 +266,6 @@ if [[ -n "$KUBECONFIG_PATH" && ! -r "$KUBECONFIG_PATH" ]]; then
   exit 1
 fi
 
-# Word lists for human-readable run IDs (see new_run_id). Kept short and
-# unambiguous; DNS-1123-safe (lowercase letters only).
-RUN_ID_ADJECTIVES=(dark silent brave calm fuzzy happy wild gentle bright swift)
-RUN_ID_NOUNS=(forest river wolf meadow penguin mountain falcon ocean tiger valley)
 
 # Derive every per-run resource name from the current $RUN_ID, so a run's VM,
 # disk, backups, and tracker always reference each other and never collide
@@ -251,7 +280,7 @@ incremental_backup_pvc_name_for_pass() {
 }
 
 vm_info_path() {
-  printf '%s/%s/vm-info.json' "$VM_INFO_ROOT_DIR" "$1"
+  printf '%s/%s/run.json' "$RUNS_ROOT_DIR" "$1"
 }
 
 set_resource_names() {
@@ -273,29 +302,31 @@ set_resource_names() {
   INCREMENTAL_BACKUP_PVC_NAME="$(incremental_backup_pvc_name_for_pass 1)"
   # shellcheck disable=SC2034
   RESTORE_POD_NAME="vm-restore-verify-${RUN_ID}"
-  VM_INFO_PATH="$(vm_info_path "$RUN_ID")"
+  RUN_DIR="$RUNS_ROOT_DIR/$RUN_ID"
+  VM_INFO_PATH="$RUN_DIR/run.json"
+  REPORT_DIR="$RUN_DIR"
 }
 
-# Generate one new run ID (random adjective-noun pair, plus a short random
-# hex tag since the 100 adjective/noun combinations alone collide too often
-# across repeated runs) and persist it so every later script invocation in
-# the same E2E run reuses it.
+initialize_run_directory() {
+  if [[ -e "$RUN_DIR" ]]; then
+    printf '[vm-cbt] Run ID %s already has artifacts at %s; run IDs are immutable and cannot be reused.\n' \
+      "$RUN_ID" "$RUN_DIR" >&2
+    return 1
+  fi
+  mkdir -p "$RUN_DIR/fragments" "$RUN_DIR/logs" "$RUN_DIR/evidence" "$RUN_DIR/restore"
+}
+
+# Resolve one immutable run ID and reject accidental resource reuse.
 new_run_id() {
-  mkdir -p "$STATE_DIR"
   if [[ -n "${RUN_ID:-}" ]]; then
-    # NAME (passed through `make e2e NAME=foo`) must be DNS-1123-safe since
-    # it flows straight into Kubernetes resource names.
-    if ! [[ "$RUN_ID" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
-       ((${#RUN_ID} > 40)); then
-      printf '[vm-cbt] NAME must be lowercase alphanumeric with internal hyphens and at most 40 characters (got: %s).\n' "$RUN_ID" >&2
+    if ! valid_run_id "$RUN_ID"; then
+      printf '[vm-cbt] Run ID must be lowercase alphanumeric with internal hyphens and at most 40 characters (got: %s).\n' "$RUN_ID" >&2
       exit 1
     fi
     set_resource_names
-    VM_INFO_PATH="$(vm_info_path "$RUN_ID")"
-    if [[ -e "$VM_INFO_PATH" ]] &&
-       [[ "$(jq -r '.status // "unknown"' "$VM_INFO_PATH")" != cleaned ]]; then
-      printf '[vm-cbt] Run ID %s still has lifecycle state at %s; choose a new NAME or clean the active run.\n' \
-        "$RUN_ID" "$VM_INFO_PATH" >&2
+    if [[ -e "$RUN_DIR" ]]; then
+      printf '[vm-cbt] Run ID %s already has artifacts at %s; choose a new NAME.\n' \
+        "$RUN_ID" "$RUN_DIR" >&2
       exit 1
     fi
     local resource kind pass
@@ -312,28 +343,25 @@ new_run_id() {
       kind="${resource##*:}"
       resource="${resource%:*}"
       if oc_cmd get "$kind" "$resource" -n "$NAMESPACE" >/dev/null 2>&1; then
-        printf '[vm-cbt] Run ID %s already owns or conflicts with %s/%s in namespace %s; choose another NAME or clean the existing run.\n' \
+        printf '[vm-cbt] Run ID %s already owns or conflicts with %s/%s in namespace %s; choose another NAME.\n' \
           "$RUN_ID" "$kind" "$resource" "$NAMESPACE" >&2
         exit 1
       fi
     done
-    printf '[vm-cbt] Using assigned run ID: %s\n' "$RUN_ID" >&2
   else
-    local adjective noun tag
-    adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
-    noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
-    # od+tr avoids piping into `head -c`, which would SIGPIPE the upstream
-    # reader and trip `set -o pipefail` under the ERR trap.
-    tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-    RUN_ID="${adjective}-${noun}-${tag}"
-    printf '[vm-cbt] New run ID: %s\n' "$RUN_ID" >&2
+    RUN_ID="$(generate_run_id)"
     set_resource_names
+    while [[ -e "$RUN_DIR" ]]; do
+      RUN_ID="$(generate_run_id)"
+      set_resource_names
+    done
   fi
-  printf '%s' "$RUN_ID" > "$RUN_ID_FILE"
+  initialize_run_directory
+  workflow_action "Using run ID $RUN_ID"
 }
 
-# Load the run ID persisted by new_run_id (or an explicitly exported RUN_ID)
-# for scripts that must operate on an already-created run's resources.
+# Existing lifecycle commands must name their run explicitly. VM=vm-<run-id>
+# is the user-facing selector; RUN_ID is used by the internal Make pipeline.
 load_run_id() {
   if [[ -z "${RUN_ID:-}" ]]; then
     if [[ -n "${VM:-}" ]]; then
@@ -342,96 +370,108 @@ load_run_id() {
         return 1
       fi
       RUN_ID="${VM#vm-}"
-    elif [[ -f "$RUN_ID_FILE" ]]; then
-      RUN_ID="$(cat "$RUN_ID_FILE")"
     else
-      printf 'No active run ID found in %s. Run `make e2e TYPE=full` first.\n' "$RUN_ID_FILE" >&2
+      printf 'Set VM=vm-<run-id> or RUN_ID=<run-id> to select an existing lifecycle.\n' >&2
       return 1
     fi
+  fi
+  if ! valid_run_id "$RUN_ID"; then
+    printf 'Run ID must be lowercase alphanumeric with internal hyphens and at most 40 characters (got: %s).\n' "$RUN_ID" >&2
+    return 1
   fi
   set_resource_names
 }
 
-# Generate one new report ID (UTC timestamp, with a run-ID suffix only when
-# another report started in the same second already exists) and persist it so
-# every later script invocation in the same E2E run appends to the same report.
-new_report_id() {
-  mkdir -p "$STATE_DIR"
-  REPORT_ID="run_$(date -u +%Y%m%dT%H%M%SZ)"
-  if [[ -e "$REPORT_ROOT_DIR/$REPORT_ID" ]]; then
-    REPORT_ID="${REPORT_ID}_${RUN_ID}"
-  fi
-  printf '%s' "$REPORT_ID" > "$REPORT_ID_FILE"
-  REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
-  mkdir -p "$REPORT_DIR/fragments"
-  printf '[vm-cbt] New report ID: %s\n' "$REPORT_ID" >&2
-}
-# to an already-created run's report.
-load_report_id() {
-  if [[ -z "${REPORT_ID:-}" && -r "$VM_INFO_PATH" ]]; then
-    REPORT_ID="$(jq -r '.report_id // empty' "$VM_INFO_PATH")"
-  fi
-  if [[ -z "${REPORT_ID:-}" ]]; then
-    if [[ ! -f "$REPORT_ID_FILE" ]]; then
-      printf 'No active report ID found in %s. Run `make e2e TYPE=full` first.\n' "$REPORT_ID_FILE" >&2
-      return 1
-    fi
-    REPORT_ID="$(cat "$REPORT_ID_FILE")"
-  fi
-  REPORT_DIR="$REPORT_ROOT_DIR/$REPORT_ID"
-  mkdir -p "$REPORT_DIR/fragments"
-}
 
-# Write one named JSON fragment for the current report; scripts pass already
-# well-formed JSON text (usually built with `jq -n`). vm-cbt-verify.sh merges
-# every fragment into report/<REPORT_ID>/report.json once the run completes.
+# Write one named JSON fragment for the current run; scripts pass valid JSON.
 write_report_fragment() {
   local fragment_name="$1" json_content="$2"
   mkdir -p "$REPORT_DIR/fragments"
   printf '%s' "$json_content" | jq '.' > "$REPORT_DIR/fragments/$fragment_name.json"
 }
+write_backup_status_evidence() {
+  local backup_name="$1" backup_status_json="$2" evidence_path tmp_path
+  if ! jq -e --arg backup_name "$backup_name" \
+      '.backupName == $backup_name' <<<"$backup_status_json" >/dev/null; then
+    printf ''
+    return 0
+  fi
+  evidence_path="evidence/${backup_name}-vm-backup-status.json"
+  tmp_path="$RUN_DIR/${evidence_path}.tmp.$$"
+  jq '.' <<<"$backup_status_json" > "$tmp_path"
+  mv -f "$tmp_path" "$RUN_DIR/$evidence_path"
+  printf '%s' "$evidence_path"
+}
 
 vm_info_load() {
-  local run_id="$1"
-  VM_INFO_PATH="$(vm_info_path "$run_id")"
+  local run_id="$1" saved_vm_uid vm_json current_vm_uid
+  if ! valid_run_id "$run_id"; then
+    printf 'Invalid run ID: %s\n' "$run_id" >&2
+    return 1
+  fi
+  RUN_ID="$run_id"
+  set_resource_names
   if [[ ! -r "$VM_INFO_PATH" ]] ||
      ! jq -e --arg run_id "$run_id" '
        .schema_version == 1 and .run_id == $run_id and
-       (.vm_name | type == "string") and (.report_id | type == "string")
+       .vm_name == ("vm-" + $run_id) and
+       (.namespace | type == "string" and length > 0) and
+       (.vm_uid | type == "string" and length > 0) and
+       .status != "cleaned"
      ' "$VM_INFO_PATH" >/dev/null; then
-    printf 'Missing or invalid VM lifecycle state for run %s: %s\n' "$run_id" "$VM_INFO_PATH" >&2
+    printf 'Missing or invalid run metadata for run %s: %s\n' "$run_id" "$VM_INFO_PATH" >&2
+    return 1
+  fi
+  NAMESPACE="$(jq -r '.namespace' "$VM_INFO_PATH")"
+  VM_OS="$(jq -r '.os_profile' "$VM_INFO_PATH")"
+  MANIFEST_VARIANT="$(jq -r '.manifest_variant' "$VM_INFO_PATH")"
+  set_vm_os_profile
+  set_manifest_variant_settings
+  GUEST_BASE_FILE_COUNT="$(jq -r '.guest.baseline.file_count' "$VM_INFO_PATH")"
+  GUEST_INCREMENTAL_FILE_COUNT="$(jq -r '.guest.incremental_file_count_per_pass' "$VM_INFO_PATH")"
+  GUEST_INCREMENTAL_PASSES="$(jq -r '.incremental_passes_total' "$VM_INFO_PATH")"
+  GUEST_FILE_SIZE_MIN_MIB="$(jq -r '.guest.size_range_mib.min_inclusive' "$VM_INFO_PATH")"
+  GUEST_FILE_SIZE_MAX_MIB="$(jq -r '.guest.size_range_mib.max_inclusive' "$VM_INFO_PATH")"
+  if [[ "$VM_OS" == windows ]]; then
+    GUEST_WORKLOAD_DIR="$WINDOWS_GUEST_WORKLOAD_DIR"
+    RESTORE_WORKLOAD_MOUNT_DIR="/cbt-data/workload"
+  else
+    GUEST_WORKLOAD_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+    RESTORE_WORKLOAD_MOUNT_DIR="$LINUX_GUEST_WORKLOAD_DIR"
+  fi
+  saved_vm_uid="$(jq -r '.vm_uid' "$VM_INFO_PATH")"
+  if ! vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null)"; then
+    printf 'Cannot read VM %s in namespace %s for run %s.\n' "$VM_NAME" "$NAMESPACE" "$run_id" >&2
+    return 1
+  fi
+  current_vm_uid="$(jq -r '.metadata.uid // empty' <<< "$vm_json")"
+  if [[ -z "$current_vm_uid" || "$current_vm_uid" != "$saved_vm_uid" ]]; then
+    printf 'VM identity mismatch for run %s: saved UID=%s, current UID=%s.\n' \
+      "$run_id" "$saved_vm_uid" "${current_vm_uid:-missing}" >&2
     return 1
   fi
 }
 
 vm_info_initialize() {
-  local manifest tmp_path now
+  local vm_uid="$1" manifest tmp_path now
   VM_INFO_PATH="$(vm_info_path "$RUN_ID")"
   manifest="$(workload_manifest_path)"
   tmp_path="${VM_INFO_PATH}.tmp.$$"
   now="$(workflow_timestamp)"
-  if [[ -e "$VM_INFO_PATH" ]]; then
-    if [[ "$(jq -r '.status // "unknown"' "$VM_INFO_PATH")" != cleaned ]]; then
-      printf 'VM lifecycle state is still active: %s\n' "$VM_INFO_PATH" >&2
-      return 1
-    fi
-    local previous_report_id history_dir archived_info
-    previous_report_id="$(jq -r '.report_id // empty' "$VM_INFO_PATH")"
-    history_dir="$(dirname "$VM_INFO_PATH")/history"
-    mkdir -p "$history_dir"
-    archived_info="$history_dir/${previous_report_id:-cleaned-$(date -u +%Y%m%dT%H%M%SZ)}.json"
-    if [[ -e "$archived_info" ]]; then
-      archived_info="${archived_info%.json}-$(date -u +%s).json"
-    fi
-    mv "$VM_INFO_PATH" "$archived_info"
+  if [[ -z "$vm_uid" ]]; then
+    printf 'Cannot initialize run metadata without a Kubernetes VM UID for %s.\n' "$VM_NAME" >&2
+    return 1
   fi
-  mkdir -p "$(dirname "$VM_INFO_PATH")"
+  if [[ -e "$VM_INFO_PATH" ]]; then
+    printf 'Run metadata already exists and cannot be replaced: %s\n' "$VM_INFO_PATH" >&2
+    return 1
+  fi
   jq -n \
     --arg run_id "$RUN_ID" \
     --arg vm_name "$VM_NAME" \
+    --arg vm_uid "$vm_uid" \
     --arg namespace "$NAMESPACE" \
     --arg os_profile "$VM_OS" \
-    --arg report_id "$REPORT_ID" \
     --arg manifest_path "$WORKLOAD_MANIFEST_NAME" \
     --arg manifest_variant "$MANIFEST_VARIANT" \
     --arg status "baseline_ready" \
@@ -442,8 +482,8 @@ vm_info_initialize() {
     --argjson baseline_payload_bytes "$(jq -r '.baseline.total_payload_bytes' "$manifest")" \
     --arg baseline_manifest_sha256 "$(jq -r '.baseline.manifest_sha256' "$manifest")" \
     --argjson size_range "$(jq -c '.size_range_mib' "$manifest")" \
-    '{schema_version: 1, run_id: $run_id, vm_name: $vm_name, namespace: $namespace,
-      os_profile: $os_profile, report_id: $report_id, manifest_variant: $manifest_variant,
+    '{schema_version: 1, run_id: $run_id, vm_name: $vm_name, vm_uid: $vm_uid,
+      namespace: $namespace, os_profile: $os_profile, manifest_variant: $manifest_variant,
       status: $status, incremental_passes_total: $passes_total, incremental_passes_completed: 0,
       next_incremental_pass: 1,
       guest: {workload_manifest_path: $manifest_path, size_range_mib: $size_range,
@@ -460,7 +500,7 @@ vm_info_update() {
   local filter="$1" tmp_path updated_at
   shift
   if [[ ! -r "$VM_INFO_PATH" ]]; then
-    printf 'Cannot update missing VM lifecycle state: %s\n' "$VM_INFO_PATH" >&2
+    printf 'Cannot update missing run metadata: %s\n' "$VM_INFO_PATH" >&2
     return 1
   fi
   tmp_path="${VM_INFO_PATH}.tmp.$$"
@@ -490,10 +530,7 @@ vm_info_next_pass() {
 vm_info_previous_checkpoint() {
   jq -r '.backups.incrementals[-1].checkpoint_name // .backups.full.checkpoint_name // empty' "$VM_INFO_PATH"
 }
-
-# Save one run-owned pod's full log to report/<REPORT_ID>/logs/<log_filename>,
-# for debugging a run after the fact. Best-effort: a missing pod or `oc logs`
-# failure (e.g. the pod was already cleaned up) does not fail the workflow.
+# Save a run-owned pod log to runs/<run-id>/logs/<log_filename>.
 collect_pod_log() {
   local pod_name="$1" log_filename="$2"
   mkdir -p "$REPORT_DIR/logs"
@@ -505,7 +542,7 @@ collect_pod_log() {
 }
 
 ensure_guest_key() {
-  printf '[vm-cbt] Ensuring the guest SSH key is available at %s.\n' "$GUEST_KEY" >&2
+  workflow_action "Ensuring the guest SSH key is available at $GUEST_KEY"
   mkdir -p "$(dirname "$GUEST_KEY")"
   if [[ ! -f "$GUEST_KEY" ]]; then
     rm -f "$GUEST_KEY.pub"
@@ -548,7 +585,7 @@ guest_ssh() {
   fi
   guest_command="$1"
 
-  printf '[guest-ssh] Connecting through local port-forward to %s.\n' "$SSH_SERVICE" >&2
+  workflow_status "Connecting to guest $SSH_SERVICE over a temporary local port-forward"
   local forward_log probe_log forward_pid port
   forward_log="$(mktemp)"
   probe_log="$(mktemp)"
@@ -569,8 +606,7 @@ guest_ssh() {
   trap cleanup EXIT INT TERM
 
   for ((attempt = 1; attempt <= 30; attempt++)); do
-    printf '[guest-ssh] → oc port-forward -n %s service/%s :22 (attempt %d/30).\n' \
-      "$NAMESPACE" "$SSH_SERVICE" "$attempt" >&2
+    workflow_action "oc port-forward -n $NAMESPACE service/$SSH_SERVICE :22 (attempt $attempt/30)"
     : > "$forward_log"
     oc_cmd port-forward -n "$NAMESPACE" "service/$SSH_SERVICE" :22 >"$forward_log" 2>&1 &
     forward_pid=$!
@@ -578,7 +614,7 @@ guest_ssh() {
     for ((wait_attempt = 1; wait_attempt <= 30; wait_attempt++)); do
       port="$(extract_forwarded_port "$forward_log")"
       if [[ -n "$port" ]]; then
-        printf '[guest-ssh] Port-forward ready on 127.0.0.1:%s.\n' "$port" >&2
+        workflow_action "Port-forward ready on 127.0.0.1:$port"
         break
       fi
       if ! kill -0 "$forward_pid" 2>/dev/null; then
@@ -588,9 +624,9 @@ guest_ssh() {
     done
 
     if [[ -n "$port" ]]; then
-      printf '[guest-ssh] → ssh %s@127.0.0.1:%s (probe, then guest command).\n' \
-        "$GUEST_USER" "$port" >&2
+      workflow_action "ssh $GUEST_USER@127.0.0.1:$port (probe, then guest command)"
       if probe_guest_ssh "$port" "$probe_log"; then
+        workflow_status "Guest SSH is ready after attempt $attempt/30"
         if ssh_guest_command "$port" "$guest_command"; then
           cleanup
           return 0
@@ -598,16 +634,19 @@ guest_ssh() {
         cleanup
         return 1
       fi
-      printf '[guest-ssh] SSH probe failed; retrying.\n' >&2
       # Authentication failures are terminal; startup failures can recover.
       if grep -q 'Permission denied' "$probe_log"; then
         cat "$probe_log" >&2
         cleanup
         return 1
       fi
+      if ((attempt % 5 == 0)); then
+        workflow_status "Guest SSH probe failed; retrying (attempt $attempt/30)"
+      fi
+    elif ((attempt % 5 == 0)); then
+      workflow_status "Guest SSH port-forward is not ready (attempt $attempt/30)"
     fi
 
-    printf '[guest-ssh] Guest not ready; retrying.\n' >&2
     stop_forward
     sleep 1
   done
@@ -627,9 +666,9 @@ watch_backup_status() {
   local phase status_type checkpoint included_volumes pvc_phase runtime_started runtime_completed
   local runtime_failed runtime_checkpoint runtime_message signature line elapsed
 
-  workflow_status "Backup watcher started: VM=$VM_NAME backup=$backup_name requested_type=$expected_type PVC=${pvc_name:-unknown}"
+  workflow_action "Backup watcher started: VM=$VM_NAME backup=$backup_name requested_type=$expected_type PVC=${pvc_name:-unknown}"
   if [[ -n "$base_checkpoint" ]]; then
-    workflow_status "Backup $backup_name uses base checkpoint $base_checkpoint"
+    workflow_action "Backup $backup_name uses base checkpoint $base_checkpoint"
   fi
 
   while kill -0 "$owner_pid" 2>/dev/null; do
@@ -708,14 +747,14 @@ watch_backup_status() {
     if [[ -n "$runtime_checkpoint" ]]; then line+=" runtime_checkpoint=$runtime_checkpoint"; fi
 
     if [[ "$signature" != "$last_signature" ]]; then
-      workflow_status "$line"
+      workflow_progress "$line"
       last_signature="$signature"
       last_heartbeat="$SECONDS"
       if [[ "$DEBUG" == true ]]; then
         workflow_debug "backup=$backup_name conditions=$(jq -c '.status.conditions // []' <<<"$backup_json") vmi_backup_status=$runtime_status"
       fi
     elif ((SECONDS - last_heartbeat >= 30)); then
-      workflow_status "Backup heartbeat: $line"
+      workflow_progress "Backup heartbeat: $line"
       last_heartbeat="$SECONDS"
       if [[ "$DEBUG" == true ]]; then
         workflow_debug "backup=$backup_name conditions=$(jq -c '.status.conditions // []' <<<"$backup_json") vmi_backup_status=$runtime_status"
@@ -735,7 +774,7 @@ wait_for_backup_done() {
 
   done_status="$(get_backup_done_status "$backup_name" 2>/dev/null || true)"
   if [[ "$done_status" == True ]]; then
-    oc_cmd wait "vmbackup/$backup_name" -n "$NAMESPACE" --for=condition=Done --timeout=20m
+    oc_cmd wait "vmbackup/$backup_name" -n "$NAMESPACE" --for=condition=Done --timeout=20m >/dev/null
     return
   fi
   if [[ -z "$pvc_name" ]]; then
@@ -744,7 +783,7 @@ wait_for_backup_done() {
 
   watch_backup_status "$backup_name" "$pvc_name" "$expected_type" "$base_checkpoint" "$$" &
   watcher_pid=$!
-  if oc_cmd wait "vmbackup/$backup_name" -n "$NAMESPACE" --for=condition=Done --timeout=20m; then
+  if oc_cmd wait "vmbackup/$backup_name" -n "$NAMESPACE" --for=condition=Done --timeout=20m >/dev/null; then
     wait_status=0
   else
     wait_status=$?
@@ -831,23 +870,6 @@ get_vm_backup_status() {
     jq -c '.status.changedBlockTracking.backupStatus // {}'
 }
 
-# Record a guest-observed value (e.g. a hash captured at backup time) so a
-# later step, possibly a separate script invocation, can assert against it.
-write_state_file() {
-  local state_name="$1" value="$2"
-  mkdir -p "$STATE_DIR"
-  printf '%s' "$value" > "$STATE_DIR/$state_name"
-}
-
-read_state_file() {
-  local state_name="$1"
-  local state_path="$STATE_DIR/$state_name"
-  if [[ ! -f "$state_path" ]]; then
-    printf 'Missing state file %s; run the step that records it first.\n' "$state_path" >&2
-    return 1
-  fi
-  cat "$state_path"
-}
 
 # Extract the hash from a `sha256sum <file>` line ("<hash>  <file>").
 extract_sha256() {

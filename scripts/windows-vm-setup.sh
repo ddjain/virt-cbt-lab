@@ -15,7 +15,6 @@ if [[ -z "$WINDOWS_ADMIN_PASSWORD_FILE" || ! -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]
 fi
 
 new_run_id
-new_report_id
 
 workflow_step "1/5 Prepare the cached Windows golden image"
 if ! oc_cmd get datasource windows-server-2022 -n "$WINDOWS_IMAGES_NAMESPACE" >/dev/null 2>&1; then
@@ -24,7 +23,7 @@ if ! oc_cmd get datasource windows-server-2022 -n "$WINDOWS_IMAGES_NAMESPACE" >/
 fi
 oc_cmd wait dv/windows-golden -n "$WINDOWS_IMAGES_NAMESPACE" \
   --for=jsonpath='{.status.phase}'=Succeeded --timeout=30m >/dev/null
-workflow_success "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
+workflow_status "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
 
 workflow_step "2/5 Generate the run-scoped OOBE secret"
 OOBE_SECRET="windows-oobe-${RUN_ID}"
@@ -84,15 +83,21 @@ sed \
   -e "s|__OOBE_SECRET__|$OOBE_SECRET|g" \
   -e "s|__RUN_ID__|$RUN_ID|g" \
   -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
-  "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f -
-workflow_success "Windows VM resources applied in namespace $NAMESPACE"
+  "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f - >/dev/null
+workflow_progress "Windows VM resources applied in namespace $NAMESPACE"
 
 # shellcheck source=scripts/windows-guest-agent.sh
 source "$ROOT_DIR/scripts/windows-guest-agent.sh"
 workflow_step "4/5 Wait for Windows readiness and confirm CBT and Guest Agent"
 workflow_action "Wait up to 60m for VM/$VM_NAME to reach Ready after OOBE"
 oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=60m >/dev/null
-cbt_state="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.changedBlockTracking.state}')"
+vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json)"
+cbt_state="$(jq -r '.status.changedBlockTracking.state // empty' <<< "$vm_json")"
+vm_uid="$(jq -r '.metadata.uid // empty' <<< "$vm_json")"
+if [[ -z "$vm_uid" ]]; then
+  printf 'Could not read Kubernetes UID for VM %s.\n' "$VM_NAME" >&2
+  exit 1
+fi
 if [[ "$cbt_state" != Enabled ]]; then
   printf 'CBT is not enabled for %s (state: %s). Check the IncrementalBackup feature gate and cbt-demo label selector.\n' \
     "$VM_NAME" "${cbt_state:-unknown}" >&2
@@ -102,7 +107,7 @@ workflow_action "Wait for VMI/$VM_NAME QEMU Guest Agent connection"
 oc_cmd wait "vmi/$VM_NAME" -n "$NAMESPACE" --for=condition=AgentConnected --timeout=15m >/dev/null
 workflow_action "Probe the QEMU Guest Agent socket before guest operations"
 wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
-workflow_success "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
+workflow_progress "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
 
 workflow_step "5/5 Verify startup workloads and initialize the baseline file workload"
 workflow_action "Verify Python 3.12.4, file/SQLite writes, HTTP 8080, and the SYSTEM startup task on this clone"
@@ -166,7 +171,7 @@ foreach (\$item in \$filePlan) {
 guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_setup_command")"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
-vm_info_initialize
+vm_info_initialize "$vm_uid"
 baseline_file_count="$(jq -r '.baseline.file_count' "$(workload_manifest_path)")"
 baseline_total_bytes="$(jq -r '.baseline.total_payload_bytes' "$(workload_manifest_path)")"
 baseline_total_mib=$((baseline_total_bytes / 1048576))
@@ -191,4 +196,4 @@ write_report_fragment "setup" "$(jq -n \
                        incremental_passes_total: $incremental_passes_total,
                        baseline: {file_count: $file_count, total_payload_bytes: $total_payload_bytes,
                                   manifest_sha256: $manifest_sha256, captured_at: $captured_at}}}}')"
-workflow_success "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"
+workflow_progress "Baseline payload: $baseline_file_count files, $baseline_total_bytes bytes (${baseline_total_mib} MiB); manifest at $(workload_manifest_path)"
