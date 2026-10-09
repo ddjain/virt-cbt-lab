@@ -70,7 +70,11 @@ jq -n \
                         .name == "incremental_pass_count_matches_plan" or
                         .name == "tracker_matches_final_incremental_checkpoint" or
                         (.name | test("^incremental_pass_[0-9]+_(is_complete|checkpoint_matches_state|checkpoint_is_distinct)$"))))) as $cbt_checks |
-  (if $overall_passed == true and $run_status == "complete" then "PASS"
+  ($run.recovery.attempts // []) as $recovery_attempts |
+  (if $invocation_type == "recover" and $invocation_result == "BLOCKED" then "BLOCKED"
+   elif $invocation_type == "recover" and $invocation_result == "PASS" and
+        any($recovery_attempts[]?; .status == "success") then "PASS"
+   elif $overall_passed == true and $run_status == "complete" then "PASS"
    elif $overall_passed == false or ($run_status | test("(^|_)failed$")) then "FAIL"
    else "INCOMPLETE" end) as $verdict |
   (if ($restore_checks | length) == 0 then "PENDING"
@@ -89,11 +93,16 @@ jq -n \
     schema_version: 1,
     run_id: $run.run_id,
     generated_by: "scripts/write-run-summary.sh",
-    data_sources: (if $report.run_id != null then ["run.json", "report.json"] else ["run.json"] end),
+    data_sources: (if $report.run_id != null or
+                      ($report.recovery.attempts | type) == "array" or
+                      (($run.recovery.attempts // []) | length) > 0
+                   then ["run.json", "report.json"] else ["run.json"] end),
     scope: "Workflow summary; does not independently inspect qcow2 allocation maps.",
     verdict: $verdict,
     verdict_reason:
-      (if $verdict == "PASS" then "All planned incremental passes completed; CBT chain and restore checks passed."
+      (if $verdict == "BLOCKED" then "Recovery was safely blocked before a successful full backup and baseline restore."
+       elif $invocation_type == "recover" and $verdict == "PASS" then "The same-VM recovery full backup and baseline restore passed."
+       elif $verdict == "PASS" then "All planned incremental passes completed; CBT chain and restore checks passed."
        elif $verdict == "FAIL" then "The lifecycle or verification failed; inspect report.json and workflow.log."
        else "\($run.incremental_passes_completed // 0)/\($run.incremental_passes_total // 0) planned incremental passes complete; final verification is pending." end),
     last_invocation: {
@@ -110,6 +119,24 @@ jq -n \
       passes_completed: ($run.incremental_passes_completed // 0),
       passes_planned: ($run.incremental_passes_total // 0)
     },
+    recovery_attempts: [
+      $recovery_attempts[] |
+      {id, status, resources_applied,
+       failed_backup: .failed_full.name,
+       failed_checkpoint: .failed_full.checkpoint_name,
+       tracker_checkpoint_before: .tracker.checkpoint_before,
+       recovery_backup: (if .recovery_full == null then null else
+         {name:.recovery_full.name,type:.recovery_full.type,done_status:.recovery_full.done_status,
+          done_reason:.recovery_full.done_reason,checkpoint_name:.recovery_full.checkpoint_name,
+          pvc_name:.recovery_full.pvc_name,pvc_phase:.recovery_full.pvc_phase,
+          force_full_backup:.recovery_full.force_full_backup,
+          tracker_checkpoint_after:.recovery_full.tracker_checkpoint_after}
+         end),
+       restore_status: (.restore.status // "PENDING"),
+       restore_check_count: ((.restore.checks // []) | length),
+       blocked_reasons,
+       failure_reason: (.failure_reason // null)}
+    ],
     cbt: {
       status: $cbt_status,
       vm_state: (if check($checks; "vm_cbt_is_enabled") == true then "Enabled"
@@ -126,6 +153,16 @@ jq -n \
         pvc_capacity: ($backups.full.pvc_capacity // null),
         duration_seconds: ($timings.full.duration_seconds // null)
       },
+      full_failure: (if ($run.backups.full_failure // null) == null then null else
+        {name:$run.backups.full_failure.name,
+         type:$run.backups.full_failure.type,
+         done_status:$run.backups.full_failure.done_status,
+         done_reason:$run.backups.full_failure.done_reason,
+         checkpoint_name:$run.backups.full_failure.checkpoint_name,
+         pvc_name:$run.backups.full_failure.pvc_name,
+         pvc_phase:$run.backups.full_failure.pvc_phase,
+         tracker_checkpoint_at_failure:$run.backups.full_failure.tracker_checkpoint_at_failure}
+        end),
       incremental_passes: [
         $incrementals[] as $backup |
         ([$timings.incrementals[]? | select(.pass == $backup.pass)] | .[0] // {}) as $timing |

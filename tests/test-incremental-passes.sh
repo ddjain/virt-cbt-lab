@@ -350,7 +350,7 @@ run_full_stage() {
   info_path="$stage_checkout/runs/$run_id/run.json"
   calls_path="$TEST_TMP/$run_id-make-calls.targets"
   : > "$calls_path"
-  env \
+  if env \
     MAKE_COMMAND="$fake_make" \
     MAKE_LOG="$calls_path" \
     TEST_VM_INFO="$info_path" \
@@ -367,7 +367,13 @@ run_full_stage() {
     GUEST_FILE_SIZE_MIN_MIB=4 \
     GUEST_FILE_SIZE_MAX_MIB=12 \
     RESTORE_HELPER_IMAGE=quay.io/example/restore-helper:test \
-    bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
+    bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1; then
+    :
+  else
+    local status=$?
+    cat "$TEST_TMP/$run_id-e2e-stage.log" >&2
+    return "$status"
+  fi
 }
 
 assert_stage_targets() {

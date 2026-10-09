@@ -31,7 +31,7 @@ NAME ?=
 TYPE ?= all
 VM ?=
 
-.PHONY: preflight vm-setup vm-backup vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e e2e-incremental clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync pull-reports help test
+.PHONY: preflight vm-setup vm-backup vm-cbt-recover vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e e2e-incremental clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync pull-reports help test
 
 preflight:
 	@if [[ "$(DEBUG)" == true ]]; then ./preflight --verbose; else ./preflight; fi
@@ -51,6 +51,9 @@ vm-setup:
 vm-backup:
 	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Full backup: create the backup PVC, tracker, and full backup.\n' "$(UTC_TIMESTAMP)"; fi
 	@./scripts/vm-backup.sh
+vm-cbt-recover:
+	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Same-VM recovery: force a new full backup through the existing tracker, verify it, then restore the baseline.\n' "$(UTC_TIMESTAMP)"; fi
+	@./scripts/vm-cbt-recover.sh
 
 vm-cbt-backup:
 	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Incremental backup: mutate guest data and create the CBT incremental backup.\n' "$(UTC_TIMESTAMP)"; fi
@@ -124,6 +127,7 @@ help:
 	  '  make e2e TYPE=full               Start a lifecycle and take its full backup.' \
 	  '  make e2e-incremental VM=vm-demo  Add the next pass; final pass verifies.' \
 	  '  make e2e TYPE=incremental VM=vm-demo  Equivalent TYPE-based interface.' \
+	  '  make e2e TYPE=recover VM=vm-demo  Take and restore-verify a new full on the existing VM.' \
 	  '  make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4' \
 	  '                                    Add one pass; value is the total planned passes.' \
 	  '  make e2e TYPE=verify VM=vm-demo Re-run chain and restore verification.' \
@@ -162,3 +166,5 @@ test:
 	@bash tests/test-workflow-evidence.sh
 	@bash tests/test-monitor-planned-backups.sh
 	@bash tests/test-run-summary.sh
+	@bash tests/test-vm-cbt-recover.sh
+	@bash tests/test-vm-backup-failure-recording.sh

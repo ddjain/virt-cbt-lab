@@ -34,6 +34,8 @@ run_id=""
 vm_name=""
 vm_info_path=""
 run_namespace="$NAMESPACE"
+recovery_blocked=false
+recovery_succeeded=false
 
 fail() {
   printf '[e2e] %s\n' "$1" >&2
@@ -71,6 +73,7 @@ log_final_verdict() {
     PASS) result_symbol=✓ ;;
     FAIL) result_symbol=✗ ;;
     INCOMPLETE) result_symbol=◌ ;;
+    BLOCKED) result_symbol=▣ ;;
   esac
   printf '╭'
   for ((index = 0; index < box_width; index++)); do printf '─'; done
@@ -112,7 +115,7 @@ resolve_new_run_id() {
 
 load_vm_info() {
   if [[ -z "$VM" || "$VM" != vm-* ]]; then
-    fail 'TYPE=incremental, extend, and verify require VM=vm-<run-id>.'
+    fail 'TYPE=incremental, extend, recover, and verify require VM=vm-<run-id>.'
     return
   fi
   vm_name="$VM"
@@ -140,7 +143,7 @@ load_vm_info() {
   MANIFEST_VARIANT="$(jq -r '.manifest_variant' "$vm_info_path")"
 }
 print_pipeline_summary() {
-  local next_pass
+  local next_pass recovery_attempt_number recovery_attempt_suffix
   printf '\nPipeline configuration\n'
   printf '  TYPE=%s\n' "$TYPE"
   printf '  VM_OS=%s\n' "$VM_OS"
@@ -214,6 +217,15 @@ print_pipeline_summary() {
       fi
       printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
       ;;
+    recover)
+      printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
+      recovery_attempt_number="$(jq -r '(.recovery.attempts // []) | length + 1' "$vm_info_path")"
+      printf -v recovery_attempt_suffix 'r%03d' "$recovery_attempt_number"
+      printf '  Recovery VirtualMachineBackup: vm-recovery-full-%s-%s (forceFullBackup=true, existing tracker)\n' \
+        "$run_id" "$recovery_attempt_suffix"
+      printf '  Recovery output PVC: vm-recovery-pvc-%s-%s\n' "$run_id" "$recovery_attempt_suffix"
+      printf '  Restore verifier pod: %s (temporary; baseline only)\n' "$RESTORE_POD_NAME"
+      ;;
     verify)
       printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
       printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
@@ -270,11 +282,11 @@ case "$TYPE" in
   full)
     resolve_new_run_id
     ;;
-  incremental|verify|extend)
+  incremental|recover|verify|extend)
     load_vm_info
     ;;
   *)
-    fail "TYPE must be all, full, incremental, extend, or verify (got: $TYPE)."
+    fail "TYPE must be all, full, incremental, recover, extend, or verify (got: $TYPE)."
     ;;
 esac
 if ((status == 0)); then
@@ -397,6 +409,19 @@ if ((status == 0)); then
       fi
       vm_name="$VM"
       ;;
+    recover)
+      if run_profiled_make vm-cbt-recover RUN_ID="$run_id"; then
+        recovery_attempt_status="$(jq -r '.recovery.attempts[-1].status // empty' "$vm_info_path")"
+        case "$recovery_attempt_status" in
+          blocked) recovery_blocked=true ;;
+          success) recovery_succeeded=true ;;
+          *) fail "Recovery stage returned without a terminal attempt status (got: ${recovery_attempt_status:-missing})." ;;
+        esac
+      else
+        status=$?
+      fi
+      vm_name="$VM"
+      ;;
     verify)
       if run_profiled_make vm-cbt-verify RUN_ID="$run_id"; then
         :
@@ -410,7 +435,13 @@ fi
 end_epoch="$(date +%s)"
 ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 elapsed_seconds=$((end_epoch - start_epoch))
-if ((status == 0)); then result=passed; else result=failed; fi
+if [[ "$recovery_blocked" == true ]]; then
+  result=blocked
+elif ((status == 0)); then
+  result=passed
+else
+  result=failed
+fi
 if [[ "$DEBUG" == true ]]; then
   printf '[%s] [make] E2E pipeline %s for TYPE=%s VM_OS=%s; total_elapsed_seconds=%s; started_at=%s.\n' \
     "$ended_at" "$result" "$TYPE" "$VM_OS" "$elapsed_seconds" "$started_at"
@@ -424,7 +455,7 @@ else
   printf -v elapsed_display '%ds' "$elapsed_seconds"
 fi
 
-if ((status == 0)); then
+if ((status == 0)) && [[ "$recovery_blocked" != true ]]; then
   if [[ -z "$vm_name" && -n "$run_id" ]]; then vm_name="vm-${run_id}"; fi
   if [[ -n "$vm_name" ]]; then
     lifecycle_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
@@ -474,6 +505,12 @@ fi
 if ((status != 0)); then
   final_outcome=FAIL
   final_verdict="FAIL: E2E pipeline failed for TYPE=$TYPE; inspect the preceding error output."
+elif [[ "$recovery_blocked" == true ]]; then
+  final_outcome=BLOCKED
+  final_verdict="BLOCKED: recovery preconditions or API schema validation failed before resource creation; inspect $report_path."
+elif [[ "$recovery_succeeded" == true ]]; then
+  final_outcome=PASS
+  final_verdict="PASS; same-VM full backup and baseline restore verified; report: $report_path."
 elif [[ "$TYPE" == full ]]; then
   completed_passes=0
   planned_passes="$GUEST_INCREMENTAL_PASSES"
@@ -525,4 +562,5 @@ if [[ -n "$run_id" && -r "$RUNS_ROOT_DIR/$run_id/run.json" ]]; then
 fi
 
 
+if [[ "$final_outcome" == BLOCKED ]]; then exit 3; fi
 exit "$status"
