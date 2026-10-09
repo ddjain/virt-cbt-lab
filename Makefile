@@ -161,3 +161,4 @@ test:
 	@bash tests/test-restore-failure-propagation.sh
 	@bash tests/test-workflow-evidence.sh
 	@bash tests/test-monitor-planned-backups.sh
+	@bash tests/test-run-summary.sh

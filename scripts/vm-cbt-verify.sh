@@ -183,6 +183,17 @@ if [[ "$overall_passed" == true ]]; then
 else
   vm_info_update '.status = "verification_failed" | .verification_failed_at = $updated_at'
 fi
+summary_result=FAIL
+if [[ "$overall_passed" == true ]]; then summary_result=PASS; fi
+if summary_path="$(bash "$ROOT_DIR/scripts/write-run-summary.sh" \
+    "$RUN_ID" verify "$summary_result")"; then
+  if [[ "${E2E_STAGE_WRAPPED:-false}" != true ]]; then
+    printf 'Summary: %s\n' "$summary_path"
+  fi
+else
+  printf '⚠ Could not write summary.json; detailed evidence remains in %s.\n' \
+    "$report_path" >&2
+fi
 
 workflow_progress "Run report written to $report_path"
 workflow_success "Verification report written"

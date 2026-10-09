@@ -18,6 +18,8 @@ GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
 GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
 MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
 RUNS_ROOT_DIR="$ROOT_DIR/runs"
+E2E_STAGE_WRAPPED=true
+export E2E_STAGE_WRAPPED
 
 start_epoch="$(date +%s)"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -510,6 +512,15 @@ if [[ "$final_outcome" == INCOMPLETE &&
     printf 'Repeat this command for the remaining passes; the final pass runs verification.\n'
   else
     printf 'The next incremental pass is final and will run verification automatically.\n'
+  fi
+fi
+if [[ -n "$run_id" && -r "$RUNS_ROOT_DIR/$run_id/run.json" ]]; then
+  if summary_path="$(bash "$ROOT_DIR/scripts/write-run-summary.sh" \
+      "$run_id" "$TYPE" "$final_outcome")"; then
+    printf 'Summary: %s\n' "$summary_path"
+  else
+    printf '⚠ Could not write summary.json; detailed evidence remains in %s.\n' \
+      "$report_path" >&2
   fi
 fi
 

@@ -18,6 +18,7 @@ This is the beginner-friendly map of the KubeVirt Changed Block Tracking (CBT) d
 | [10. Chaos-test design](10-chaos-test-design.md) | Failure boundaries, trigger timing, verification layers, and scenario map |
 | [11. Cloud05 live audit](11-cloud05-audit.md) | Point-in-time cluster evidence and reproducible inspection commands |
 | [12. KubeVirt source reference](12-kubevirt-source-reference.md) | Exact v1.8.4 CR, controller, handler, launcher, storage, checkpoint, and Pull-mode code paths |
+| [13. Independent CBT verification](13-independent-cbt-verification.md) | How to judge raw API/runtime evidence, independently hash restored files, and inspect qcow2 allocation without trusting the repository verdict |
 
 ## Related procedural documents
 
