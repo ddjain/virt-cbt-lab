@@ -33,8 +33,10 @@ This runs the default single incremental pass after the full backup; the final p
 | `incremental` | Add the next planned pass to `VM`; the final planned pass also verifies. Alias: `make e2e-incremental VM=vm-<run-id>`. |
 | `verify` | Recheck checkpoints and restored data without adding a pass; e.g. `make e2e TYPE=verify VM=vm-demo`. |
 | `extend` | Add one pass to a completed lifecycle; e.g. `make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4` after three passes. |
+| `recover` | On an existing managed VM with a terminally failed full, create a distinct full-backup attempt using the existing tracker and restore-verify its baseline; never initializes a new VM. |
 
-Use `VM=vm-<run-id>` for `incremental`, `verify`, and `extend`. `EXTEND_TO_PASS` must be exactly one above the completed total.
+Use `VM=vm-<run-id>` for `incremental`, `recover`, `verify`, and `extend`. `EXTEND_TO_PASS` must be exactly one above the completed total.
+`make e2e TYPE=recover VM=vm-<run-id>` acquires the checkout lifecycle lock, validates the failed full/PVC and VM/VMI/CBT state, then creates a new PVC and `VirtualMachineBackup` with `forceFullBackup:true` against the saved tracker. It preserves the failed artifacts and records every attempt separately. Recovery passes only when the new request is a successful `Full`, the tracker records its checkpoint, the output PVC is Bound, and a read-only restore matches the saved baseline file set, bytes, and hashes.
 
 Key Make variables such as `VM_OS`, `MANIFEST_VARIANT`, `GUEST_*`, and `DEBUG` are documented in [Supported variables](#supported-variables). Run `make preflight` for a read-only readiness check and `make help` for the other public Make targets. `make clean-all` deletes every workflow-managed resource in the namespace; reports are retained.
 
@@ -51,6 +53,7 @@ For the component, network, storage, checkpoint, source-code, sequence-diagram, 
 - `vm-cbt-backup.sh` adds new deterministic workload files and modifies one existing baseline file per pass, verifies the guest inventory against the saved manifest, creates its pass-specific incremental backup, then advances lifecycle state only after the backup and tracker checkpoint succeed.
 - `vm-cbt-verify.sh` checks CBT, completion, every distinct checkpoint, and the final tracker checkpoint, then verifies the full restore and every cumulative incremental restore prefix before merging report fragments into `report.json`.
 - `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and every incremental backup PVC, then verifies the baseline and each cumulative restore prefix — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and independent cross-checks.
+- `vm-cbt-recover.sh` takes a new full backup on the selected existing VM using the run's tracker and `forceFullBackup:true`, then selects that attempt for read-only baseline restore verification. It never deletes/reuses the original failed backup/PVC.
 - `clean-all.sh` removes workflow-managed resources, including per-run Windows OOBE Secrets, from the shared namespace and only the guest key marked as workflow-managed.
 
 Each run also writes a structured JSON report to `runs/<run-id>/report.json` — see [Run report](#run-report) below.
@@ -101,11 +104,11 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `REMOTE_HOST` | For `make sync`/`make resync`/`make pull-reports` | Unset | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `make sync`/`make resync`/`make pull-reports` | Unset | Destination directory on that host. |
 | `NAMESPACE` | No | `vm-cbt-demo` | Kubernetes namespace for workflow resources. |
-| `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `verify`, or `extend`. |
-| `VM` | For staged `incremental`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
+| `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `recover`, `verify`, or `extend`. |
+| `VM` | For staged `incremental`/`recover`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
 | `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when neither `NAME` nor `VM` supplies it, a new UTC timestamp-prefixed run ID is generated. |
 | `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `debian`, or `windows`. |
-| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` and successful `TYPE=recover` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `DEBUG` | No | `false` | Normal output shows effective non-secret pipeline settings, target VM/resource names, concise phase/step results, warnings/failures, and the final PASS/FAIL/INCOMPLETE box. `DEBUG=true` adds timestamped command, status, progress, and backup-condition/VMI diagnostics. |
 | `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
 | `GUEST_INCREMENTAL_FILE_COUNT` | No | `4` | Number of new deterministic files added in each pass; every pass also modifies one deterministic baseline file. |
@@ -356,10 +359,11 @@ Each lifecycle has one immutable `runs/<run-id>/` directory. `run.json` stores t
 - `verification.checks`: CBT/checkpoint/PVC checks plus full-only and every cumulative restore prefix's file counts, byte totals, and manifest-hash comparisons.
 - `evidence.vm_backup_status`: optional relative paths to matching KubeVirt VM status snapshots under `evidence/`; values are `null` when no matching snapshot is available. Raw status is never mixed into test-level backup records.
 - `logs`: relative paths to `workflow.log` plus the collected `virt-launcher` and restore-pod logs.
+- `recovery.attempts[]`: separate blocked, failed, and successful same-VM recovery records, including original failed artifacts, recovery backup/PVC/checkpoint, tracker transition, and baseline restore checks.
 
-`summary.json` is the compact, human-facing projection written by `make e2e` and direct `make vm-cbt-verify`. It shows the lifecycle verdict (`PASS`, `FAIL`, or `INCOMPLETE`), the last invocation result, Full/incremental status and timings, CBT/checkpoint status, baseline/final guest file counts, payload bytes and manifest SHA-256 values, plus restore hash-match results. `payload_bytes` means guest workload data, not qcow2 bytes copied or physical storage use; PVC capacity is separate. The summary is generated from `run.json` and `report.json`, not an independent qemu-img audit. Keep `report.json` as the detailed record; see [independent CBT verification](docs/cbt/13-independent-cbt-verification.md) for raw bitmap/artifact evidence.
+`summary.json` is the compact, human-facing projection written by `make e2e` and direct `make vm-cbt-verify`. It shows the lifecycle/recovery verdict (`PASS`, `FAIL`, `INCOMPLETE`, or `BLOCKED`), the last invocation result, Full/incremental status and timings, recovery attempts, CBT/checkpoint status, baseline/final guest file counts, payload bytes and manifest SHA-256 values, plus restore hash-match results. `payload_bytes` means guest workload data, not qcow2 bytes copied or physical storage use; PVC capacity is separate. The summary is generated from `run.json` and `report.json`, not an independent qemu-img audit. Keep `report.json` as the detailed record; see [independent CBT verification](docs/cbt/13-independent-cbt-verification.md) for raw bitmap/artifact evidence.
 
-`run.json` is the separate lifecycle index; it stores the saved configuration, VM UID, pass counters, backup/checkpoint records, and lifecycle status. Updates are atomic; `make clean-all` marks it cleaned but retains it with the run report.
+`run.json` is the separate lifecycle index; it stores the saved configuration, VM UID, pass counters, backup/checkpoint records, recovery attempt records, and lifecycle status. Updates are atomic; `make clean-all` marks it cleaned but retains it with the run report.
 
 Unlike transient `state/` (the checkout operation lock), `runs/` is not deleted by `make clean-all` — it preserves each run's metadata, report, and debugging evidence. Normal output shows top-level Make stages and key progress/status; routine substeps/actions/successes are in `logs/workflow.log`, and `DEBUG=true` prints them plus detailed status snapshots. Inspect a run with `jq . runs/<run-id>/report.json` or compare two reports. Log collection is best-effort and does not collect cluster component logs.
 

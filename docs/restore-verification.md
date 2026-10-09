@@ -2,6 +2,8 @@
 
 This guide describes the data-plane assertion in `make vm-cbt-restore-test`. It reconstructs the full-only disk and every cumulative full-plus-incremental prefix, mounts each read-only, and compares the guest workload directory against the run's manifest. Each incremental prefix contains both newly added files and one deterministically modified baseline file. Backup API status and PVC binding alone are not restore proof.
 
+`make e2e TYPE=recover VM=vm-<run-id>` uses the same verifier in recovery-only mode, selecting the successful attempt by its recorded `rNNN` ID. It mounts only that recovery attempt's full PVC read-only, validates the baseline manifest without requiring planned incremental passes, and compares baseline file count, payload bytes, and manifest hash. No incremental PVC is mounted for this check.
+
 ## Why this uses a custom restore path
 
 KubeVirt's CBT incremental-backup API writes qcow2 artifacts but does not define a restore API:
@@ -11,7 +13,7 @@ KubeVirt's CBT incremental-backup API writes qcow2 artifacts but does not define
 
 The restore sequence converts the full-only disk, then rebases each pass-specific overlay onto the preceding checkpoint, converts that cumulative prefix to raw, and compares it to the matching per-pass manifest before continuing. The short-lived privileged pod mounts backup PVCs read-only and uses the node's `/dev` for loop devices. Debian restores mount ext4, RHEL 9 restores mount XFS, and Windows restores mount NTFS with `ntfs3` or `ntfs-3g`.
 
-The restore pod creates no additional PVC: it mounts the existing full and incremental backup PVCs read-only. Its `/work` volume is an `emptyDir` for raw images and the temporary incremental copy; `/dev` is a hostPath for loop devices. The `emptyDir` has no `sizeLimit` in the current manifest, so its ephemeral-storage use is separate from the PVC budget.
+The restore pod creates no additional PVC: normal verification mounts the existing full and incremental backup PVCs read-only; recovery-only verification mounts the selected recovery full PVC read-only. Its `/work` volume is an `emptyDir` for raw images and temporary incremental copies; `/dev` is a hostPath for loop devices. The `emptyDir` has no `sizeLimit` in the current manifest, so its ephemeral-storage use is separate from the PVC budget.
 
 ## Workload and manifest contract
 
