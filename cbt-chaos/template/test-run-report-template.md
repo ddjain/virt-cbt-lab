@@ -1,4 +1,4 @@
-# {{REPORT_TITLE}}
+# VERDICT: {{OVERALL_VERDICT}} — {{REPORT_TITLE}}
 
 > Full evidence for a **single `make e2e` run** of a chaos scenario. Paste the **Executive
 > summary** + the filled `test-run-result-template.md` at the top of a Jira comment; link or
@@ -9,24 +9,45 @@
 | Field | Value |
 |-------|-------|
 | **Scenario ID** | {{SCENARIO_ID}} |
-| **Scenario spec** | `cbt-chaos/scenarios/{{SCENARIO_ID}}/scenario-spec.md` |
+| **Scenario spec** | `{{SCENARIO_SPEC_PATH}}` |
 | **Run NAME** | {{RUN_NAME}} |
 | **Date** | {{RUN_DATE}} |
 | **Host / cluster** | {{REMOTE_HOST}} (`{{REMOTE_DIR}}`) |
 | **Namespace** | {{NAMESPACE}} |
 | **VM** | {{VM_NAME}} |
 | **Chaos tool** | {{CHAOS_TOOL}} (e.g. `krknctl run pod-scenarios` via `chaos-trigger-v2.sh`) |
-| **Report artifact** | `runs/{{RUN_ID}}/report.json` |
+| **Report artifact** | `{{E2E_REPORT_JSON_PATH}}` |
 
 ## Result at a glance
 
 | | |
 |---|---|
-| **Overall** | PASS / FAIL / PASS with findings / BLOCKED |
+| **Overall** | PASS / FAIL / PASS WITH FINDINGS / BLOCKED |
 | **`make e2e` exit status** | |
 | **Chaos landed in the intended window** | Yes / No |
 
 **One-line result:** {{ONE_LINE_SUMMARY}}
+
+## Test plan details
+
+Fill from the v2 `jira-issue.md` or the legacy `scenario-spec.md`; do not omit source criteria.
+
+- **Test ID:** {{SCENARIO_ID}}
+- **Test title:** {{TEST_TITLE}}
+- **Workflow:** {{WORKFLOW}}
+- **Test objective / description:** {{TEST_OBJECTIVE}}
+- **Chaos target:** {{CHAOS_TARGET}}
+- **Chaos action:** {{CHAOS_ACTION}}
+- **When to inject:** {{INJECTION_WINDOW}}
+- **Injection signal / condition:** {{INJECTION_SIGNAL}}
+- **Chaos duration:** {{CHAOS_DURATION}}
+- **Expected behavior:** {{EXPECTED_BEHAVIOR}}
+- **Recovery:** {{RECOVERY}}
+- **How to verify:** {{HOW_TO_VERIFY}}
+- **Expected outcome:** {{EXPECTED_OUTCOME}}
+- **Priority:** {{PRIORITY}}
+- **Technical scenario:** {{TECHNICAL_SCENARIO}}
+- **Chaos phase:** {{CHAOS_PHASE}}
 
 ---
 
@@ -63,6 +84,17 @@
 | Component | Selector | Why this target |
 |-----------|----------|------------------|
 | {{TARGET_COMPONENT}} | {{TARGET_SELECTOR}} | {{RATIONALE}} |
+
+### Independent monitor-subagent evidence
+
+| Check | Result | Evidence |
+|-------|--------|----------|
+| Watch armed before trigger | PASS / FAIL | {{MONITOR_ARMED_TIME}} |
+| Observed injection condition | PASS / FAIL / INCONCLUSIVE | {{OBSERVED_CONDITION_AND_TIME}} |
+| Actual target matches Jira/spec component | PASS / FAIL / INCONCLUSIVE | Expected: {{EXPECTED_TARGET}}; observed: {{OBSERVED_TARGET}} |
+| Chaos landed inside the intended window | PASS / FAIL / INCONCLUSIVE | {{INJECTION_TIME_AND_OFFSET}} |
+| Monitor conclusion | CONFIRMED / NOT CONFIRMED / INCONCLUSIVE | {{MONITOR_CONCLUSION}} |
+| Observer evidence | | `{{OBSERVER_EVIDENCE_PATHS}}` |
 
 ### Chaos lifecycle timestamps
 

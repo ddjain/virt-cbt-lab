@@ -27,6 +27,21 @@ set -a; . ./.env; set +a
 make e2e
 ```
 
+### Staged CBT lifecycle commands
+
+Use the workflow stage that matches the scenario; do not start the full demo when the issue only needs one backup stage:
+
+```sh
+make e2e TYPE=full
+make e2e TYPE=incremental VM=vm-my-existing-run
+```
+
+`TYPE=full` creates a new run ID when `NAME`/`VM` is omitted, sets up a new VM, and takes its full backup; the lifecycle remains incomplete until incremental passes are added. `TYPE=incremental` requires the existing managed VM (replace `vm-my-existing-run` with its exact name) and its valid `runs/<run-id>/run.json` in this checkout; it runs the next planned incremental pass without recreating the VM. The final planned pass performs verification. Do not copy a live VM name into permanent examples; resolve the exact VM/run ID from the active workflow state.
+
+These modes are supported only when the active checkout's `Makefile`/workflow scripts implement `TYPE`. Check `make help` and the target source, especially when running from a remote checkout: an older `e2e` target may ignore `TYPE=incremental` and run the complete demo instead. `make e2e` with default `TYPE=all` remains the full lifecycle.
+
+`make clean-all` deletes the workflow-managed resources for all runs in the namespace. Do not run it for scenario triage, E2E/chaos validation, or post-run cleanup; use it only for an explicitly requested cleanup task.
+
 Validation commands:
 
 ```sh

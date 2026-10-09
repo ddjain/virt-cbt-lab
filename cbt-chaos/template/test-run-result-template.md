@@ -1,4 +1,4 @@
-# Test run result — {{SCENARIO_ID}} — {{RUN_DATE}}
+# VERDICT: {{OVERALL_VERDICT}} — Test run result — {{SCENARIO_ID}} — {{RUN_DATE}}
 
 > Short outcome for a Jira comment, dashboard, or index. Link to the full report file
 > (`test-run-report-template.md` instance) for evidence.
@@ -12,7 +12,7 @@
 | **Date (UTC)** | {{RUN_DATE}} |
 | **Target VM** | {{VM_NAME}} |
 | **Target backup** | {{TARGET_BACKUP_NAME}} (full / incremental) |
-| **Overall outcome** | PASS / FAIL / BLOCKED / PASS with findings |
+| **Overall outcome** | PASS / FAIL / BLOCKED / PASS WITH FINDINGS |
 | **`make e2e` exit status** | 0 / non-zero |
 | **Full report** | {{LINK_OR_PATH_TO_FULL_REPORT}} |
 
@@ -25,6 +25,7 @@
 | Criterion | Result | Notes |
 |-----------|--------|-------|
 | Chaos landed inside the intended window | PASS / FAIL | compare injection timestamp to `VirtualMachineBackup` creation/Done timestamps |
+| Chaos affected the component/resource named in the issue/spec | PASS / FAIL / BLOCKED | compare observed object identity and event to the Jira/spec target |
 | `Done` condition status/reason correctly reflects outcome | PASS / FAIL | never rely on `status=True` alone — check `.status.conditions[?(@.type=="Done")].reason` |
 | Backup artifact integrity (no `Done=True` over truncated/corrupt bytes) | PASS / FAIL / N/A | `vm-cbt-restore-test.sh` hash + marker-line comparison |
 | Checkpoint chain intact (full → incremental → tracker) | PASS / FAIL / N/A | |
