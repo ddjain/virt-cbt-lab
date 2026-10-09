@@ -48,12 +48,13 @@ set_resource_names() {
 
 
 generate_run_id() {
-  local adjective noun tag
+  local adjective noun tag timestamp
   adjective="${RUN_ID_ADJECTIVES[RANDOM % ${#RUN_ID_ADJECTIVES[@]}]}"
   noun="${RUN_ID_NOUNS[RANDOM % ${#RUN_ID_NOUNS[@]}]}"
   # Avoid `head -c`: its upstream may SIGPIPE under `set -o pipefail`.
   tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
-  printf '%s-%s-%s' "$adjective" "$noun" "$tag"
+  timestamp="$(date -u +%Y%m%d%H%M%S)"
+  printf '%s-%s-%s-%s' "$timestamp" "$adjective" "$noun" "$tag"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

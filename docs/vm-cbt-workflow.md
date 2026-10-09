@@ -55,7 +55,7 @@ make e2e
 vm-setup -> vm-backup -> (vm-cbt-backup x GUEST_INCREMENTAL_PASSES) -> vm-cbt-verify
 ```
 
-`make e2e NAME=foo` uses `foo` as the run ID instead of a random one, for a deterministic, repeatable run name; omit `NAME` to keep the default random `<adjective>-<noun>-<hex tag>` scheme.
+`make e2e NAME=foo` uses `foo` as the run ID instead of a random one; omit `NAME` to use a generated `<UTC YYYYMMDDHHMMSS>-<adjective>-<noun>-<hex tag>` ID. The fixed-width UTC prefix lets generated run directories sort by start time to one-second precision; caller-supplied IDs are unchanged.
 
 `GUEST_INCREMENTAL_PASSES` defaults to `1`. Set it to `3` for one full backup
 and three incremental backups in one `make e2e` invocation:
@@ -229,8 +229,12 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 - Each `vm-cbt-backup.sh` invocation → `incremental-pass-NN.json`: pass number, files/bytes/hash added, modified-file count/hash, cumulative workload totals/hash, backup name/type/checkpoint, and output PVC. When the VM exposes a matching `backupStatus`, its snapshot is saved under `runs/<run-id>/evidence/` and its path is referenced from the report; otherwise the evidence path is `null`.
 - `vm-cbt-verify.sh` → `verify.json`: tracker and final checkpoint plus CBT/checkpoint checks; it collects the VM's `virt-launcher` log.
 - `vm-cbt-restore-test.sh` → `restore-test.json`: PVC-bound and full/prefix file-count, payload-byte, and manifest-hash checks; the restore pod log is saved alongside the report.
+- `e2e-stage.sh` and standalone `vm-cbt-verify.sh` → `summary.json`: compact human-facing lifecycle verdict, last invocation, backup statuses/timings, CBT-chain result, baseline/final guest payload hashes and sizes, and restore hash-match results.
 
 `vm-cbt-verify.sh` merges the fragments into `runs/<run-id>/report.json`, concatenates pass records and check arrays, adds `run_id`, and sets `verification.overall_passed` from all API and restore checks. Available VM backup-status snapshots are kept separately under `evidence/`; `.logs.workflow` points to the complete action trace at `logs/workflow.log`. `runs/<run-id>/run.json` is the resumable lifecycle index; `make clean-all` marks it `cleaned` while preserving the run directory and report.
+
+`summary.json` is regenerated after each staged E2E invocation and standalone final verification. It is a compact projection of `run.json` and, when available, `report.json`, not an independent source of evidence. `verdict` describes lifecycle completion; `last_invocation.result` describes the most recent command. A Full-only stage is `INCOMPLETE` while its Full backup can still be `PASS`. `payload_bytes` is guest workload payload, not qcow2 bytes copied or physical storage usage; PVC capacity is reported separately. Use `docs/cbt/13-independent-cbt-verification.md` for the separate raw-artifact audit.
+
 ## Resources and names
 
 All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental` and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. `make e2e-incremental VM=vm-<run-id>` is the semantic alias for `TYPE=incremental`. Resource names derive from the run ID, so different runs coexist without collisions:
