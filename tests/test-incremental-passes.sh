@@ -17,6 +17,21 @@ if valid_run_id '../outside'; then
   printf 'A path-like run ID passed validation.\n' >&2
   exit 1
 fi
+generated_run_id="$(generate_run_id)"
+if ! [[ "$generated_run_id" =~ ^[0-9]{14}-[a-z]+-[a-z]+-[0-9a-f]{4}$ ]] ||
+   ! valid_run_id "$generated_run_id"; then
+  printf 'Generated run ID does not have the timestamp-prefixed format: %s\n' \
+    "$generated_run_id" >&2
+  exit 1
+fi
+RUN_ID="$generated_run_id"
+generated_incremental_pvc_name="$(incremental_backup_pvc_name_for_pass 99)"
+if (( ${#generated_incremental_pvc_name} > 63 )); then
+  printf 'Generated run ID makes the incremental PVC name exceed 63 characters: %s\n' \
+    "$generated_incremental_pvc_name" >&2
+  exit 1
+fi
+
 
 generated_run_id="$(generate_run_id)"
 if ! [[ "$generated_run_id" =~ ^[0-9]{14}-[a-z]+-[a-z]+-[0-9a-f]{4}$ ]] ||
