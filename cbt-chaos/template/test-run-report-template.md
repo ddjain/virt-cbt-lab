@@ -1,173 +1,109 @@
 # VERDICT: {{OVERALL_VERDICT}} — {{REPORT_TITLE}}
 
-> Full evidence for a **single `make e2e` run** of a chaos scenario. Paste the **Executive
-> summary** + the filled `test-run-result-template.md` at the top of a Jira comment; link or
-> attach this whole file for the full evidence trail.
+> Standalone record of CBT backup behavior, disruption, recovery, and data verification.
 
-## Header
+## Test identification
 
 | Field | Value |
 |-------|-------|
 | **Scenario ID** | {{SCENARIO_ID}} |
-| **Scenario spec** | `{{SCENARIO_SPEC_PATH}}` |
-| **Run NAME** | {{RUN_NAME}} |
-| **Date** | {{RUN_DATE}} |
-| **Host / cluster** | {{REMOTE_HOST}} (`{{REMOTE_DIR}}`) |
+| **Test title** | {{TEST_TITLE}} |
+| **Test run label** | {{RUN_LABEL}} |
+| **Date (UTC)** | {{RUN_DATE}} |
 | **Namespace** | {{NAMESPACE}} |
-| **VM** | {{VM_NAME}} |
-| **Chaos tool** | {{CHAOS_TOOL}} (e.g. `krknctl run pod-scenarios` via `chaos-trigger-v2.sh`) |
-| **Report artifact** | `{{E2E_REPORT_JSON_PATH}}` |
+| **Target VM** | {{VM_NAME}} |
+| **Same-VM post-chaos backup target** | {{POST_CHAOS_SAME_VM}} |
+| **Supplemental fresh recovery VM** | {{SUPPLEMENTAL_RECOVERY_VM_OR_NA}} |
+| **Overall outcome** | {{OVERALL_VERDICT}} |
 
-## Result at a glance
+## Test plan
 
-| | |
-|---|---|
-| **Overall** | PASS / FAIL / PASS WITH FINDINGS / BLOCKED |
-| **`make e2e` exit status** | |
-| **Chaos landed in the intended window** | Yes / No |
-
-**One-line result:** {{ONE_LINE_SUMMARY}}
-
-## Test plan details
-
-Fill from the v2 `jira-issue.md` or the legacy `scenario-spec.md`; do not omit source criteria.
-
-- **Test ID:** {{SCENARIO_ID}}
-- **Test title:** {{TEST_TITLE}}
-- **Workflow:** {{WORKFLOW}}
-- **Test objective / description:** {{TEST_OBJECTIVE}}
-- **Chaos target:** {{CHAOS_TARGET}}
-- **Chaos action:** {{CHAOS_ACTION}}
-- **When to inject:** {{INJECTION_WINDOW}}
-- **Injection signal / condition:** {{INJECTION_SIGNAL}}
-- **Chaos duration:** {{CHAOS_DURATION}}
+- **Workflow:** {{WORKFLOW_IN_PRODUCT_TERMS}}
+- **Objective / hypothesis:** {{TEST_OBJECTIVE}}
+- **Target component/resource:** {{CHAOS_TARGET}}
+- **Action:** {{CHAOS_ACTION}}
+- **Injection window:** {{INJECTION_WINDOW}}
+- **Signal / condition:** {{INJECTION_SIGNAL}}
+- **Duration:** {{CHAOS_DURATION}}
 - **Expected behavior:** {{EXPECTED_BEHAVIOR}}
 - **Recovery:** {{RECOVERY}}
-- **How to verify:** {{HOW_TO_VERIFY}}
+- **Verification:** {{HOW_TO_VERIFY}}
 - **Expected outcome:** {{EXPECTED_OUTCOME}}
 - **Priority:** {{PRIORITY}}
 - **Technical scenario:** {{TECHNICAL_SCENARIO}}
-- **Chaos phase:** {{CHAOS_PHASE}}
-
----
+- **Phase:** {{CHAOS_PHASE}}
 
 ## Executive summary
 
-{{3_6_SENTENCES_FOR_DEVELOPERS}}
+{{EXECUTIVE_SUMMARY}}
+
+## How we ran the scenario
+
+{{HOW_WE_RAN_SCENARIO}}
 
 ## Environment
 
-| Component | Version / value | Notes |
-|-----------|------------------|-------|
-| OpenShift | {{OCP_VERSION}} | `oc get clusterversion` |
-| CNV (KubeVirt) | {{CNV_VERSION}} | |
-| `krknctl` | {{KRKNCTL_VERSION}} | `krknctl --version` |
-| Storage backend | {{STORAGE_BACKEND}} | e.g. hostpath-provisioner, ODF |
-| `GUEST_DATA_SIZE_MB` / `GUEST_INCREMENTAL_DATA_SIZE_MB` | {{GUEST_DATA_SIZE_MB}} / {{GUEST_INCREMENTAL_DATA_SIZE_MB}} | |
+| Component | Version / value |
+|-----------|-----------------|
+| OpenShift | {{OCP_VERSION}} |
+| KubeVirt / CNV | {{CNV_VERSION}} |
+| Storage backend | {{STORAGE_BACKEND}} |
+| Guest baseline data | {{BASELINE_DATA_PROFILE}} |
+| Incremental data | {{INCREMENTAL_DATA_PROFILE}} |
 
-## Chaos injection details
+## Target and disruption
 
-### Trigger script and configuration
+| Expected target | Observed target | Identity evidence |
+|-----------------|-----------------|-------------------|
+| {{EXPECTED_TARGET}} | {{OBSERVED_TARGET}} | {{TARGET_IDENTITY_EVIDENCE}} |
 
-```bash
-{{TRIGGER_SCRIPT_INVOCATION}}
-```
+- **Action observed:** {{OBSERVED_ACTION}}
+- **Active-copy signal:** {{OBSERVED_SIGNAL}}
+- **Injection window result:** PASS / FAIL / BLOCKED — {{INJECTION_WINDOW_RESULT}}
+- **Independent observation:** {{MONITOR_CONCLUSION}}
+- **Recovery of disrupted workload:** {{DISRUPTION_RECOVERY_RESULT}}
 
-### Command krknctl actually ran
+## How backup and recovery behaved
 
-```bash
-{{FULL_KRKNCTL_COMMAND}}
-```
+| Stage / backup | Type | `Done` status | `Done` reason | Checkpoint | Tracker state | PVC / included volume | Restore/data result |
+|----------------|------|---------------|---------------|------------|---------------|----------------------|---------------------|
+{{BACKUP_ROWS}}
 
-### Target
 
-| Component | Selector | Why this target |
-|-----------|----------|------------------|
-| {{TARGET_COMPONENT}} | {{TARGET_SELECTOR}} | {{RATIONALE}} |
+## Same-VM post-chaos backup verification
 
-### Independent monitor-subagent evidence
+{{SAME_VM_POST_CHAOS_RESULT}}
+## Supplemental clean lifecycle verification (if run)
 
-| Check | Result | Evidence |
-|-------|--------|----------|
-| Watch armed before trigger | PASS / FAIL | {{MONITOR_ARMED_TIME}} |
-| Observed injection condition | PASS / FAIL / INCONCLUSIVE | {{OBSERVED_CONDITION_AND_TIME}} |
-| Actual target matches Jira/spec component | PASS / FAIL / INCONCLUSIVE | Expected: {{EXPECTED_TARGET}}; observed: {{OBSERVED_TARGET}} |
-| Chaos landed inside the intended window | PASS / FAIL / INCONCLUSIVE | {{INJECTION_TIME_AND_OFFSET}} |
-| Monitor conclusion | CONFIRMED / NOT CONFIRMED / INCONCLUSIVE | {{MONITOR_CONCLUSION}} |
-| Observer evidence | | `{{OBSERVER_EVIDENCE_PATHS}}` |
+{{SUPPLEMENTAL_RECOVERY_SUMMARY}}
 
-### Chaos lifecycle timestamps
+## Data integrity
 
-| Event | Time (UTC) | Notes |
-|-------|------------|-------|
-| Trigger script / krknctl started | | |
-| Trigger condition satisfied | | |
-| Pod delete issued | | |
-| Old virt-launcher pod `Killing` event | | |
-| New virt-launcher pod `Started` | | |
-| Target `VirtualMachineBackup` created | | |
-| Target `VirtualMachineBackup` `Done` condition set | | |
+| Restore point | Expected file count / bytes / hash | Observed file count / bytes / hash | Result |
+|---------------|------------------------------------|-----------------------------------|--------|
+{{RESTORE_ROWS}}
 
-## Timeline
+## UTC timeline
 
-{{NARRATIVE_OR_TABLE_CHRONOLOGICAL_EVENTS}}
+| Event | Time (UTC) | Observation |
+|-------|------------|-------------|
+| Backup began / target backup created | {{BACKUP_START_TIME}} | {{BACKUP_START_OBSERVATION}} |
+| Injection signal observed | {{SIGNAL_TIME}} | {{SIGNAL_OBSERVATION}} |
+| Disruption issued and observed | {{DISRUPTION_TIME}} | {{DISRUPTION_OBSERVATION}} |
+| Target backup reached terminal state | {{BACKUP_DONE_TIME}} | {{BACKUP_DONE_OBSERVATION}} |
+| Original workload recovered | {{ORIGINAL_RECOVERY_TIME}} | {{ORIGINAL_RECOVERY_OBSERVATION}} |
+| Post-chaos backup/restore verification completed | {{POST_CHAOS_COMPLETE_TIME}} | {{POST_CHAOS_COMPLETE_OBSERVATION}} |
 
-## Backup CR outcome (the `Done` reason check)
+## Acceptance criteria
 
-> `Done=True` alone does not mean the backup succeeded — KubeVirt sets it on both a genuine
-> completion and a terminal failure, distinguished only by `.status.conditions[?(@.type=="Done")].reason`.
-> `scripts/common.sh`'s `backup_done_reason_is_failure()` treats any reason starting with
-> `"Backup has failed"` as a real failure; everything else (including benign
-> `"...warning: Failed freezing guest filesystem..."` messages) is treated as success.
+| Product criterion | Result | Evidence-based rationale |
+|-------------------|--------|--------------------------|
+{{CRITERION_ROWS}}
 
-| Field | Full backup | Incremental backup |
-|-------|-------------|---------------------|
-| Name | {{FULL_BACKUP_NAME}} | {{INCREMENTAL_BACKUP_NAME}} |
-| `status.type` | | |
-| `Done` condition `status` | | |
-| `Done` condition `reason` | | |
-| Treated as failure by `backup_done_reason_is_failure`? | | |
-| `status.checkpointName` | | |
-| Tracker advanced to this checkpoint? | | |
+## CBT product findings and next actions
 
-## Workload / data integrity
+{{PRODUCT_FINDINGS_AND_ACTIONS_OR_NONE}}
 
-{{RESTORE_TEST_OUTPUT_OR_N_A}}
+## Evidence summary
 
-## `report.json` excerpt
-
-```json
-{{REPORT_JSON_BACKUPS_SECTION}}
-```
-
-## Kubernetes events (excerpt)
-
-```
-{{OC_GET_EVENTS_EXCERPT}}
-```
-
-## Steps to reproduce
-
-1. {{STEP}}
-
-```bash
-{{COMMANDS}}
-```
-
-## Verdict table
-
-| Criterion | Result |
-|-----------|--------|
-| {{CRITERION}} | PASS / FAIL / WARN |
-
-## Observations for developers
-
-{{BULLETS_FINDINGS_FOLLOWUPS}}
-
----
-
-## Appendix
-
-**Full logs, raw `oc get vmbackup -o json`, etc.**
-
-{{APPENDIX_CONTENT_OR_LINKS}}
+{{STANDALONE_EVIDENCE_SUMMARY}}

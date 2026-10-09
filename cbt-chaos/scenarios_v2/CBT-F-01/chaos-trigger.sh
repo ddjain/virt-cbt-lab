@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 export KUBECONFIG_PATH
 export KUBECONFIG="$KUBECONFIG_PATH"
 
-RUN_ID=20261009-cbt-f-01
+RUN_ID="${RUN_ID:-20261010-cbt-f-01-r02}"
 VM_NAME="vm-${RUN_ID}"
 NAMESPACE=vm-cbt-demo
 if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
@@ -71,7 +71,7 @@ observe_copy_then_disrupt() {
           --pod-label "vm.kubevirt.io/name=${VM_NAME}" \
           --name-pattern "^virt-launcher-${VM_NAME}-.*$" \
           --disruption-count 1 \
-          --kubeconfig "$KUBECONFIG_PATH"
+          --krkn-kubeconfig /home/krkn/.kube/config
         return
       fi
     fi

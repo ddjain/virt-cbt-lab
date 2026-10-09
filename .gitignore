@@ -32,6 +32,8 @@ tmp-*/
 
 /cbt-chaos/scenarios/*/runs/
 
+/cbt-chaos/scenarios_v2/*/runs/**
+
 # Tool and OS metadata
 .DS_Store
 .idea/

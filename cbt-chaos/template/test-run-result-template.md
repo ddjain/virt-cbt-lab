@@ -1,49 +1,55 @@
-# VERDICT: {{OVERALL_VERDICT}} — Test run result — {{SCENARIO_ID}} — {{RUN_DATE}}
+# VERDICT: {{OVERALL_VERDICT}} — {{SCENARIO_ID}} — {{RUN_DATE}}
 
-> Short outcome for a Jira comment, dashboard, or index. Link to the full report file
-> (`test-run-report-template.md` instance) for evidence.
+> Standalone scenario outcome. Link to the detailed report for the full test plan and evidence narrative.
 
-## At a glance
+## Test summary
 
 | Field | Value |
 |-------|-------|
-| **Scenario ID** | {{SCENARIO_ID}} (e.g. `01-virt-launcher-pod-kill-during-copy`) |
-| **Run ID / NAME** | {{RUN_NAME}} (the `make e2e NAME=` value, e.g. `chaos01v2-0930-1044`) |
+| **Scenario ID / title** | {{SCENARIO_ID}} — {{SCENARIO_TITLE}} |
+| **Test run label** | {{RUN_LABEL}} |
 | **Date (UTC)** | {{RUN_DATE}} |
+| **Namespace** | {{NAMESPACE}} |
 | **Target VM** | {{VM_NAME}} |
 | **Target backup** | {{TARGET_BACKUP_NAME}} (full / incremental) |
-| **Overall outcome** | PASS / FAIL / BLOCKED / PASS WITH FINDINGS |
-| **`make e2e` exit status** | 0 / non-zero |
-| **Full report** | {{LINK_OR_PATH_TO_FULL_REPORT}} |
+| **Overall outcome** | {{OVERALL_VERDICT}} |
+| **Detailed report** | [{{REPORT_TITLE}}]({{REPORT_LINK}}) |
 
-## One-line summary
+## How we ran the scenario
 
-{{ONE_LINE_WHAT_HAPPENED}}
+{{HOW_WE_RAN_SCENARIO}}
 
-## Criteria checklist
+## One-line result
 
-| Criterion | Result | Notes |
-|-----------|--------|-------|
-| Chaos landed inside the intended window | PASS / FAIL | compare injection timestamp to `VirtualMachineBackup` creation/Done timestamps |
-| Chaos affected the component/resource named in the issue/spec | PASS / FAIL / BLOCKED | compare observed object identity and event to the Jira/spec target |
-| `Done` condition status/reason correctly reflects outcome | PASS / FAIL | never rely on `status=True` alone — check `.status.conditions[?(@.type=="Done")].reason` |
-| Backup artifact integrity (no `Done=True` over truncated/corrupt bytes) | PASS / FAIL / N/A | `vm-cbt-restore-test.sh` hash + marker-line comparison |
-| Checkpoint chain intact (full → incremental → tracker) | PASS / FAIL / N/A | |
-| VM/virt-launcher recovery after chaos | PASS / FAIL | `oc get pod`/`oc get vm -o jsonpath='{.status.ready}'` post-run |
-| Chaos tooling exit status | PASS / FAIL | krknctl / trigger script exit code |
-| Report captured `done_reason` for every backup CR touched | PASS / FAIL | `runs/<run-id>/report.json` → `backups.full.done_reason` and every `backups.incrementals[].done_reason` populated |
+{{ONE_LINE_PRODUCT_RESULT}}
 
-## Key timings
+## Product criteria checklist
 
-| Event | Time (UTC) | Offset from backup creation |
-|-------|------------|------------------------------|
-| `VirtualMachineBackup` created | | 0s |
-| Chaos condition satisfied / kill issued | | |
-| virt-launcher pod deleted | | |
-| New virt-launcher pod ready | | |
-| `Done` condition set | | |
+| Criterion | Result | Observed behavior |
+|-----------|--------|-------------------|
+| Intended CBT backup phase and injection window | PASS / FAIL / BLOCKED | {{INJECTION_RESULT}} |
+| Correct component/resource disrupted | PASS / FAIL / BLOCKED | {{TARGET_RESULT}} |
+| Backup terminal type, status, and reason | PASS / FAIL | {{BACKUP_RESULT}} |
+| Checkpoint/tracker state remained correct | PASS / FAIL | {{CHECKPOINT_RESULT}} |
+| VM/VMI and CBT recovered | PASS / FAIL | {{RECOVERY_RESULT}} |
+| Same-VM post-chaos backup recovery | PASS / FAIL / BLOCKED | {{SAME_VM_POST_CHAOS_RESULT}} |
+| Supplemental fresh full/incremental restore lifecycle | PASS / FAIL / N/A | {{SUPPLEMENTAL_LIFECYCLE_RESULT}} |
+| Restored guest data and manifest/hash checks | PASS / FAIL / N/A | {{DATA_RESULT}} |
 
-## Follow-ups
+## Key timings (UTC)
 
-- Script/spec changes filed: {{FILES_CHANGED}}
-- Next run notes: {{NEXT_RUN_NOTES}}
+| Event | Time | Relative observation |
+|-------|------|----------------------|
+| Target backup began / object created | {{BACKUP_START_TIME}} | {{BACKUP_START_NOTE}} |
+| Active-copy signal observed | {{INJECTION_SIGNAL_TIME}} | {{SIGNAL_NOTE}} |
+| Disruption issued / observed | {{DISRUPTION_TIME}} | {{DISRUPTION_NOTE}} |
+| Backup terminal state | {{BACKUP_DONE_TIME}} | {{BACKUP_DONE_NOTE}} |
+| VM/launcher recovered | {{RECOVERY_TIME}} | {{RECOVERY_NOTE}} |
+
+## CBT product findings
+
+{{PRODUCT_FINDINGS_OR_NONE}}
+
+## Next action
+
+{{NEXT_ACTION_OR_NONE}}

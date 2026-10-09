@@ -70,6 +70,11 @@ metadata, artifact, checkpoint tree, and Tier-B restore/data correctness — ref
 chaos-plan.md §H layers 1-5. Never rely on a single `Done=True` read or a `Warning`
 event alone — see chaos-plan.md §B/§H for why.>
 
+**Post-chaos same-VM backup verification:**
+- After the disrupted VM is Ready with CBT Enabled, attempt a new backup on that same VM. If no valid full checkpoint exists, use a new uniquely named full-backup request and destination; if a valid full checkpoint exists and the scenario targets incremental behavior, use a new incremental request based on the last known-good checkpoint.
+- Preserve failed backup objects/PVCs; never retry by reusing a failed backup or destination name. Verify the new backup's type, terminal reason, checkpoint/tracker advancement, CBT state, and restore/data result.
+- If the active API/workflow cannot safely request this same-VM backup without reusing failed resources, mark the same-VM recovery check BLOCKED and request an approved recovery path. A fresh-VM full/incremental lifecycle may supplement, but does not replace, the same-VM check.
+
 ## 6. Special Notes
 <Anything scenario-specific: known flaky behavior already observed without chaos
 (e.g. the hotplug-attach race or the reconcile-duplicate-call race in chaos-plan.md
