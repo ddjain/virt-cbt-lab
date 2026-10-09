@@ -103,7 +103,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `NAMESPACE` | No | `vm-cbt-demo` | Kubernetes namespace for workflow resources. |
 | `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `verify`, or `extend`. |
 | `VM` | For staged `incremental`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
-| `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when both `NAME` and `VM` are unset, a new run ID is generated. |
+| `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when neither `NAME` nor `VM` supplies it, a new UTC timestamp-prefixed run ID is generated. |
 | `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `debian`, or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `DEBUG` | No | `false` | Normal output shows effective non-secret pipeline settings, target VM/resource names, concise phase/step results, warnings/failures, and the final PASS/FAIL/INCOMPLETE box. `DEBUG=true` adds timestamped command, status, progress, and backup-condition/VMI diagnostics. |
@@ -268,7 +268,9 @@ For a separate live monitor, run `make monitor VM=vm-<run-id>` after setup creat
 
 The full-backup step logs baseline file count and payload bytes. Each incremental pass records added files and payload bytes, the modified baseline file's hash, and cumulative workload totals. The structured JSON report retains per-pass payload/checkpoint data and restore results for the baseline and every prefix.
 
-Each `TYPE=all` or `TYPE=full` lifecycle uses a unique run ID by default (`<adjective>-<noun>-<hex tag>`), or a fixed ID from `NAME`/`VM`; fixed IDs must be unused and cannot be reused because each run directory is immutable. Resource names derive from the ID, so separate lifecycles coexist in `NAMESPACE` without cleanup. `TYPE=incremental` and `TYPE=verify` use the existing `VM` and its saved lifecycle state. Run `make clean-all` to remove all workflow-managed runs:
+Each staged `make e2e TYPE=...` invocation prints and records a final verdict in `runs/<run-id>/logs/workflow.log`. `TYPE=full` reports the full backup as passed while marking the lifecycle incomplete until the planned incremental passes and verification finish. A successful final incremental reports `PASS` only after checkpoint-chain and restore verification; a non-final incremental reports that verification is still pending.
+
+Each `TYPE=all` or `TYPE=full` lifecycle uses a unique run ID by default (`<UTC YYYYMMDDHHMMSS>-<adjective>-<noun>-<hex tag>`), or a fixed ID from `NAME`/`VM`. Generated IDs sort by UTC start time at one-second precision and stay within the existing 40-character run-ID limit; supplied IDs remain unchanged. Fixed IDs must be unused and cannot be reused because each run directory is immutable. Resource names derive from the ID, so separate lifecycles coexist in `NAMESPACE` without cleanup. `TYPE=incremental` and `TYPE=verify` use the existing `VM` and its saved lifecycle state. Run `make clean-all` to remove all workflow-managed runs:
 
 ```sh
 make clean-all

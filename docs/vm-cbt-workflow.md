@@ -55,7 +55,7 @@ make e2e
 vm-setup -> vm-backup -> (vm-cbt-backup x GUEST_INCREMENTAL_PASSES) -> vm-cbt-verify
 ```
 
-`make e2e NAME=foo` uses `foo` as the run ID instead of a random one, for a deterministic, repeatable run name; omit `NAME` to keep the default random `<adjective>-<noun>-<hex tag>` scheme.
+`make e2e NAME=foo` uses `foo` as the run ID instead of a random one; omit `NAME` to use a generated `<UTC YYYYMMDDHHMMSS>-<adjective>-<noun>-<hex tag>` ID. The fixed-width UTC prefix lets generated run directories sort by start time to one-second precision; caller-supplied IDs are unchanged.
 
 `GUEST_INCREMENTAL_PASSES` defaults to `1`. Set it to `3` for one full backup
 and three incremental backups in one `make e2e` invocation:
