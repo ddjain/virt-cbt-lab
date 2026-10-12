@@ -42,6 +42,8 @@ tmp-*/
 .agents/
 !.agents/skills/cbt-chaos-run/
 !.agents/skills/cbt-chaos-run/**
+!.agents/skills/cbt-chaos-issue-triage/
+!.agents/skills/cbt-chaos-issue-triage/**
 .claude/
 .pi/
 skills-lock.json
