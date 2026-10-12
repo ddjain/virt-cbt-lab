@@ -168,3 +168,4 @@ test:
 	@bash tests/test-run-summary.sh
 	@bash tests/test-vm-cbt-recover.sh
 	@bash tests/test-vm-backup-failure-recording.sh
+	@bash tests/test-chaos-watch-resource.sh

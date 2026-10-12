@@ -90,6 +90,7 @@ rsync -a --human-readable --itemize-changes \
   --exclude '/skills-lock.json' \
   --exclude '/vm-cbt-demo/' \
   --exclude '/cbt-chaos/scenarios/*/runs/' \
+  --exclude '/cbt-chaos/scenarios_v2/*/runs/' \
   --exclude '*.pem' \
   --exclude '*.key' \
   --exclude '*.p12' \

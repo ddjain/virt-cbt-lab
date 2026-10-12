@@ -34,6 +34,37 @@ cleanup_observer() {
 }
 trap cleanup_observer EXIT INT TERM
 
+# `oc delete --wait=false` only proves the delete request was accepted, not that
+# the launcher pod was actually removed or that KubeVirt replaced it; this check
+# independently confirms the effect and logs it as informational evidence only
+# (it never changes the trigger's exit status, which stays governed by the
+# existing backup-outcome logic below).
+verify_launcher_disruption_and_recovery() {
+  local old_pod="$1" old_uid="$2" deadline=$((SECONDS + 120))
+  local old_pod_json old_pod_gone=false replacement_ready=false
+  while ((SECONDS < deadline)); do
+    old_pod_json="$(oc get pod "$old_pod" -n "$NAMESPACE" -o json --ignore-not-found 2>/dev/null || true)"
+    if [[ -z "$old_pod_json" ]] || [[ "$(jq -r '.metadata.uid // empty' <<<"$old_pod_json")" != "$old_uid" ]]; then
+      old_pod_gone=true
+    fi
+    if [[ "$old_pod_gone" == true ]] && jq -e --arg uid "$old_uid" '
+      [.items[] | select(.metadata.uid != $uid and .status.phase == "Running" and
+        any((.status.conditions // [])[]?; .type == "Ready" and .status == "True"))] | length >= 1
+    ' <<<"$(oc get pods -n "$NAMESPACE" -l "vm.kubevirt.io/name=${VM_NAME}" -o json)" >/dev/null 2>&1; then
+      replacement_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$old_pod_gone" == true && "$replacement_ready" == true ]]; then
+    printf 'Independent effect check: launcher pod %s (UID %s) was replaced and the new launcher is Ready.\n' \
+      "$old_pod" "$old_uid" >&2
+  else
+    printf 'Independent effect check: could not confirm launcher-pod replacement/readiness within 120s (old_pod_gone=%s, replacement_ready=%s); treat the injection effect as unverified beyond the delete request.\n' \
+      "$old_pod_gone" "$replacement_ready" >&2
+  fi
+}
+
 observe_copy_then_disrupt() {
   local deadline=$((SECONDS + 3600)) pod pod_uid baseline_tree existing_tracker
   local baseline_captured=false
@@ -64,6 +95,7 @@ observe_copy_then_disrupt() {
           "$pod" "$pod_uid" >&2
         : > "$SIGNAL_FILE"
         oc delete pod "$pod" -n "$NAMESPACE" --wait=false
+        verify_launcher_disruption_and_recovery "$pod" "$pod_uid"
         return
       fi
     fi
