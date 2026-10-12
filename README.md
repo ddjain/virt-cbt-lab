@@ -283,7 +283,7 @@ Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-la
 
 ## Synchronization helper
 
-`make sync` (also `make resync`) pushes the working tree. `make pull-reports` copies all of `REMOTE_DIR/runs/` into local `runs/` and does not modify the remote. All three targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`; neither has a built-in default. The push excludes `.env` files, `.git`, local credentials, generated data, and tooling state.
+`make sync` (also `make resync`) pushes the working tree. `make pull-reports` copies all of `REMOTE_DIR/runs/` into local `runs/` and does not modify the remote. All three targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`; neither has a built-in default. The push excludes `.env` files, `.git`, local credentials, generated data (including both legacy and v2 scenario `runs/` directories), and tooling state. Pull an individual scenario's run directory separately when needed.
 
 With `.env` configured, use:
 
@@ -346,6 +346,12 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ├── runs/                 # Per-run metadata, workload manifests, reports, logs, and evidence (gitignored; survives clean-all)
 ```
 
+## Chaos observer readiness
+
+`cbt-chaos/watch-resource.sh <namespace|-> <resource> <name|label|field> <selector> <output.jsonl> <ready-file>` is a read-only, long-lived resource watch for both legacy and v2 scenarios. The caller creates a fresh scenario run's `observer/` directory and exports its approved host-local `KUBECONFIG_PATH` (or `KUBECONFIG`) before starting the helper. Use `-` as the namespace for cluster-scoped resources; `name` filters `metadata.name` even when the object does not exist yet. It saves `<output>.baseline.json`, streams updates to `<output>`, and writes errors to `<output>.stderr`. A ready file appears only after a successful scoped API read and healthy watch startup, and is removed when the watch stops or fails. Supervise the helper process and confirm the ready file still exists before injection. Readiness alone does **not** prove a scenario-specific signal, target UID/owner, or disruption; the scenario's observer must verify these separately. No cluster objects are modified.
+
+The same child checks `watch` authorization before arming. A ready file only describes startup: if the watch exits, it is revoked, so the coordinator must also stop/hold a not-yet-fired action when a required watch dies.
+
 ## Run report
 
 Each lifecycle has one immutable `runs/<run-id>/` directory. `run.json` stores the VM UID, saved workload/profile configuration, backup checkpoints, and lifecycle state. The workload manifest, report, report fragments, logs, evidence, and restore artifacts live beside it; staged commands select the lifecycle by `VM=vm-<run-id>`.
@@ -366,6 +372,8 @@ Each lifecycle has one immutable `runs/<run-id>/` directory. `run.json` stores t
 `run.json` is the separate lifecycle index; it stores the saved configuration, VM UID, pass counters, backup/checkpoint records, recovery attempt records, and lifecycle status. Updates are atomic; `make clean-all` marks it cleaned but retains it with the run report.
 
 Unlike transient `state/` (the checkout operation lock), `runs/` is not deleted by `make clean-all` — it preserves each run's metadata, report, and debugging evidence. Normal output shows top-level Make stages and key progress/status; routine substeps/actions/successes are in `logs/workflow.log`, and `DEBUG=true` prints them plus detailed status snapshots. Inspect a run with `jq . runs/<run-id>/report.json` or compare two reports. Log collection is best-effort and does not collect cluster component logs.
+
+For a chaos run's Jira-ready engineering issue, use [`cbt-chaos/template/engineering-jira-issue-template.md`](cbt-chaos/template/engineering-jira-issue-template.md). Keep CBT product improvements and test-harness bugs in separate drafts under that scenario's run directory; a draft does not create a Jira issue.
 
 ## Known limitations
 

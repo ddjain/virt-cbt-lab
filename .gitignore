@@ -40,9 +40,15 @@ tmp-*/
 .vscode/
 .serena/
 .agents/
+!.agents/skills/cbt-chaos-run/
+!.agents/skills/cbt-chaos-run/**
 .claude/
 .pi/
 skills-lock.json
+.omp/
 
 # Local RFC drafts
 /docs/rfcs/
+
+# Local session notes
+/commands.md

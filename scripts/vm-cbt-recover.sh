@@ -48,6 +48,21 @@ set_attempt_status() {
   ' <<<"$attempt_json")"
   persist_attempt
 }
+record_pre_attempt_failure() {
+  local command_status="$1" now report_json report_tmp
+  now="$(workflow_timestamp)"
+  report_json='{}'
+  if [[ -r "$RUN_DIR/report.json" ]]; then report_json="$(jq -c '.' "$RUN_DIR/report.json")"; fi
+  report_tmp="$RUN_DIR/report.json.tmp.$$"
+  trap 'rm -f "$report_tmp"' EXIT
+  jq --arg status "$command_status" --arg at "$now" \
+    '.recovery.pre_attempt_failures = ((.recovery.pre_attempt_failures // []) +
+       [{exit_status:$status, occurred_at:$at,
+         note:"Recovery stage failed before an attempt record was created"}])' \
+    <<<"$report_json" > "$report_tmp"
+  mv -f "$report_tmp" "$RUN_DIR/report.json"
+  trap - EXIT
+}
 recovery_unexpected_failure() {
   local command_status=$? current_status=""
   trap - ERR
@@ -57,6 +72,8 @@ recovery_unexpected_failure() {
       set_attempt_status failed \
         "Unexpected command failure (exit $command_status); inspect recorded resource state before retrying"
     fi
+  else
+    record_pre_attempt_failure "$command_status"
   fi
   printf 'Recovery stage command failed (exit %s); recorded artifacts remain available for inspection.\n' \
     "$command_status" >&2

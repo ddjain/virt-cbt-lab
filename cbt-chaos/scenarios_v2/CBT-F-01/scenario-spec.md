@@ -38,7 +38,7 @@ The direct mutation is gated by the log event, never by backup-object creation o
 
 **Pass only if all are established:**
 
-- The observer records the exact launcher pod name and UID after `Backup started`; the scoped direct `oc delete` removes that pod, and the run's VMI receives a replacement launcher. Record the corresponding pod event and deletion result.
+- The observer records the exact launcher pod name and UID after `Backup started`; the scoped direct `oc delete` removes that pod, and the run's VMI receives a replacement launcher. Record the corresponding pod event and deletion result. `chaos-trigger.sh` independently re-checks, after the delete request, that the original pod UID is gone and a new launcher reaches Running/Ready within a bounded window (120s) — logged as injection-boundary evidence that the delete request had an actual effect, not as the later full VM/CBT recovery check below.
 - The `VirtualMachineBackup` reaches a settled terminal failure with a clear failure reason. `Done=True` alone is not success or failure evidence; inspect its reason and other conditions.
 - Capture tracker status and the launcher's libvirt checkpoint tree before injection. This new lifecycle starts without a tracker latest checkpoint; after failure, `status.latestCheckpoint` must still be unset and the backup must not report a usable checkpoint. Record the libvirt tree before and after VM recovery, but do not equate a transient launcher-side checkpoint created during copy with a tracker advancement.
 - The VM/VMI returns to Running, the replacement launcher is Ready, and VM `.status.changedBlockTracking.state` returns to `Enabled`.
