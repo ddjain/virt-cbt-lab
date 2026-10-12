@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
+# Use a scoped direct oc delete: Krkn startup exceeds this short copy window.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 export KUBECONFIG_PATH
 export KUBECONFIG="$KUBECONFIG_PATH"
 
-RUN_ID="${RUN_ID:-20261010-cbt-f-01-r02}"
+RUN_ID="${RUN_ID:-20261010-cbt-f-01-r03}"
 VM_NAME="vm-${RUN_ID}"
 NAMESPACE=vm-cbt-demo
 if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
@@ -22,9 +22,6 @@ if [[ "$existing_resources" == *"$RUN_ID"* ]]; then
     "$RUN_ID" "$NAMESPACE" >&2
   exit 1
 fi
-GUEST_BASE_FILE_COUNT=8
-GUEST_FILE_SIZE_MIN_MIB=1024
-GUEST_FILE_SIZE_MAX_MIB=1024
 SIGNAL_FILE="$(mktemp)"
 observer_pid=
 
@@ -66,12 +63,7 @@ observe_copy_then_disrupt() {
         printf 'Active-copy signal from launcher pod %s (UID %s)\n' \
           "$pod" "$pod_uid" >&2
         : > "$SIGNAL_FILE"
-        krknctl run pod-scenarios \
-          --namespace "$NAMESPACE" \
-          --pod-label "vm.kubevirt.io/name=${VM_NAME}" \
-          --name-pattern "^virt-launcher-${VM_NAME}-.*$" \
-          --disruption-count 1 \
-          --krkn-kubeconfig /home/krkn/.kube/config
+        oc delete pod "$pod" -n "$NAMESPACE" --wait=false
         return
       fi
     fi
@@ -84,11 +76,14 @@ observe_copy_then_disrupt() {
 observe_copy_then_disrupt &
 observer_pid=$!
 
-if make e2e TYPE=full NAME="$RUN_ID" \
-  GUEST_BASE_FILE_COUNT="$GUEST_BASE_FILE_COUNT" \
-  GUEST_FILE_SIZE_MIN_MIB="$GUEST_FILE_SIZE_MIN_MIB" \
-  GUEST_FILE_SIZE_MAX_MIB="$GUEST_FILE_SIZE_MAX_MIB" \
-  KUBECONFIG_PATH="$KUBECONFIG_PATH"; then
+e2e_args=(TYPE=full NAME="$RUN_ID" KUBECONFIG_PATH="$KUBECONFIG_PATH")
+if [[ -n "${VM_OS:-}" ]]; then e2e_args+=("VM_OS=$VM_OS"); fi
+if [[ -n "${GUEST_BASE_FILE_COUNT:-}" ]]; then e2e_args+=("GUEST_BASE_FILE_COUNT=$GUEST_BASE_FILE_COUNT"); fi
+if [[ -n "${GUEST_FILE_SIZE_MIN_MIB:-}" ]]; then e2e_args+=("GUEST_FILE_SIZE_MIN_MIB=$GUEST_FILE_SIZE_MIN_MIB"); fi
+if [[ -n "${GUEST_FILE_SIZE_MAX_MIB:-}" ]]; then e2e_args+=("GUEST_FILE_SIZE_MAX_MIB=$GUEST_FILE_SIZE_MAX_MIB"); fi
+if [[ -n "${GUEST_EXEC_POLL_INTERVAL:-}" ]]; then e2e_args+=("GUEST_EXEC_POLL_INTERVAL=$GUEST_EXEC_POLL_INTERVAL"); fi
+if [[ -n "${GUEST_EXEC_POLL_ATTEMPTS:-}" ]]; then e2e_args+=("GUEST_EXEC_POLL_ATTEMPTS=$GUEST_EXEC_POLL_ATTEMPTS"); fi
+if make e2e "${e2e_args[@]}"; then
   e2e_status=0
 else
   e2e_status=$?

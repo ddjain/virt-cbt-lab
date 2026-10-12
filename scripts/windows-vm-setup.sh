@@ -171,7 +171,12 @@ foreach (\$item in \$filePlan) {
   Write-Output ('FILE_RECORD=' + \$item.Name + '|' + \$actualSize + '|' + \$sha256)
 }
 "
-guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_setup_command")"
+guest_setup_script="$(mktemp)"
+printf '%s' "$windows_setup_command" > "$guest_setup_script"
+guest_output="$(guest_exec_script "$VM_NAME" "$NAMESPACE" \
+  "$guest_setup_script" \
+  'C:\Windows\Temp\cbt-baseline-write.ps1')"
+rm -f "$guest_setup_script"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
 vm_info_initialize "$vm_uid"

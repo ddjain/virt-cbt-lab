@@ -8,9 +8,9 @@
 GUEST_AGENT_READY_INTERVAL=2
 GUEST_AGENT_READY_ATTEMPTS=30
 # shellcheck disable=SC2034
-GUEST_EXEC_POLL_INTERVAL=2
+GUEST_EXEC_POLL_INTERVAL="${GUEST_EXEC_POLL_INTERVAL:-2}"
 # shellcheck disable=SC2034
-GUEST_EXEC_POLL_ATTEMPTS=150 # ~5 minutes per command
+GUEST_EXEC_POLL_ATTEMPTS="${GUEST_EXEC_POLL_ATTEMPTS:-150}" # default ~5 minutes per command
 
 require_command jq
 require_command python3
