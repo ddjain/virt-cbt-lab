@@ -31,10 +31,6 @@ run_restore_verify_pod() {
   shift
   local -a incremental_pvcs=("$@")
   RESTORE_POD_PHASE=unknown
-  if ((${#incremental_pvcs[@]} == 0)); then
-    printf 'Restore verification requires at least one incremental PVC.\n' >&2
-    return 1
-  fi
   if [[ "$VM_OS" == windows ]]; then
     restore_manifest="$ROOT_DIR/manifests/windows-restore-verify-pod.yaml"
   else

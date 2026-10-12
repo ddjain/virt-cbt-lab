@@ -43,3 +43,6 @@ tmp-*/
 .claude/
 .pi/
 skills-lock.json
+
+# Local RFC drafts
+/docs/rfcs/

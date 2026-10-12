@@ -30,7 +30,7 @@ The target server needs:
 - The default `rhel9`/`large-odf` profile requires the cluster-provided RHEL 9 DataSource and a `Bound` source PVC in `openshift-virtualization-os-images`, plus the `ocs-storagecluster-ceph-rbd` storage class.
 - Debian overrides require `cbt-demo-hpp` or an ODF storage class; the cluster's CDI importer needs outbound HTTPS to `cloud.debian.org` only for the first Debian golden-image import.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for the per-run workload manifest, plus access to the local kubeconfig.
-- For `make vm-cbt-restore-test`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
+- For `make vm-cbt-restore-test` and successful `TYPE=recover`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -86,6 +86,25 @@ every cumulative pass prefix. Repeating a completed target adds no pass; use
 the next target to extend again. File counts, size range, OS, and storage
 variant remain fixed. Use `TYPE=verify` to rerun verification without adding
 a pass.
+
+### Same-VM recovery after a failed full backup
+
+Use the explicit recovery stage only for the managed VM whose original full backup reached terminal failure:
+
+```sh
+make e2e TYPE=recover VM=vm-<run-id>
+```
+
+The stage acquires the checkout lifecycle lock and checks the saved VM UID, VM Ready condition, VMI phase, CBT state, failed full request, retained PVC, tracker checkpoint, API schema, and candidate resource names. The live `VirtualMachineBackup` v1alpha1 schema exposes `spec.forceFullBackup` as a boolean; recovery sets it to `true` and uses the existing `VirtualMachineBackupTracker` as the source.
+
+After all read-only checks pass, the stage creates a new PVC using the failed PVC's storage class, access mode, volume mode, and requested capacity, waits for it to become `Bound`, then creates a distinct `VirtualMachineBackup`. It uses create-only API calls; name collisions fail without overwriting existing objects. The original failed backup/PVC are never patched, deleted, or used as the recovery base. Failed recovery resources remain for diagnosis and the next attempt uses new names.
+
+The stage records each attempt in `run.json`, `report.json`, and `summary.json`, including VM/VMI/CBT state, original failed reason/checkpoint/PVC, tracker checkpoint before and after, `forceFullBackup`, included volumes, recovery backup reason/type/checkpoint, PVC disposition, and restore checks. A recovery attempt passes only when the new request reports `Full`, `Done=True` with a non-failure reason, a new checkpoint is recorded by the tracker, the expected included volumes match, the output PVC is `Bound`, and baseline restore counts, bytes, and hashes match the original workload manifest.
+
+The recovery verifier selects the successful recovery attempt explicitly and reconstructs only its full backup as a read-only PVC. It compares that image with the baseline manifest and does not overwrite `backups.full` or accept the failed backup's checkpoint as a restore point.
+
+Any failed readiness/API-schema/name precondition reports `BLOCKED` without creating the recovery PVC or backup. A failed create, backup, tracker/PVC validation, or restore records a failed attempt and preserves all resources already created. `TYPE=full` remains unchanged and creates a new VM; incremental and extension workflows are unchanged.
+
 
 Each step can also be run separately:
 
@@ -226,18 +245,19 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 
 - `vm-setup.sh` → `setup.json`: namespace, VM profile, workload directory/range, baseline count/bytes/hash, and planned pass count.
 - `vm-backup.sh` → `full-backup.json`: full backup name/type/checkpoint and output PVC request/capacity. If matching VM `backupStatus` is available, its snapshot is stored under `evidence/` and referenced from the report.
+- `vm-cbt-recover.sh` → `recovery-rNNN.json`: failed full/PVC evidence, VM/VMI/CBT preconditions, `forceFullBackup` request, unique recovery backup/PVC state, tracker transition, and explicit read-only baseline restore result. Recovery attempts are separate from the initial failed full.
 - Each `vm-cbt-backup.sh` invocation → `incremental-pass-NN.json`: pass number, files/bytes/hash added, modified-file count/hash, cumulative workload totals/hash, backup name/type/checkpoint, and output PVC. When the VM exposes a matching `backupStatus`, its snapshot is saved under `runs/<run-id>/evidence/` and its path is referenced from the report; otherwise the evidence path is `null`.
 - `vm-cbt-verify.sh` → `verify.json`: tracker and final checkpoint plus CBT/checkpoint checks; it collects the VM's `virt-launcher` log.
 - `vm-cbt-restore-test.sh` → `restore-test.json`: PVC-bound and full/prefix file-count, payload-byte, and manifest-hash checks; the restore pod log is saved alongside the report.
-- `e2e-stage.sh` and standalone `vm-cbt-verify.sh` → `summary.json`: compact human-facing lifecycle verdict, last invocation, backup statuses/timings, CBT-chain result, baseline/final guest payload hashes and sizes, and restore hash-match results.
+- `e2e-stage.sh` and standalone `vm-cbt-verify.sh` → `summary.json`: compact human-facing lifecycle/recovery verdict, last invocation, backup statuses/timings, CBT-chain result, baseline/final guest payload hashes and sizes, and restore hash-match results.
 
 `vm-cbt-verify.sh` merges the fragments into `runs/<run-id>/report.json`, concatenates pass records and check arrays, adds `run_id`, and sets `verification.overall_passed` from all API and restore checks. Available VM backup-status snapshots are kept separately under `evidence/`; `.logs.workflow` points to the complete action trace at `logs/workflow.log`. `runs/<run-id>/run.json` is the resumable lifecycle index; `make clean-all` marks it `cleaned` while preserving the run directory and report.
 
-`summary.json` is regenerated after each staged E2E invocation and standalone final verification. It is a compact projection of `run.json` and, when available, `report.json`, not an independent source of evidence. `verdict` describes lifecycle completion; `last_invocation.result` describes the most recent command. A Full-only stage is `INCOMPLETE` while its Full backup can still be `PASS`. `payload_bytes` is guest workload payload, not qcow2 bytes copied or physical storage usage; PVC capacity is reported separately. Use `docs/cbt/13-independent-cbt-verification.md` for the separate raw-artifact audit.
+`summary.json` is regenerated after each staged E2E invocation and standalone final verification. It is a compact projection of `run.json` and, when available, `report.json`, not an independent source of evidence. `verdict` describes lifecycle or recovery completion; `last_invocation.result` describes the most recent command. A Full-only stage is `INCOMPLETE` while its Full backup can still be `PASS`. A successful `TYPE=recover` passes only after the new Full backup and baseline restore are verified; a recovery attempt does not claim the original failed checkpoint as valid. `payload_bytes` is guest workload payload, not qcow2 bytes copied or physical storage usage; PVC capacity is reported separately. Use `docs/cbt/13-independent-cbt-verification.md` for the separate raw-artifact audit.
 
 ## Resources and names
 
-All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental` and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. `make e2e-incremental VM=vm-<run-id>` is the semantic alias for `TYPE=incremental`. Resource names derive from the run ID, so different runs coexist without collisions:
+All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental`, `TYPE=recover`, and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. `make e2e-incremental VM=vm-<run-id>` is the semantic alias for `TYPE=incremental`. Resource names derive from the run ID, so different runs coexist without collisions:
 
 | Resource | Name | Purpose |
 |---|---|---|
@@ -247,6 +267,8 @@ All workflow objects live in the shared, globally configured `$NAMESPACE` (defau
 | VirtualMachineBackupTracker | `vm-tracker-<run-id>` | Stores the base/latest checkpoint |
 | VirtualMachineBackup | `vm-backup-<run-id>` | Initial full backup |
 | PVC | `vm-backup-pvc-<run-id>` | Full backup output |
+| VirtualMachineBackup | `vm-recovery-full-<run-id>-rNNN` | Independent same-VM Full recovery attempt using the existing tracker |
+| PVC | `vm-recovery-pvc-<run-id>-rNNN` | Recovery full output; retained with its attempt |
 | VirtualMachineBackup | `vm-incremental-<run-id>-pNN` | Pass-specific backup based on the preceding tracker checkpoint |
 | PVC | `vm-incremental-pvc-<run-id>-pNN` | Retained output PVC for that pass |
 | Pod (short-lived) | `vm-restore-verify-<run-id>` | Reconstructs and reads the guest disk during `vm-cbt-restore-test` |

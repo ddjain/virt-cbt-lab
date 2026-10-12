@@ -54,22 +54,30 @@ workflow_step "4/4 Record the full checkpoint"
 full_backup_checkpoint="$(get_backup_checkpoint "$FULL_BACKUP_NAME")"
 workflow_status "$FULL_BACKUP_NAME checkpoint is $full_backup_checkpoint"
 
-full_pvc_requested="$(get_pvc_requested "$FULL_BACKUP_PVC_NAME")"
-full_pvc_capacity="$(get_pvc_capacity "$FULL_BACKUP_PVC_NAME")"
-workflow_action "Full backup output PVC: ${full_pvc_requested} requested, ${full_pvc_capacity} capacity"
-full_backup_evidence_path="$(write_backup_status_evidence "$FULL_BACKUP_NAME" "$(get_vm_backup_status)")"
+full_backup_done_status="$(get_backup_done_status "$FULL_BACKUP_NAME")"
+full_pvc_requested="$(get_pvc_requested "$FULL_BACKUP_PVC_NAME" 2>/dev/null || true)"
+full_pvc_capacity="$(get_pvc_capacity "$FULL_BACKUP_PVC_NAME" 2>/dev/null || true)"
+full_pvc_phase="$(oc_cmd get pvc "$FULL_BACKUP_PVC_NAME" -n "$NAMESPACE" -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+last_good_tracker_checkpoint="$(get_tracker_checkpoint 2>/dev/null || true)"
+workflow_action "Full backup output PVC: ${full_pvc_requested} requested, ${full_pvc_capacity} capacity, phase=${full_pvc_phase:-unknown}"
+full_backup_runtime_status="$(get_vm_backup_status 2>/dev/null || printf '{}')"
+full_backup_evidence_path="$(write_backup_status_evidence "$FULL_BACKUP_NAME" "$full_backup_runtime_status")"
 write_report_fragment "full-backup" "$(jq -n \
   --arg name "$FULL_BACKUP_NAME" \
   --arg type "$full_backup_type" \
   --arg checkpoint_name "$full_backup_checkpoint" \
+  --arg done_status "$full_backup_done_status" \
   --arg done_reason "$full_backup_done_reason" \
   --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
   --arg pvc_requested "$full_pvc_requested" \
   --arg pvc_capacity "$full_pvc_capacity" \
+  --arg pvc_phase "$full_pvc_phase" \
+  --arg tracker_checkpoint "$last_good_tracker_checkpoint" \
   --arg evidence_path "$full_backup_evidence_path" \
   '{backups: {full: {name: $name, type: $type, checkpoint_name: $checkpoint_name,
-                    done_reason: $done_reason, pvc_name: $pvc_name,
-                    pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity}},
+                    done_status: $done_status, done_reason: $done_reason, pvc_name: $pvc_name,
+                    pvc_requested: $pvc_requested, pvc_capacity: $pvc_capacity, pvc_phase: $pvc_phase,
+                    tracker_checkpoint: $tracker_checkpoint}},
     evidence: {vm_backup_status: {full: (if $evidence_path == "" then null else $evidence_path end)}}}')"
 
 # `Done=True` covers both a real completion and a terminal failure (see
@@ -78,6 +86,20 @@ write_report_fragment "full-backup" "$(jq -n \
 # failed backup masquerade as success through steps 3/4 and surface later as
 # an unrelated tracker-checkpoint timeout in vm-cbt-backup.sh.
 if backup_done_reason_is_failure "$full_backup_done_reason"; then
+  vm_info_update \
+    '.status = "full_failed" |
+     .backups.full_failure = {name: $name, type: $type, done_status: $done_status,
+                              done_reason: $done_reason, checkpoint_name: $checkpoint_name,
+                              pvc_name: $pvc_name, pvc_phase: $pvc_phase,
+                              tracker_checkpoint_at_failure: $tracker_checkpoint}' \
+    --arg name "$FULL_BACKUP_NAME" \
+    --arg type "$full_backup_type" \
+    --arg done_status "$full_backup_done_status" \
+    --arg done_reason "$full_backup_done_reason" \
+    --arg checkpoint_name "$full_backup_checkpoint" \
+    --arg pvc_name "$FULL_BACKUP_PVC_NAME" \
+    --arg pvc_phase "$full_pvc_phase" \
+    --arg tracker_checkpoint "$last_good_tracker_checkpoint"
   printf '        ✗ Full backup failed\n' >&2
   printf '%s reached Done=True but the backup actually failed: %s\n' \
     "$FULL_BACKUP_NAME" "$full_backup_done_reason" >&2
