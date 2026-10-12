@@ -9,23 +9,40 @@
 
 During a **full backup**, stop only the `compute` container in the VM's `virt-launcher` pod while the disk copy is active. Determine whether this produces the same safe failure behavior as stopping the whole launcher pod: the full backup must settle as a terminal failure without advancing the checkpoint, while the VM recovers. The test must also distinguish a container restart in the same pod from a pod replacement.
 
-This is the issue's requested action and target, not an observed product result. No CBT-F-02 live injection was run during triage.
-**Issue fields:** Workflow: Full backup. Target/action: signal only the `compute` container in the VM launcher pod. Injection window/signal: while the full backup is actively copying, identified by the run's `Backup started` log entry. Duration: immediate (signal 9). Expected behavior: clean terminal full-backup failure, unchanged checkpoint, and automatic VM/container recovery. Verification: compare pod identity, backup result/reason, tracker/checkpoint, CBT state, then a distinct same-VM backup and restore. Expected outcome: establish whether container-only interruption is handled like a launcher-pod interruption.
+This was the issue's requested action at spec time. The mechanism is now live-validated; see "Live validation result" below — the container-level SIGTERM (the only in-container signal that works; SIGKILL to PID 1 is a kernel no-op) stops the compute container and produces a pod replacement, not a same-pod container restart.
+**Issue fields:** Workflow: Full backup. Target/action: signal only the `compute` container in the VM launcher pod. Injection window/signal: while the full backup is actively copying (live libvirt backup job; the launcher's `Backup started` log entry announces the same boundary). Duration: immediate (container-stop signal; issue originally said signal 9 — see the SIGKILL caveat in "Chaos injection"). Expected behavior: clean terminal full-backup failure, unchanged checkpoint, and automatic VM/container recovery. Verification: compare pod identity, backup result/reason, tracker/checkpoint, CBT state, then a distinct same-VM backup and restore. Expected outcome: establish whether container-only interruption is handled like a launcher-pod interruption.
 
 ## Workflow actually supported
 
-Use a new, unique run ID and the staged full-only workflow:
+Use separate, unique values for the chaos artifact `RUN_ID` and the lifecycle `NAME`:
 
 ```bash
-NAME=<unique-run-id> NAMESPACE=<workflow-namespace> \
-  KUBECONFIG_PATH=<approved-host-local-path> \
+RUN_ID=<unique-chaos-artifact-id> NAME=<unique-lifecycle-name> \
+  NAMESPACE=<workflow-namespace> KUBECONFIG_PATH=<approved-host-local-path> \
   bash cbt-chaos/scenarios_v2/CBT-F-02/chaos-trigger.sh
 ```
 
-The command above is illustrative: replace both placeholders at invocation time and do not reuse an existing run. `TYPE=full` creates the VM, baseline workload, full-backup PVC/tracker/request, and stops after the full-backup stage; it does not run incremental or restore verification. The issue's full-backup stage therefore matches this minimum workflow. The active local and remote checkout context is revision `111e3e0`; both Makefiles and staged workflow source expose and consume `TYPE=full` and `TYPE=incremental`. The trigger script requires `NAME` so that its selector cannot accidentally match another run.
-The script invokes `make e2e TYPE=full NAME="$NAME"` with `VM_OS` defaulting to `rhel9`, `MANIFEST_VARIANT` defaulting to `large-odf`, and an 8-file 1-GiB-per-file baseline (8 GiB total) to widen the copy window. This matches the default 80-GiB RHEL root/full profile; for a different existing profile, pass its documented `VM_OS`/`MANIFEST_VARIANT` overrides. The backup duration is not inferred from payload size; record the actual `Backup started` and terminal timestamps.
+The active `chaos-trigger.sh` starts the supported full-only lifecycle
+(`make e2e TYPE=full NAME=<name>`) and arms krknctl container-scenarios with
+event-driven triggers in parallel; Krkn performs the disruption only inside
+the active-copy window. The chaos artifact is stored under
+`runs/<RUN_ID>/` (action request/result, krkn log, e2e log, post-evidence);
+cluster resources are derived from `NAME` (for example, `vm-<NAME>` and
+`vm-backup-<NAME>`). Do not reuse either identifier.
 
-The normal full backup uses run-derived names (`vm-backup-<run-id>` and `vm-backup-pvc-<run-id>`). The active workflow does not expose a retry-name/PVC override. A failed full request must remain preserved; do not rerun `make e2e TYPE=full` against the same run or reuse its failed names.
+The CBT-F-02 workload uses the standard RHEL 9 profile (`VM_OS=rhel9`,
+`MANIFEST_VARIANT=large-odf`) with the normal baseline defaults: 8 files,
+each 4–12 MiB (55 MiB total for the deterministic default assignment). The
+copy window is not inferred from payload size; the trigger detects the live
+libvirt backup job directly.
+
+The expected terminal state of the interrupted run: e2e exits nonzero (the
+failed full backup is detected by `vm-backup.sh`), krkn exits 0 (container
+recovered within `expected-recovery-time`), tracker latestCheckpoint remains
+empty, and the failed backup object and destination PVC are retained as
+evidence. The supported same-VM recovery stage (`make e2e TYPE=recover
+VM=vm-<NAME>`) then proves recovery with a distinct backup/PVC name; it is
+separate from the interrupted `TYPE=full` stage.
 
 ## Target and live evidence
 
@@ -43,38 +60,80 @@ The current cluster inventory contained multiple CBT runs, so a broad `kubevirt.
 
 ## Chaos injection
 
-### Validated Krkn scenario and command
+### Active mechanism: krknctl container-scenarios with event-driven triggers
 
-The exact selector/action invocation, shown here in dry-run form, is:
+The active `chaos-trigger.sh` delegates both the window detection and the
+disruption to Krkn itself through `krknctl run container-scenarios` (validated
+live on cloud05, OCP 4.22.15 / KubeVirt, 2026-10-10):
 
 ```bash
 krknctl run container-scenarios \
+  --kubeconfig <host-local kubeconfig copy> \
   --namespace "$NAMESPACE" \
   --label-selector "vm.kubevirt.io/name=vm-${NAME}" \
   --container-name compute \
-  --action 9 \
+  --action 1 \
   --disruption-count 1 \
-  --expected-recovery-time 60 \
-  --kubeconfig "$KUBECONFIG_PATH" \
-  --krkn-kubeconfig /home/krkn/.kube/config \
-  --dry-run
+  --expected-recovery-time 300 \
+  --trigger-command '<oc exec ... virsh backup-dumpxml poll>' \
+  --trigger-expected-rc 0 \
+  --triggers-timeout 3600 \
+  --triggers-interval 3 \
+  --triggers-on-timeout fail
 ```
 
-The exact command above was dry-run validated remotely with a unique run-derived label; Krkn returned `Scenario schema valid`, `All required fields present`, and `Values validated`. The trigger script passes these same target/action/kubeconfig arguments without `--dry-run` only when the host-local log observer fires. The API query lives on the executing host, not inside the Krkn container: the runner's `oc`/trigger-command environment was not independently validated, so the script does not assume it is available there.
+Krkn's trigger manager polls this command every 3 seconds; chaos begins only
+after it is satisfied, and `on-timeout=fail` guarantees no out-of-window
+injection. The trigger command runs inside the krkn-hub container with the
+mounted kubeconfig: it resolves the run's launcher pod by the run-scoped label
+and runs `virsh backup-dumpxml <namespace>_<vm-name>` in the `compute`
+container. That call exits 0 only while a libvirt backup job is actively
+running — the same boundary the launcher's `Backup started` log line
+announces — and exits nonzero before the copy starts and after it ends, so
+the disruption lands inside the live-copy window by construction.
 
-Krkn's authoritative container-scenario documentation says it uses `oc exec` to run `kill` in the selected container, supports a specific container name, and uses the action value as the kill signal. Thus this is a container-level signal rather than a pod delete. Signal 9 is immediate and intentionally terminates the compute process/container. The pod UID and name must still be checked after recovery; if they change, the observed event was a pod replacement and is not evidence of a same-pod container-only disruption.
+The `--action 1` (SIGTERM) is deliberate and load-bearing:
 
-### Deterministic timing signal
+- Krkn's container kill is `pod exec ... bash -c "kill <action>"` in the
+  target container, i.e. a signal to PID 1 (`virt-launcher-monitor`) from
+  inside the PID namespace.
+- The Linux kernel silently discards `kill -9 1` from inside a PID namespace
+  even when SIGKILL is unblocked: the call returns success but the init
+  process is unaffected. This is why every prior CBT-F-02 attempt
+  (`oc exec ... kill -9 1`, and krkn `--action 9`) recorded a successful
+  action request while the compute container kept running and the backup
+  completed normally (BLOCKED verdicts).
+- SIGTERM is *not* filtered for PID 1: `virt-launcher-monitor` traps it,
+  gracefully stops QEMU/libvirt, CRI-O terminates the `compute` container,
+  and KubeVirt replaces the launcher pod. Live-validated: kill delivered
+  45ms after the trigger satisfied, backup terminal failure ~14s later,
+  replacement pod Running ~19s after the kill, VM CBT back to Enabled.
 
-The observer waits for the selected launcher pod's `compute` log to contain the exact live-copy line:
+The e2e lifecycle (`make e2e TYPE=full NAME=<name>`) runs in parallel and is
+expected to exit nonzero: `vm-backup.sh` detects `Done=True` with the
+terminal failure reason `Backup has failed: VMI backup status was lost` and
+fails loudly. A zero e2e exit with krkn exit 0 means the disruption was not
+effective and the run is INVALID, not a pass.
 
-```text
-Backup started
-```
+Historical note: the earlier direct `oc exec ... kill -9 1` trigger and the
+krkn-native-v1 script (both removed from this directory) are superseded; the
+in-container SIGKILL no-op documented above is the root cause of their
+BLOCKED outcomes.
 
-The observer is armed before `make e2e TYPE=full` and follows `oc logs --follow` only for the run-labeled launcher pod's `compute` container. It accepts the exact `Backup started` line for `vm-backup-${NAME}` only while the backup is not already Done, then invokes Krkn's container-level signal. One-second polling is limited to launcher discovery/reconnection; injection is event-driven and uses no arbitrary sleep or backup-creation/`Progressing=True` substitute.
+### Live validation result (2026-10-10, run 20261010-cbtf02-v2)
 
-Read-only triage found no CBT-F-02 backup actively copying, so the transition was not re-observed for this issue. The signal is grounded in the repository's live-copy design boundary and exact launcher log evidence from the active cluster; the actual disruption/recovery remain unvalidated.
+| Check | Observed |
+|---|---|
+| Trigger satisfied (active backup job) | 14:29:46.515Z |
+| Compute container killed (krkn) | 14:29:46.560Z (45ms later) |
+| Backup terminal failure | `Done=True` / `Progressing=False`, reason `Backup has failed: VMI backup status was lost` at 14:30:00Z |
+| Tracker latestCheckpoint | EMPTY (unchanged; failed backup advanced nothing) |
+| Launcher pod | `45smj` (killed) replaced by `mnr5m`, new UID, compute ready |
+| VM/VMI after recovery | Running, CBT `Enabled` |
+| Same-VM recovery (`make e2e TYPE=recover`) | PASS: forced Full backup verified, baseline restore file set/bytes/hashes match |
+| e2e TYPE=full exit | 2 (expected failure path exercised) |
+| krkn exit | 0 (scenario PASS, container recovered within expected-recovery-time) |
+
 
 ## Pass/fail criteria
 
@@ -114,15 +173,15 @@ oc logs -n "$LAUNCHER_POD" -c compute
 
 Compare `.metadata.uid` and `.metadata.name` for the launcher pod before/after; compare compute `.status.containerStatuses[].containerID`, `.ready`, and `.restartCount`; inspect VM `.status.changedBlockTracking.state`; inspect backup `Done` condition, reason, type, checkpoint, and `includedVolumes`; and inspect tracker `.status.latestCheckpoint`. A successful retry must have a distinct backup/PVC identity and a checkpoint distinct from any invalid/failed result. The repository restore verifier is the required data check once a successful post-chaos full backup exists; do not treat PVC Bound, `Done=True`, or a Krkn exit code as restore proof.
 
-## Same-VM recovery limitation in the active workflow
+## Same-VM recovery path
 
-This artifact deliberately marks the same-VM follow-up **BLOCKED in the current automation**. `scripts/vm-backup.sh` derives fixed names from `RUN_ID` and has no backup/PVC override; the failed full request cannot safely be retried by the supported `TYPE=full` command. An approved manual API path would need to render/apply a new uniquely named full-backup PVC, tracker/request relationship appropriate to the existing VM, and then run the restore verifier against that new successful backup while preserving the failed objects. Until that exact API path, storage sizing, permissions, and verifier inputs are approved and implemented, do not claim the same-VM backup/restore criterion is met. A fresh VM lifecycle is supplemental only and cannot replace it.
+After preserving the interrupted full backup, tracker/checkpoint, and destination PVC evidence, use the supported recovery stage against the same managed VM. It checks that the VM/VMI are Ready/Running, CBT is Enabled, the failed full and PVC are retained, the live `forceFullBackup` API schema is supported, and new recovery backup/PVC names are unused. It then creates a distinct full-backup PVC and `VirtualMachineBackup` request against the existing tracker with `forceFullBackup: true`, verifies the new checkpoint/tracker state, and restores the saved baseline workload. If any precondition fails, the recovery is BLOCKED before creating recovery resources; do not improvise an API object or use a new VM as a substitute.
 
 ## Blast radius, recovery, and conflicts
 
 - Intended blast radius is one `compute` container in one run-owned launcher pod; no pod delete, node action, controller action, or unrelated VM operation is allowed.
 - The compute container is the VM's launcher/QEMU process, so the guest may pause or lose power and KubeVirt may recreate the VMI/pod. Capture pod/VMI/VM identity and events before relying on logs; preserve the failed backup/PVC and all run evidence.
-- Do not run concurrently with another lifecycle in this checkout. The namespace is shared and currently contains other CBT runs; the run-derived VM label is mandatory.
-- Do not run `make clean-all`, delete failed resources, run `make resync`, or mutate the live cluster during triage. If remote checkout edits differ from the local scenario, stop before synchronization; the inspected remote checkout already contains unrelated scenario work.
-- Recovery is limited to observing KubeVirt's automatic container/VM recovery. Any same-VM retry and restore requires the approved distinct-resource path described above.
-- Krkn dry-run and read-only inspections passed; no live CBT-F-02 injection, E2E, or mutation was performed. Therefore product behavior remains unproven by this triage.
+- Do not run concurrently with another lifecycle in this checkout. The namespace is shared; the run-derived VM label and one-target cardinality check are mandatory.
+- Before execution, inspect remote target files for edits, synchronize the validated local checkout once, and verify the active trigger matches. Never run `make clean-all`, delete failed resources, or synchronize after the run begins.
+- Recovery includes KubeVirt's automatic container/VM recovery and the distinct same-VM full-backup/restore stage described above. A fresh VM lifecycle, if separately run, is supplemental only.
+- Historical triage note: prior read-only validation and Krkn dry-run did not perform a live CBT-F-02 injection or E2E; product behavior remained unproven at that time.
