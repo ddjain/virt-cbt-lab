@@ -1,0 +1,96 @@
+# DENSITY Windows Server 2022 VM template for kube-burner
+# (`make density-setup VM_OS=windows`). Keep structurally in sync with
+# manifests/windows-vm.yaml. The OOBE Secret windows-oobe-<pool> is created by
+# scripts/density-setup.sh and shared by every VM in the pool. No SSH Service
+# document: Windows guest access uses the QEMU guest agent, not SSH.
+# $rid is re-declared per document; Go-template variables do not cross
+# document boundaries.
+{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-{{ $rid }}
+  namespace: {{ .namespace }}
+  labels:
+    cbt-demo: enabled
+    {{ .managedByKey }}: {{ .managedByValue }}
+    {{ .runIdKey }}: {{ $rid }}
+    {{ .poolKey }}: {{ .poolId }}
+  annotations:
+    virt-cbt-lab/os-profile: windows
+    virt-cbt-lab/manifest-variant: "{{ .manifestVariant }}"
+    virt-cbt-lab/incremental-passes: "{{ .incrementalPasses }}"
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: vm-disk-{{ $rid }}
+        labels:
+          {{ .managedByKey }}: {{ .managedByValue }}
+          {{ .runIdKey }}: {{ $rid }}
+          {{ .poolKey }}: {{ .poolId }}
+        annotations:
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: windows-server-2022
+          namespace: vm-cbt-images
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: {{ .diskSize }}
+          storageClassName: {{ .storageClass }}
+          volumeMode: Block
+  template:
+    metadata:
+      labels:
+        cbt-demo: enabled
+    spec:
+      evictionStrategy: None
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        resources:
+          requests:
+            memory: 8Gi
+        machine:
+          type: q35
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: sata
+            - name: sysprep
+              cdrom:
+                bus: sata
+                readonly: true
+          channels:
+            - name: org.qemu.guest_agent.0
+              channel:
+                target:
+                  name: org.qemu.guest_agent.0
+                  type: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: vm-disk-{{ $rid }}
+        - name: sysprep
+          sysprep:
+            secret:
+              name: windows-oobe-{{ .poolId }}

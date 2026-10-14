@@ -32,6 +32,17 @@ RUN_LABEL_MANAGED_BY_VALUE="virt-cbt-lab"
 RUN_LABEL_RUN_ID_KEY="virt-cbt-lab/run-id"
 # shellcheck disable=SC2034
 RUN_LABEL_SELECTOR="$RUN_LABEL_MANAGED_BY_KEY=$RUN_LABEL_MANAGED_BY_VALUE"
+# Density-pool labels/annotations mark VMs created by make density-setup so
+# they can be adopted by `make e2e EXISTING_VM=vm-<pool>-NNNN` and listed by
+# make density-status.
+# shellcheck disable=SC2034
+RUN_LABEL_POOL_KEY="virt-cbt-lab/pool"
+# shellcheck disable=SC2034
+POOL_ANNOTATION_OS_PROFILE="virt-cbt-lab/os-profile"
+# shellcheck disable=SC2034
+POOL_ANNOTATION_MANIFEST_VARIANT="virt-cbt-lab/manifest-variant"
+# shellcheck disable=SC2034
+POOL_ANNOTATION_INCREMENTAL_PASSES="virt-cbt-lab/incremental-passes"
 # Workload directories are exclusive to the CBT file-set verification.
 # shellcheck disable=SC2034
 LINUX_GUEST_WORKLOAD_DIR="/home/$GUEST_USER/cbt-workload"
@@ -357,6 +368,50 @@ new_run_id() {
   fi
   initialize_run_directory
   workflow_action "Using run ID $RUN_ID"
+}
+
+# Adopt a density-pool VM (created by make density-setup) into a normal E2E
+# run: reuse its immutable run ID and resources instead of creating new ones.
+adopt_existing_run_id() {
+  local vm_json pool
+  if [[ -z "${EXISTING_VM:-}" ]]; then
+    printf 'adopt_existing_run_id requires EXISTING_VM=vm-<run-id>.\n' >&2
+    return 1
+  fi
+  if [[ "$EXISTING_VM" != vm-* ]]; then
+    printf 'EXISTING_VM must be a workflow VM name in the form vm-<run-id> (got: %s).\n' "$EXISTING_VM" >&2
+    return 1
+  fi
+  RUN_ID="${EXISTING_VM#vm-}"
+  if ! valid_run_id "$RUN_ID"; then
+    printf 'Run ID must be lowercase alphanumeric with internal hyphens and at most 40 characters (got: %s).\n' "$RUN_ID" >&2
+    return 1
+  fi
+  set_resource_names
+  if ! vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null)"; then
+    printf 'Cannot read VM %s in namespace %s.\n' "$VM_NAME" "$NAMESPACE" >&2
+    return 1
+  fi
+  if ! jq -e --arg managed_key "$RUN_LABEL_MANAGED_BY_KEY" \
+       --arg managed_value "$RUN_LABEL_MANAGED_BY_VALUE" \
+       --arg run_key "$RUN_LABEL_RUN_ID_KEY" \
+       --arg run_id "$RUN_ID" \
+       --arg pool_key "$RUN_LABEL_POOL_KEY" '
+       .metadata.labels[$managed_key] == $managed_value and
+       .metadata.labels[$run_key] == $run_id and
+       (.metadata.labels[$pool_key] | type == "string" and length > 0)
+     ' <<<"$vm_json" >/dev/null; then
+    printf 'VM %s is not a density-pool VM (missing labels).\n' "$VM_NAME" >&2
+    return 1
+  fi
+  pool="$(jq -r --arg pool_key "$RUN_LABEL_POOL_KEY" '.metadata.labels[$pool_key]' <<<"$vm_json")"
+  if [[ -e "$RUN_DIR" ]]; then
+    printf 'Run ID %s already has artifacts at %s; if run.json exists use TYPE=incremental VM=%s, otherwise remove the directory only after confirming the guest workload directory is empty.\n' \
+      "$RUN_ID" "$RUN_DIR" "$VM_NAME" >&2
+    return 1
+  fi
+  initialize_run_directory
+  workflow_action "Adopting existing VM $VM_NAME from pool $pool"
 }
 
 # Existing lifecycle commands must name their run explicitly. VM=vm-<run-id>

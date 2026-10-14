@@ -7,6 +7,7 @@ MAKE_COMMAND="${MAKE_COMMAND:-make}"
 TYPE="${TYPE:-all}"
 VM="${VM:-}"
 NAME="${NAME:-}"
+EXISTING_VM="${EXISTING_VM:-}"
 DEBUG="${DEBUG:-false}"
 VM_OS="${VM_OS:-rhel9}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
@@ -20,6 +21,9 @@ MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
 RUNS_ROOT_DIR="$ROOT_DIR/runs"
 E2E_STAGE_WRAPPED=true
 export E2E_STAGE_WRAPPED
+# Make the selected kubeconfig visible to preflight and the profiled Make
+# targets the same way scripts/common.sh does for the direct scripts.
+if [[ -n "${KUBECONFIG_PATH:-}" ]]; then export KUBECONFIG="$KUBECONFIG_PATH"; fi
 
 start_epoch="$(date +%s)"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -113,6 +117,59 @@ resolve_new_run_id() {
   vm_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
 }
 
+# Adopt a density-pool VM (make density-setup) as this pipeline's run. The
+# cluster is the source of truth: pool annotations override the environment
+# so the pipeline summary and density-status always agree.
+resolve_existing_vm() {
+  local vm_json
+  if [[ "$TYPE" != all && "$TYPE" != full ]]; then
+    fail 'EXISTING_VM is only valid with TYPE=all or TYPE=full.'
+    return
+  fi
+  if [[ -n "$VM" || -n "$NAME" ]]; then
+    fail 'EXISTING_VM cannot be combined with VM or NAME.'
+    return
+  fi
+  if [[ "$EXISTING_VM" != vm-* ]]; then
+    fail 'EXISTING_VM must be a workflow VM name in the form vm-<run-id>.'
+    return
+  fi
+  run_id="${EXISTING_VM#vm-}"
+  if ! valid_run_id "$run_id"; then
+    fail "Invalid run ID: $run_id"
+    return
+  fi
+  if [[ -e "$RUNS_ROOT_DIR/$run_id" ]]; then
+    fail "Run ID $run_id already has artifacts at $RUNS_ROOT_DIR/$run_id; if run.json exists use TYPE=incremental VM=$EXISTING_VM, otherwise remove the directory only after confirming the guest workload directory is empty."
+    return
+  fi
+  if ! vm_json="$(oc get vm "$EXISTING_VM" -n "$NAMESPACE" -o json 2>/dev/null)"; then
+    fail "Cannot read VM $EXISTING_VM in namespace $NAMESPACE."
+    return
+  fi
+  # Label keys mirror RUN_LABEL_MANAGED_BY_KEY/RUN_LABEL_RUN_ID_KEY/
+  # RUN_LABEL_POOL_KEY in scripts/common.sh; this script intentionally does
+  # not source common.sh.
+  if ! jq -e '
+       .metadata.labels["app.kubernetes.io/managed-by"] == "virt-cbt-lab" and
+       .metadata.labels["virt-cbt-lab/run-id"] == $run_id and
+       (.metadata.labels["virt-cbt-lab/pool"] | type == "string" and length > 0)
+     ' --arg run_id "$run_id" <<<"$vm_json" >/dev/null; then
+    fail "$EXISTING_VM is not a density-pool VM (missing labels)."
+    return
+  fi
+  # Annotation keys mirror POOL_ANNOTATION_* in scripts/common.sh; pool
+  # values always win over the environment.
+  VM_OS="$(jq -r '.metadata.annotations["virt-cbt-lab/os-profile"] // empty' <<<"$vm_json")"
+  MANIFEST_VARIANT="$(jq -r '.metadata.annotations["virt-cbt-lab/manifest-variant"] // empty' <<<"$vm_json")"
+  GUEST_INCREMENTAL_PASSES="$(jq -r '.metadata.annotations["virt-cbt-lab/incremental-passes"] // empty' <<<"$vm_json")"
+  if [[ -z "$VM_OS" || -z "$MANIFEST_VARIANT" || -z "$GUEST_INCREMENTAL_PASSES" ]]; then
+    fail "$EXISTING_VM is missing pool annotations (os-profile, manifest-variant, or incremental-passes)."
+    return
+  fi
+  vm_info_path="$RUNS_ROOT_DIR/$run_id/run.json"
+}
+
 load_vm_info() {
   if [[ -z "$VM" || "$VM" != vm-* ]]; then
     fail 'TYPE=incremental, extend, recover, and verify require VM=vm-<run-id>.'
@@ -146,6 +203,7 @@ print_pipeline_summary() {
   local next_pass recovery_attempt_number recovery_attempt_suffix
   printf '\nPipeline configuration\n'
   printf '  TYPE=%s\n' "$TYPE"
+  printf '  EXISTING_VM=%s\n' "${EXISTING_VM:-none}"
   printf '  VM_OS=%s\n' "$VM_OS"
   printf '  MANIFEST_VARIANT=%s\n' "$MANIFEST_VARIANT"
   printf '  NAMESPACE=%s\n' "$run_namespace"
@@ -169,12 +227,16 @@ print_pipeline_summary() {
   case "$TYPE" in
     all|full)
       printf '  Namespace: %s (created only if absent)\n' "$run_namespace"
-      printf '  VirtualMachine: %s\n' "$VM_NAME"
-      printf '  Root DataVolume/PVC: %s\n' "$DV_NAME"
-      if [[ "$VM_OS" == windows ]]; then
-        printf '  Run-scoped OOBE Secret: windows-oobe-%s\n' "$RUN_ID"
+      if [[ -n "$EXISTING_VM" ]]; then
+        printf '  Existing density-pool VirtualMachine: %s (creation skipped)\n' "$VM_NAME"
       else
-        printf '  Guest SSH service: %s\n' "$SSH_SERVICE"
+        printf '  VirtualMachine: %s\n' "$VM_NAME"
+        printf '  Root DataVolume/PVC: %s\n' "$DV_NAME"
+        if [[ "$VM_OS" == windows ]]; then
+          printf '  Run-scoped OOBE Secret: windows-oobe-%s\n' "$RUN_ID"
+        else
+          printf '  Guest SSH service: %s\n' "$SSH_SERVICE"
+        fi
       fi
       printf '  Backup tracker: %s\n' "$TRACKER_NAME"
       printf '  Full VirtualMachineBackup: %s\n' "$FULL_BACKUP_NAME"
@@ -248,7 +310,8 @@ profile_args() {
     "EXTEND_TO_PASS=$EXTEND_TO_PASS" \
     "GUEST_FILE_SIZE_MIN_MIB=$GUEST_FILE_SIZE_MIN_MIB" \
     "GUEST_FILE_SIZE_MAX_MIB=$GUEST_FILE_SIZE_MAX_MIB" \
-    "MANIFEST_VARIANT=$MANIFEST_VARIANT"
+    "MANIFEST_VARIANT=$MANIFEST_VARIANT" \
+    "EXISTING_VM=$EXISTING_VM"
 }
 
 run_profiled_make() {
@@ -276,13 +339,17 @@ run_profiled_make() {
 }
 
 case "$TYPE" in
-  all)
-    resolve_new_run_id
-    ;;
-  full)
-    resolve_new_run_id
+  all|full)
+    if [[ -n "$EXISTING_VM" ]]; then
+      resolve_existing_vm
+    else
+      resolve_new_run_id
+    fi
     ;;
   incremental|recover|verify|extend)
+    if [[ -n "$EXISTING_VM" ]]; then
+      fail 'EXISTING_VM is only valid with TYPE=all or TYPE=full.'
+    fi
     load_vm_info
     ;;
   *)
@@ -336,6 +403,10 @@ if ((status == 0)); then
   else
     status=$?
   fi
+fi
+
+if ((status == 0)) && [[ -n "$EXISTING_VM" ]] && [[ "$TYPE" != all && "$TYPE" != full ]]; then
+  fail 'EXISTING_VM is only valid with TYPE=all or TYPE=full.'
 fi
 
 if ((status == 0)); then

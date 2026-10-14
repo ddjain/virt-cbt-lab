@@ -6,6 +6,11 @@ RUN_ID_NOUNS=(forest river wolf meadow penguin mountain falcon ocean tiger valle
 valid_run_id() {
   [[ "$1" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] && ((${#1} <= 40))
 }
+valid_pool_id() {
+  # Keep <=20 chars so "<pool>-NNNN" stays <=25 <=40 for valid_run_id.
+  [[ "$1" =~ ^[a-z]([-a-z0-9]{0,18}[a-z0-9])?$ ]]
+}
+
 # Derive every per-run resource name from the current $RUN_ID, so a run's VM,
 # disk, backups, and tracker always reference each other and never collide
 # with another run's resources in the same namespace. Each resource type
@@ -55,6 +60,12 @@ generate_run_id() {
   tag="$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
   timestamp="$(date -u +%Y%m%d%H%M%S)"
   printf '%s-%s-%s-%s' "$timestamp" "$adjective" "$noun" "$tag"
+}
+
+# Density-pool VMs use the fixed run ID "<pool>-NNNN" (1-based, zero-padded 4)
+# so VM/DV/service names match what set_resource_names derives.
+density_run_id() {
+  printf '%s-%04d' "$1" "$2"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

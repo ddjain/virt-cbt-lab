@@ -87,6 +87,7 @@ if [[ -z "$VM_OS" ]]; then VM_OS=rhel9; fi
 TYPE="${TYPE:-all}"
 VM="${VM:-}"
 EXTEND_TO_PASS="${EXTEND_TO_PASS:-}"
+EXISTING_VM="${EXISTING_VM:-}"
 DEBUG="${DEBUG:-false}"
 
 case "$VM_OS" in
@@ -341,7 +342,9 @@ check_cluster_capabilities() {
 check_guest_ssh() {
   if [[ "$VM_OS" == windows ]]; then
     section "Windows VM"
-    if [[ -n "$WINDOWS_ADMIN_PASSWORD_FILE" && -f "$WINDOWS_ADMIN_PASSWORD_FILE" && -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
+    if [[ -n "$EXISTING_VM" ]]; then
+      result PASS "Windows admin password not required to adopt an existing VM"
+    elif [[ -n "$WINDOWS_ADMIN_PASSWORD_FILE" && -f "$WINDOWS_ADMIN_PASSWORD_FILE" && -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
       result PASS "Windows admin password file is readable"
     else
       result FAIL "WINDOWS_ADMIN_PASSWORD_FILE must name a readable local password file"

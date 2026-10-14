@@ -3,7 +3,7 @@ SHELL := /bin/bash
 -include .env
 UTC_TIMESTAMP = $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-export DEBUG KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_INCREMENTAL_PASSES EXTEND_TO_PASS GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS TYPE VM NAME RUN_ID GUEST_EXEC_POLL_INTERVAL GUEST_EXEC_POLL_ATTEMPTS
+export DEBUG KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_INCREMENTAL_PASSES EXTEND_TO_PASS GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS TYPE VM NAME RUN_ID GUEST_EXEC_POLL_INTERVAL GUEST_EXEC_POLL_ATTEMPTS EXISTING_VM POOL DENSITY_VM_COUNT DENSITY_INCREMENTAL_PASSES DENSITY_QPS DENSITY_WAIT_MINUTES
 
 ifeq ($(strip $(VM_OS)),)
 VM_OS := rhel9
@@ -29,9 +29,9 @@ endif
 # Optional fixed run name instead of the default random one.
 NAME ?=
 TYPE ?= all
-VM ?=
-
-.PHONY: preflight vm-setup vm-backup vm-cbt-recover vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e e2e-incremental clean-all monitor windows-golden-image windows-vm-setup windows-e2e sync resync pull-reports help test
+EXISTING_VM ?=
+POOL ?=
+.PHONY: preflight vm-setup vm-backup vm-cbt-recover vm-cbt-backup vm-cbt-extend vm-cbt-verify vm-cbt-restore-test vm-cbt-demo e2e e2e-incremental clean-all monitor windows-golden-image windows-vm-setup windows-e2e density-setup density-status sync resync pull-reports help test
 
 preflight:
 	@if [[ "$(DEBUG)" == true ]]; then ./preflight --verbose; else ./preflight; fi
@@ -118,6 +118,13 @@ windows-vm-setup:
 windows-e2e:
 	@$(MAKE) --no-print-directory e2e VM_OS=windows
 
+density-setup:
+	@$(MAKE) --no-print-directory preflight VM_OS=$(VM_OS)
+	@./scripts/density-setup.sh
+
+density-status:
+	@./scripts/density-status.sh
+
 help:
 	@printf '%s\n' \
 	  'Usage: make <target> [VAR=value]' \
@@ -132,6 +139,7 @@ help:
 	  '                                    Add one pass; value is the total planned passes.' \
 	  '  make e2e TYPE=verify VM=vm-demo Re-run chain and restore verification.' \
 	  '  make e2e GUEST_INCREMENTAL_PASSES=3 Run three sequential incremental passes.' \
+	  '  make e2e EXISTING_VM=vm-<pool>-0001   Run the pipeline on a density-pool VM (TYPE=all|full).' \
 	  '  make vm-cbt-demo                 Timed full demo pipeline.' \
 	  '  Individual targets: vm-setup, vm-backup VM=vm-<run-id>,' \
 	  '                      vm-cbt-backup VM=vm-<run-id>, vm-cbt-extend VM=vm-<run-id> EXTEND_TO_PASS=N,' \
@@ -142,6 +150,10 @@ help:
 	  '  make e2e VM_OS=debian           Use the Debian override.' \
 	  '  make windows-e2e                 Alias for Windows E2E.' \
 	  '  Windows targets: windows-vm-setup, windows-golden-image.' \
+	  '' \
+	  'DENSITY' \
+	  '  make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10   Create a density VM pool with kube-burner.' \
+	  '  make density-status [POOL=<pool>]  Per-pool funnel: created, full, incremental passes.' \
 	  '' \
 	  'OPERATIONS' \
 	  '  make preflight                   Read-only readiness check.' \
@@ -169,3 +181,6 @@ test:
 	@bash tests/test-vm-cbt-recover.sh
 	@bash tests/test-vm-backup-failure-recording.sh
 	@bash tests/test-chaos-watch-resource.sh
+	@bash tests/test-density-status.sh
+	@bash tests/test-density-setup.sh
+	@bash tests/test-existing-vm-adoption.sh

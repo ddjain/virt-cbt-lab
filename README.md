@@ -118,6 +118,12 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `MANIFEST_VARIANT` | No | `large-odf` | `large-odf` is the standard RHEL 9 ODF profile; Debian also supports `odf`, `default`, and `large`. RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. |
 | `WINDOWS_ISO_PATH` | If the ISO is not already staged | Unset | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
 | `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Unset | Local, gitignored file containing the Administrator password; never committed or logged. |
+| `EXISTING_VM` | For pool adoption | Unset | `vm-<pool>-NNNN` density-pool VM to adopt with `make e2e` (`TYPE=all|full` only; cannot combine with `VM`/`NAME`). Pool annotations override the profile variables. |
+| `POOL` | For density targets | Generated | Density pool ID for `make density-setup`/`make density-status`; defaults to `d<UTC MMDDhhmmss>` for setup and the latest pool for status. |
+| `DENSITY_VM_COUNT` | For `make density-setup` | Unset | Number of VMs in the pool (1–9999); no default to avoid accidental large creates. |
+| `DENSITY_INCREMENTAL_PASSES` | No | `4` | Incremental passes recorded on pool VMs; adopted runs override `GUEST_INCREMENTAL_PASSES`. |
+| `DENSITY_QPS` | No | `10` | kube-burner client rate limit (qps=burst). |
+| `DENSITY_WAIT_MINUTES` | No | `240` | Bound on density-setup's VM readiness poll. |
 
 `Unset` means the variable has no fixed value; documented fallbacks or generated run IDs still apply. `.env.example` uses placeholders for `REMOTE_HOST`, `REMOTE_DIR`, and `RESTORE_HELPER_IMAGE`; replace them before use.
 
@@ -146,6 +152,24 @@ The installer guest also needs outbound HTTPS access to `www.python.org` to inst
 Set `MANIFEST_VARIANT=large` to run against `manifests/vm-large.yaml` (40Gi root disk), `manifests/full-backup-large.yaml` (40Gi PVC), and `manifests/incremental-backup-large.yaml` (25Gi PVC) on `cbt-demo-hpp` instead of the default demo manifests; it exists to give chaos scenarios (see `cbt-chaos/chaos-plan.md`) a longer, disk-bound backup-copy window than the small demo sizing produces on fast local storage. Set `MANIFEST_VARIANT=large-odf` for the same sizing intent on ODF/Ceph instead — `manifests/vm-large-odf.yaml` (48Gi root disk), `manifests/full-backup-large-odf.yaml` (48Gi PVC), and `manifests/incremental-backup-large-odf.yaml` (30Gi PVC). These are the Debian large-profile requests; RHEL 9 resolves the selected backend's large root/full requests to 80Gi.
 
 For a Debian chaos-test starting point, run `make e2e MANIFEST_VARIANT=large GUEST_BASE_FILE_COUNT=8 GUEST_INCREMENTAL_FILE_COUNT=11 GUEST_FILE_SIZE_MIN_MIB=512 GUEST_FILE_SIZE_MAX_MIB=1536`. The current deterministic file-name assignment totals 8511 MiB baseline and 12858 MiB incremental. These are payload totals, not timing measurements; confirm the actual window with `scripts/monitor.sh`. Do not assume this preset fits the Windows root disk without checking available capacity.
+
+## Density VM pools (kube-burner)
+
+Create a pool of bare, backup-eligible VMs in bulk, then drive individual VMs through the normal E2E pipeline without re-creating them:
+
+```sh
+make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10
+make e2e EXISTING_VM=vm-<pool>-0001
+make density-status [POOL=<pool>]
+```
+
+- `make density-setup` runs preflight, then uses kube-burner to create `DENSITY_VM_COUNT` VMs named `vm-<pool>-NNNN` (one OS per pool: `VM_OS=rhel9|windows`; Debian is not supported for density). RHEL VMs get a root DataVolume and SSH Service; Windows VMs share one pool-scoped OOBE Secret (`windows-oobe-<pool>`, requires `WINDOWS_ADMIN_PASSWORD_FILE`). Pool VMs carry `virt-cbt-lab/pool`, `virt-cbt-lab/run-id`, and `app.kubernetes.io/managed-by` labels plus os-profile/manifest-variant/incremental-passes annotations; `density/<pool>/pool.json` records the expected run ID list locally. The script polls until every VM reports `.status.ready==true` (up to `DENSITY_WAIT_MINUTES`, default 240), independent of kube-burner's own waiters.
+- `make e2e EXISTING_VM=vm-<pool>-NNNN` (only with `TYPE=all` or `TYPE=full`) adopts that pool VM: creation steps are skipped, the pool's annotations override `VM_OS`/`MANIFEST_VARIANT`/`GUEST_INCREMENTAL_PASSES` from the environment, and the existing baseline-workload → full-backup → incremental → verify pipeline runs unchanged. `runs/<pool>-NNNN/` is created only at adoption. Re-adoption of a run that already has artifacts fails; use `TYPE=incremental VM=...` to continue it.
+- `make density-status` prints a per-pool funnel (`TOTAL/CREATING/CREATED/FULL/INCn`) plus per-VM rows (`ready|creating|missing`, backup states `-`, `running`, `failed`, `done`). Read data comes from the cluster; `POOL` defaults to the most recently created pool. Read-only.
+- `CREATED`/`ready` means the VM object reports `.status.ready==true` (DataVolume clone finished, VMI scheduled, domain started). It does not guarantee guest-OS boot completion or SSH reachability; for RHEL 9 cloud-init VMs those usually follow within seconds to a minute. Adoption double-checks anyway — `vm-setup.sh` step 4 re-waits on `status.ready` and asserts CBT state is `Enabled`, and step 5 performs a real guest SSH login to write the baseline — so a VM that is not actually usable fails loudly at adoption, not silently. Windows VM readiness is likewise VM-object-level; OOBE completion and QEMU Guest Agent connection are verified at adoption, not by density-status.
+- The adoption run must use the same checkout (`GUEST_KEY`) that created the pool: RHEL VMs were created with that key's public half, and guest SSH in later steps uses the private half.
+- Cleanup for a test pool (never `make clean-all` for this): `oc delete vm,svc,secret -n "$NAMESPACE" -l virt-cbt-lab/pool=<pool>` plus backup objects/PVCs labeled `virt-cbt-lab/run-id=<pool>-NNNN`.
+
 
 ## Preflight
 

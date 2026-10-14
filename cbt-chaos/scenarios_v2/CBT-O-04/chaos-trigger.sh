@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# CBT-O-04: host-netns storage-network blackout (ceph msgr2 ports) on the
+# VM's node during the full backup copy — the HPP-vs-RBD differential test.
+#
+# Direct-krkn node_network_filter with an EXPLICIT port list (krknctl-bugs
+# #11: ports:[] is node-destructive) on the VM's node ONLY, interface
+# ovn-k8s-mp0 (the route to OSD pod IPs). NEVER target an OSD/mon node.
+#
+# Usage:
+#   RUN_ID=20261014-cbto04-r01 KUBECONFIG_PATH=/root/mno/kubeconfig \
+#     [BLOCK_PORTS="3300,6800,6801,6802,6803"] [CHAOS_DURATION=45] bash chaos-trigger.sh
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT_DIR/scripts/common.sh"
+source "$ROOT_DIR/scripts/run-id.sh"
+cd "$ROOT_DIR"
+: "${RUN_ID:?Set RUN_ID}"
+: "${KUBECONFIG_PATH:?Set KUBECONFIG_PATH}"
+export KUBECONFIG_PATH KUBECONFIG="$KUBECONFIG_PATH"
+NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
+VM_OS="rhel9"
+MANIFEST_VARIANT="odf"
+VM_DATA_SOURCE_NAME="${VM_DATA_SOURCE_NAME:-rhel9-rbd}"
+VM_DATA_SOURCE_NAMESPACE="openshift-virtualization-os-images"
+export NAMESPACE VM_DATA_SOURCE_NAME VM_DATA_SOURCE_NAMESPACE
+GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-1000}"
+GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-1000}"
+GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
+GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-15}"
+GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-20}"
+# EXPLICIT ports only — NEVER empty (krknctl-bugs #11).
+BLOCK_PORTS="${BLOCK_PORTS:-3300,6800,6801,6802,6803}"
+CHAOS_DURATION="${CHAOS_DURATION:-45}"
+HELPER_NS="${HELPER_NS:-cbt-o04-krkn}"
+NODE_IFACE="${NODE_IFACE:-ovn-k8s-mp0}"
+VM_NAME="vm-${RUN_ID}"
+FULL_BACKUP_NAME="vm-backup-${RUN_ID}"
+TRACKER_NAME="vm-tracker-${RUN_ID}"
+EVIDENCE_DIR="$ROOT_DIR/cbt-chaos/scenarios_v2/CBT-O-04/runs/$RUN_ID"
+
+# --- Guards (ODF family + host-netns safety) --------------------------------------
+if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
+  printf 'Refusing to run: %s already exists.\n' "$ROOT_DIR/runs/$RUN_ID" >&2
+  exit 2
+fi
+existing_resources="$(oc get vm,vmi,vmbackup,vmbackuptracker,pvc,service,datavolume \
+  -n "$NAMESPACE" -o name)"
+if [[ "$existing_resources" == *"$RUN_ID"* ]]; then
+  printf 'Refusing to run: resources for %s already exist.\n' "$RUN_ID" >&2
+  exit 2
+fi
+ceph_health="$(oc get cephcluster -n openshift-storage \
+  -o jsonpath='{.items[0].status.ceph.health}' 2>/dev/null || echo '')"
+if [[ "$ceph_health" != HEALTH_OK ]]; then
+  printf 'Ceph cluster not HEALTH_OK (got: %s) — aborting.\n' "${ceph_health:-unavailable}" >&2
+  exit 2
+fi
+golden_pvc="$(oc get datasource "$VM_DATA_SOURCE_NAME" -n "$VM_DATA_SOURCE_NAMESPACE" \
+  -o jsonpath='{.spec.source.pvc.name}' 2>/dev/null || echo '')"
+golden_sc="$(oc get pvc "$golden_pvc" -n "$VM_DATA_SOURCE_NAMESPACE" \
+  -o jsonpath='{.spec.storageClassName}' 2>/dev/null || echo '')"
+if [[ "$golden_sc" != "ocs-storagecluster-ceph-rbd" ]]; then
+  printf 'Golden DataSource %s not on RBD (sc=%s) — run CBT-O-01 first.\n' \
+    "$VM_DATA_SOURCE_NAME" "${golden_sc:-unknown}" >&2
+  exit 2
+fi
+if [[ -z "$BLOCK_PORTS" ]]; then
+  printf 'BLOCK_PORTS must be an explicit port list — NEVER empty (krknctl-bugs #11).\n' >&2
+  exit 2
+fi
+mkdir -p "$EVIDENCE_DIR"
+exec > >(tee -a "$EVIDENCE_DIR/trigger.log") 2>&1
+printf 'O04: storage-network blackout ports=%s dur=%ss on VM node, run %s.\n' \
+  "$BLOCK_PORTS" "$CHAOS_DURATION" "$RUN_ID" >&2
+
+# --- Direct-krkn scaffolding -------------------------------------------------------
+krkn_work="/tmp/o04-krkn-work-${RUN_ID}"
+scenario_yaml="$krkn_work/scenario.yml"
+rm -rf "$krkn_work"
+mkdir -p "$krkn_work"
+oc get namespace "$HELPER_NS" >/dev/null 2>&1 || oc create namespace "$HELPER_NS" >/dev/null
+cat >"$krkn_work/kraken-config.yml" <<EOF
+kraken:
+    distribution: openshift
+    kubeconfig_path: /work/kubeconfig
+    exit_on_failure: False
+    signal_state: RUN
+    signal_address: 0.0.0.0
+    port: 8081
+    auto_rollback: False
+    chaos_scenarios:
+        -   network_chaos_ng_scenarios:
+                - /work/scenario.yml
+cerberus:
+    cerberus_enabled: False
+performance_monitoring:
+    capture_metrics: False
+    check_critical_alerts: False
+    enable_alerts: False
+    enable_metrics: False
+tunings:
+    wait_duration: 5
+    iterations: 1
+    daemon_mode: False
+telemetry:
+    enabled: False
+elastic:
+    enable_elastic: False
+EOF
+cp "$KUBECONFIG_PATH" "$krkn_work/kubeconfig"
+chmod 644 "$krkn_work/kubeconfig"
+krknctl_log="$EVIDENCE_DIR/krkn.log"
+ports_yaml="$(printf '%s\n' "$BLOCK_PORTS" | tr ',' '\n' | sed 's/^/      - /')"
+
+# --- Full backup in background; block at gate ----------------------------------------
+make e2e TYPE=full NAME="$RUN_ID" \
+  VM_OS="$VM_OS" MANIFEST_VARIANT="$MANIFEST_VARIANT" NAMESPACE="$NAMESPACE" \
+  GUEST_BASE_FILE_COUNT="$GUEST_BASE_FILE_COUNT" \
+  GUEST_FILE_SIZE_MIN_MIB="$GUEST_FILE_SIZE_MIN_MIB" \
+  GUEST_FILE_SIZE_MAX_MIB="$GUEST_FILE_SIZE_MAX_MIB" \
+  KUBECONFIG_PATH="$KUBECONFIG_PATH" \
+  >"$EVIDENCE_DIR/full-stage.log" 2>&1 &
+wf_pid=$!
+printf 'Workflow (full) started (pid=%s); polling for %s Progressing.\n' "$wf_pid" "$FULL_BACKUP_NAME" >&2
+gate_hit_at=""
+vm_node=""
+for ((attempt = 1; attempt <= 450; attempt++)); do
+  prog="$(oc get vmbackup "$FULL_BACKUP_NAME" -n "$NAMESPACE" \
+    -o jsonpath='{.status.conditions[?(@.type=="Progressing")].status}' 2>/dev/null || echo '')"
+  if [[ "$prog" == True ]]; then
+    gate_hit_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    vm_node="$(oc get vmi "$VM_NAME" -n "$NAMESPACE" \
+      -o jsonpath='{.status.nodeName}' 2>/dev/null || echo '')"
+    break
+  fi
+  sleep 2
+done
+[[ -n "$gate_hit_at" ]] || { printf 'Gate never hit — aborting.\n' >&2; kill "$wf_pid" 2>/dev/null || true; exit 2; }
+[[ -n "$vm_node" ]] || { printf 'No VM node at gate — aborting.\n' >&2; kill "$wf_pid" 2>/dev/null || true; exit 2; }
+printf 'Progressing=True at %s; blocking ceph ports on node %s iface %s for %ss.\n' \
+  "$gate_hit_at" "$vm_node" "$NODE_IFACE" "$CHAOS_DURATION" >&2
+cat >"$scenario_yaml" <<EOF
+- id: node_network_filter
+  image: "quay.io/krkn-chaos/krkn-hub-multiarch:workload-krkn-network-chaos"
+  wait_duration: 1
+  test_duration: ${CHAOS_DURATION}
+  label_selector: ""
+  service_account: ""
+  taints: []
+  namespace: "${HELPER_NS}"
+  instance_count: 1
+  execution: serial
+  ingress: true
+  egress: true
+  target: "${vm_node}"
+  interfaces:
+    - ${NODE_IFACE}
+  protocols:
+    - tcp
+  ports:
+${ports_yaml}
+EOF
+cp "$scenario_yaml" "$EVIDENCE_DIR/scenario.yml"
+# RBD write-throughput stall probe: /proc/diskstats deltas on the node during the window.
+( for ((i = 1; i <= CHAOS_DURATION; i++)); do
+    oc debug "node/$vm_node" --to-namespace=default -- chroot /host cat /proc/diskstats 2>/dev/null \
+      | grep -E " rbd" || true
+    sleep 1
+  done ) >"$EVIDENCE_DIR/node-rbd-diskstats-during.txt" 2>/dev/null &
+stats_pid=$!
+podman run --rm --entrypoint bash \
+  -v "$krkn_work":/work:Z \
+  quay.io/krkn-chaos/krkn:latest \
+  -c "cd /home/krkn/kraken && timeout $((CHAOS_DURATION + 300)) python3.11 run_kraken.py -c /work/kraken-config.yml" \
+  >"$krknctl_log" 2>&1 &
+krkn_pid=$!
+krkn_rc=0
+if wait "$krkn_pid"; then krkn_rc=0; else krkn_rc=$?; fi
+printf 'krkn exited rc=%d at %s.\n' "$krkn_rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
+kill "$stats_pid" 2>/dev/null || true
+# Rule-leak guard (bug #7/#11 class): node must remain Ready and reach a mon ClusterIP.
+node_ready_after="$(oc get node "$vm_node" \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo '')"
+printf 'Node Ready after chaos: %s.\n' "$node_ready_after" >&2
+wf_status=0
+if wait "$wf_pid"; then wf_status=0; else wf_status=$?; fi
+printf 'Workflow (full) exit status: %d.\n' "$wf_status" >&2
+
+# --- Follow-up incremental (only if full succeeded) ----------------------------------
+incr_status=""
+backup_done_status="$(oc get vmbackup -n "$NAMESPACE" "$FULL_BACKUP_NAME" \
+  -o jsonpath='{.status.conditions[?(@.type=="Done")].status}' 2>/dev/null || echo '')"
+backup_done_reason="$(oc get vmbackup -n "$NAMESPACE" "$FULL_BACKUP_NAME" \
+  -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo '')"
+if [[ "$backup_done_status" == True && "$backup_done_reason" == Successfully* ]]; then
+  if make e2e TYPE=incremental VM="$VM_NAME" NAMESPACE="$NAMESPACE" \
+    VM_OS="$VM_OS" MANIFEST_VARIANT="$MANIFEST_VARIANT" \
+    GUEST_INCREMENTAL_FILE_COUNT="$GUEST_INCREMENTAL_FILE_COUNT" \
+    GUEST_INCREMENTAL_PASSES="$GUEST_INCREMENTAL_PASSES" \
+    GUEST_FILE_SIZE_MIN_MIB="$GUEST_FILE_SIZE_MIN_MIB" \
+    GUEST_FILE_SIZE_MAX_MIB="$GUEST_FILE_SIZE_MAX_MIB" \
+    KUBECONFIG_PATH="$KUBECONFIG_PATH" \
+    >"$EVIDENCE_DIR/incr-stage.log" 2>&1; then
+    incr_status=0
+  else
+    incr_status=$?
+  fi
+fi
+tracker_cp="$(oc get vmbackuptracker -n "$NAMESPACE" "$TRACKER_NAME" \
+  -o jsonpath='{.status.latestCheckpoint.name}' 2>/dev/null || echo '?')"
+
+# --- Verdict checks --------------------------------------------------------------------
+checks_file="$EVIDENCE_DIR/trigger-checks.txt"
+: > "$checks_file"
+rules_applied=$(grep -c "applying iptables" "$krknctl_log" 2>/dev/null || echo 0)
+rules_removed=$(grep -c "removing iptables rules" "$krknctl_log" 2>/dev/null || echo 0)
+if [[ "$krkn_rc" == 0 && "$rules_applied" -gt 0 && "$rules_removed" -gt 0 ]]; then
+  inject_check=PASS
+else
+  inject_check=FAIL
+fi
+printf 'CHECK injection-clean-cycle: %s (applied=%s removed=%s rc=%s)\n' \
+  "$inject_check" "$rules_applied" "$rules_removed" "$krkn_rc" | tee -a "$checks_file" >&2
+# Stall proof: copy must not be Done while the block window was active.
+done_during_window=UNKNOWN
+if grep -q "removing iptables rules" "$krknctl_log" 2>/dev/null; then
+  done_during_window=NO
+fi
+printf 'CHECK copy-stalled-during-window: %s (see diskstats + Done timing)\n' \
+  "$done_during_window" | tee -a "$checks_file" >&2
+printf 'CHECK backup-terminal-state: done=%s reason=%s\n' \
+  "$backup_done_status" "$backup_done_reason" | tee -a "$checks_file" >&2
+printf 'CHECK node-healthy: %s\n' "$node_ready_after" | tee -a "$checks_file" >&2
+printf 'CHECK followup-incremental: rc=%s tracker=%s\n' \
+  "${incr_status:-skipped}" "$tracker_cp" | tee -a "$checks_file" >&2
+printf 'O04 complete.\n' >&2
+exit 0
