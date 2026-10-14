@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
 # Shared density-pool helpers. Sourced library — no top-level code.
 # Requires scripts/common.sh (ROOT_DIR, RUNS_ROOT_DIR, oc_cmd, RUN_LABEL_*).
+#
+# Pool state is derived entirely from the cluster: VMs carry
+# virt-cbt-lab/pool + virt-cbt-lab/run-id labels and os-profile /
+# manifest-variant / incremental-passes annotations, so no local pool
+# metadata is kept. A pool exists exactly while at least one of its VMs
+# exists on the cluster.
 
 density_pool_file() {
   printf '%s/density/%s/pool.json' "$ROOT_DIR" "$1"
 }
 
+# Print the most recently created pool present on the cluster (VM
+# creationTimestamp of the pool's newest VM), or fail with a message.
 density_latest_pool() {
-  local pool latest="" latest_created="" created
-  [[ -d "$ROOT_DIR/density" ]] || {
-    printf 'No density pools found under density/; run make density-setup first.\n' >&2
-    return 1
-  }
-  for pool in "$ROOT_DIR/density"/*/; do
-    [[ -f "${pool}pool.json" ]] || continue
-    pool="${pool%/}"
-    pool="${pool##*/}"
-    created="$(jq -r '.created_at // empty' "$(density_pool_file "$pool")")"
-    if [[ -z "$latest_created" || "$created" > "$latest_created" ]]; then
-      latest="$pool"
-      latest_created="$created"
-    fi
-  done
+  local latest
+  latest="$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY" \
+    -o jsonpath='{range .items[*]}{.metadata.labels.virt-cbt-lab/pool}{"\n"}{end}' 2>/dev/null \
+    | sort -u | tail -1 || true)"
   [[ -n "$latest" ]] || {
-    printf 'No density pools found under density/; run make density-setup first.\n' >&2
+    printf 'No density pools found in namespace %s; run make density-setup first.\n' \
+      "$NAMESPACE" >&2
     return 1
   }
   printf '%s' "$latest"
@@ -31,19 +29,16 @@ density_latest_pool() {
 
 # Emit one JSON document describing a pool's funnel on stdout:
 # {pool, os_profile, namespace, passes, total, vms:[{run_id, vm_name,
-#  state: missing|creating|ready, full, incrementals:[...]}]}.
-# VM state and backup states come from the cluster; pool.json only supplies
-# the expected run ID list (VMs kube-burner has not created yet).
-# Backup state: "-" absent, "running" Done missing/not True, "failed" Done True
-# with a "Backup has failed" reason (backup_done_reason_is_failure
-# semantics), "done" otherwise.
+#  state: creating|ready, full, incrementals:[...]}]}.
+# Everything — the expected run IDs, VM states, and backup states — is read
+# live from the cluster. Backup state: "-" absent, "running" Done missing/not
+# True, "failed" Done True with a "Backup has failed" reason
+# (backup_done_reason_is_failure semantics), "done" otherwise.
 density_status_json() {
-  local pool="$1" pool_file passes namespace total
+  local pool="$1" passes namespace total
   local vm_json_file backup_json_file
-  pool_file="$(density_pool_file "$pool")"
-  passes="$(jq -r '.incremental_passes' "$pool_file")"
-  namespace="$(jq -r '.namespace' "$pool_file")"
-  total="$(jq -r '.vm_count' "$pool_file")"
+  passes="${DENSITY_INCREMENTAL_PASSES:-4}"
+  namespace="$NAMESPACE"
   # Pass cluster JSON via files, not --argjson: with many VMs the list blob
   # exceeds the kernel's per-argument limit (MAX_ARG_STRLEN, 128 KiB) and
   # execve fails with E2BIG ("Argument list too long").
@@ -59,11 +54,8 @@ density_status_json() {
   fi
   jq -n \
     --arg pool "$pool" \
-    --arg os_profile "$(jq -r '.os_profile' "$pool_file")" \
     --arg namespace "$namespace" \
     --argjson passes "$passes" \
-    --argjson total "$total" \
-    --argjson expected "$(jq -c '.run_ids' "$pool_file")" \
     --slurpfile vms "$vm_json_file" \
     --slurpfile backups "$backup_json_file" \
     '
@@ -77,25 +69,57 @@ density_status_json() {
             else "done"
             end
         end;
-    [ $expected[] as $rid
-      | ([$vms[0].items[]? | select(.metadata.labels[$rid_key_label] == $rid)] | first) as $vm
-      | {
-          run_id: $rid,
-          vm_name: ("vm-" + $rid),
-          state: (if $vm == null then "missing"
-                  elif $vm.status.ready == true then "ready"
-                  else "creating" end),
-          full: backup_state("vm-backup-" + $rid),
-          incrementals: [ range(1; $passes + 1)
-            | tostring as $s
-            | backup_state("vm-incremental-" + $rid + "-p" +
-                ("0" * (2 - ($s | length))) + $s)]
-        }
-    ]
-    | {pool: $pool, os_profile: $os_profile, namespace: $namespace,
-       passes: $passes, total: $total, vms: .}
+    ([$vms[0].items[]? | .metadata.annotations["virt-cbt-lab/incremental-passes"] // empty]
+      | if length == 0 then 4 else (.[0] | tonumber) end) as $passes
+    | [ $vms[0].items[]?
+        | .metadata.labels[$rid_key_label] as $rid
+        | {
+            run_id: $rid,
+            vm_name: .metadata.name,
+            state: (if .status.ready == true then "ready" else "creating" end),
+            full: backup_state("vm-backup-" + $rid),
+            incrementals: [ range(1; $passes + 1)
+              | tostring as $s
+              | backup_state("vm-incremental-" + $rid + "-p" +
+                  ("0" * (2 - ($s | length))) + $s)]
+          }
+        | select(.run_id != null)
+      ]
+    | sort_by(.run_id)
+    | {pool: $pool, os_profile: ([$vms[0].items[]? | .metadata.annotations["virt-cbt-lab/os-profile"] // empty] | if length == 0 then "-" else .[0] end),
+       namespace: $namespace, passes: $passes, total: length, vms: .}
     ' --arg rid_key_label "$RUN_LABEL_RUN_ID_KEY"
   local status=$?
   rm -f "$vm_json_file" "$backup_json_file"
   return "$status"
+}
+
+# Count VMs currently present on the cluster for a pool (stdout, integer).
+# Used by density-setup's readiness wait instead of local metadata.
+density_pool_vm_count() {
+  local pool="$1" count
+  count="$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY=$pool" \
+    -o jsonpath='{.items}' 2>/dev/null | jq 'length' || echo 0)"
+  printf '%s' "${count:-0}"
+}
+
+# Wait until all count VMs of a pool report .status.ready == true.
+density_wait_for_ready() {
+  local pool="$1" expected="$2" timeout_minutes="${3:-240}"
+  local deadline ready_count status_json
+  deadline=$(( $(date +%s) + timeout_minutes * 60 ))
+  while :; do
+    status_json="$(density_status_json "$pool")"
+    ready_count="$(jq '[.vms[] | select(.state == "ready")] | length' <<<"$status_json")"
+    workflow_progress "created $ready_count/$expected"
+    if ((ready_count == expected)); then
+      return 0
+    fi
+    if (( $(date +%s) >= deadline )); then
+      printf 'Pool %s still creating after %s minutes; check make density-status POOL=%s.\n' \
+        "$pool" "$timeout_minutes" "$pool" >&2
+      return 1
+    fi
+    sleep 30
+  done
 }

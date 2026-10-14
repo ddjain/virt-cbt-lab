@@ -44,26 +44,12 @@ if ! valid_pool_id "$POOL"; then
   printf 'POOL must be lowercase alphanumeric with internal hyphens and at most 20 characters (got: %s).\n' "$POOL" >&2
   exit 1
 fi
-if [[ -e "$(density_pool_file "$POOL")" ]]; then
-  printf 'Pool %s already exists (%s); choose another POOL.\n' "$POOL" "$(density_pool_file "$POOL")" >&2
+if [[ -n "$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY=$POOL" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)" ]]; then
+  printf 'Pool %s already has VMs in namespace %s; choose another POOL.\n' \
+    "$POOL" "$NAMESPACE" >&2
   exit 1
 fi
-
-require_command kube-burner
-if [[ "$VM_OS" == rhel9 ]]; then
-  require_command ssh-keygen
-else
-  require_command python3
-  WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
-  if [[ -z "$WINDOWS_ADMIN_PASSWORD_FILE" || ! -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
-    printf 'Set WINDOWS_ADMIN_PASSWORD_FILE to a readable local password file (see .env.example).\n' >&2
-    exit 1
-  fi
-fi
-
-workflow_step "1/4 Validate inputs and prepare the namespace"
-workflow_action "VM_OS=$VM_OS DENSITY_VM_COUNT=$DENSITY_VM_COUNT POOL=$POOL passes=$DENSITY_INCREMENTAL_PASSES qps=$DENSITY_QPS"
-oc_cmd create namespace "$NAMESPACE" --dry-run=client -o yaml | oc_cmd apply -f - >/dev/null
 
 if [[ "$VM_OS" == rhel9 ]]; then
   public_key="$(ensure_guest_key)"
@@ -84,27 +70,8 @@ else
   public_key=""
 fi
 
-workflow_step "2/4 Record the pool before launch"
-pool_dir="$ROOT_DIR/density/$POOL"
-mkdir -p "$pool_dir"
-run_ids_json="$(jq -n --arg pool "$POOL" --argjson count "$DENSITY_VM_COUNT" \
-  '[range(1; $count + 1) | tostring as $s | $pool + "-" + ("0" * (4 - ($s | length))) + $s]')"
-pool_json_tmp="$pool_dir/pool.json.tmp.$$"
-jq -n \
-  --arg pool_id "$POOL" \
-  --arg os_profile "$VM_OS" \
-  --arg manifest_variant "$MANIFEST_VARIANT" \
-  --arg namespace "$NAMESPACE" \
-  --argjson vm_count "$DENSITY_VM_COUNT" \
-  --argjson incremental_passes "$DENSITY_INCREMENTAL_PASSES" \
-  --argjson run_ids "$run_ids_json" \
-  --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{schema_version: 1, pool_id: $pool_id, os_profile: $os_profile,
-    manifest_variant: $manifest_variant, namespace: $namespace,
-    vm_count: $vm_count, incremental_passes: $incremental_passes,
-    run_ids: $run_ids, created_at: $created_at}' > "$pool_json_tmp"
-mv -f "$pool_json_tmp" "$pool_dir/pool.json"
-workflow_success "Pool metadata recorded at density/$POOL/pool.json"
+workflow_step "2/4 Validate pool name is unused"
+workflow_success "Pool $POOL is free in namespace $NAMESPACE"
 
 workflow_step "3/4 Launch kube-burner"
 userdata="$(mktemp)"
@@ -135,28 +102,13 @@ jq -n \
     RUN_ID_KEY: $RUN_ID_KEY, POOL_KEY: $POOL_KEY}' > "$userdata"
 workflow_action "kube-burner init -c manifests/density/config.yaml (job density-$POOL, $DENSITY_VM_COUNT VM(s))"
 if ! (
-  cd "$pool_dir" &&
   kube-burner init -c "$ROOT_DIR/manifests/density/config.yaml" --user-data "$userdata"
 ); then
-  printf 'kube-burner failed for pool %s; pool metadata remains for make density-status.\n' "$POOL" >&2
+  printf 'kube-burner failed for pool %s; created objects (if any) remain for make density-status POOL=%s.\n' \
+    "$POOL" "$POOL" >&2
   exit 1
 fi
-workflow_success "kube-burner created the pool objects"
 
 workflow_step "4/4 Wait for VM readiness"
-deadline=$(( $(date +%s) + DENSITY_WAIT_MINUTES * 60 ))
-while :; do
-  status_json="$(density_status_json "$POOL")"
-  ready_count="$(jq '[.vms[] | select(.state == "ready")] | length' <<<"$status_json")"
-  workflow_progress "created $ready_count/$DENSITY_VM_COUNT"
-  if ((ready_count == DENSITY_VM_COUNT)); then
-    break
-  fi
-  if (( $(date +%s) >= deadline )); then
-    printf 'Pool %s still creating after %s minutes; check make density-status POOL=%s.\n' \
-      "$POOL" "$DENSITY_WAIT_MINUTES" "$POOL" >&2
-    exit 1
-  fi
-  sleep 30
-done
+density_wait_for_ready "$POOL" "$DENSITY_VM_COUNT" "$DENSITY_WAIT_MINUTES"
 workflow_success "Density pool $POOL is ready: $DENSITY_VM_COUNT/$DENSITY_VM_COUNT VMs created"
