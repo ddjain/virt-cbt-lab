@@ -106,6 +106,20 @@ run_setup() {
 
 run_setup >/dev/null 2>&1
 
+# Default pool name (no POOL=): OS-prefixed timestamp.
+default_pool_output="$(cd "$TEST_ROOT" && env PATH="$FAKE_BIN:$PATH" \
+  KUBECONFIG_PATH= KUBECONFIG= GUEST_KEY="$TEST_TMP/guest-key" \
+  POOL_COUNT_EXTRA=1 KUBE_BURNER_LOG="$TEST_TMP/kb-default.log" \
+  KUBE_BURNER_CREATED_POOL="$TEST_TMP/other-pool" \
+  ROOT_DIR="$TEST_ROOT" RUNS_ROOT_DIR="$TEST_ROOT/runs" \
+  DENSITY_VM_COUNT=1 VM_OS=rhel9 MANIFEST_VARIANT=large-odf \
+  bash "$TEST_ROOT/scripts/density-setup.sh")"
+default_pool="$(cat "$TEST_TMP/other-pool" 2>/dev/null || true)"
+if [[ ! "$default_pool" =~ ^rhel-[0-9]{10}$ ]]; then
+  printf 'Default pool name must be rhel-<10-digit timestamp> (got: %s).\n' "$default_pool" >&2
+  exit 1
+fi
+
 # No local pool metadata is written.
 if [[ -e "$TEST_ROOT/density" ]]; then
   printf 'density/ directory must not be created (no local pool metadata).\n' >&2

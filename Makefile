@@ -153,7 +153,7 @@ help:
 	  '' \
 	  'DENSITY' \
 	  '  make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10   Create a density VM pool with kube-burner.' \
-	  '  make density-status [POOL=<pool>]  Per-pool funnel: created, full, incremental passes.' \
+	  '  make density-status [POOL=<pool>]  Fleet view of all density VMs; POOL= restricts to one pool.' \
 	  '' \
 	  'OPERATIONS' \
 	  '  make preflight                   Read-only readiness check.' \
