@@ -15,8 +15,8 @@ This repository is a shell-driven KubeVirt CBT demonstration. `make e2e` runs se
 - `scripts/clean-all.sh`: namespace/PV/key cleanup.
 - `scripts/monitor.sh <vm_name>`: read-only, watches a run's full/incremental `vmbackup` objects and prints real start/done timestamps and duration for each; run it alongside `make e2e` in a separate terminal.
 - `sync.sh`: optional SSH/rsync helper; it reads `REMOTE_HOST` and `REMOTE_DIR` from the environment or local `.env`.
-- `scripts/density-setup.sh`: creates a pool of bare VMs with kube-burner (`make density-setup`); pools VM, root DataVolume, and (RHEL) SSH Service named `vm-<pool>-NNNN` etc., records `density/<pool>/pool.json`, then polls VM readiness itself.
-- `scripts/density-status.sh` (+ `scripts/density-lib.sh`): read-only per-pool funnel (total/creating/created/full/incremental-pass states) from cluster VM and `vmbackup` objects.
+- `scripts/density-setup.sh`: creates a pool of bare VMs with kube-burner (`make density-setup`); pools VM, root DataVolume, and (RHEL) SSH Service named `vm-<pool>-NNNN` etc. (`POOL` defaults to an OS-prefixed timestamp, e.g. `rhel-<MMDDhhmmss>`), then polls VM readiness itself. No local pool metadata is written — pool state lives in the VMs' `virt-cbt-lab/*` labels and annotations.
+- `scripts/density-status.sh` (+ `scripts/density-lib.sh`): read-only fleet view — every managed VM in the namespace grouped by pool, each group with a total/creating/created/full/incremental-pass funnel from cluster VM and `vmbackup` objects (`POOL=<id>` restricts to one pool).
 - `scripts/windows-oobe-secret.sh`: sourced library that builds a labeled Windows OOBE Secret; shared by `windows-vm-setup.sh` (run-scoped) and `density-setup.sh` (pool-scoped).
 
 ## Setup and validation
@@ -45,7 +45,7 @@ These modes are supported only when the active checkout's `Makefile`/workflow sc
 
 ### Density pools and adopting a pool VM
 
-`make density-setup VM_OS=rhel9|windows DENSITY_VM_COUNT=N [POOL=<id>] [DENSITY_INCREMENTAL_PASSES=n] [DENSITY_QPS=q] [DENSITY_WAIT_MINUTES=m]` creates bare, backup-eligible pool VMs (one OS per pool; Debian is not supported); `make density-status [POOL=<id>]` prints the read-only funnel. Pool run IDs are fixed `<pool>-NNNN`, so a pool VM joins the normal pipeline without recreation:
+`make density-setup VM_OS=rhel9|windows DENSITY_VM_COUNT=N [POOL=<id>] [DENSITY_INCREMENTAL_PASSES=n] [DENSITY_QPS=q] [DENSITY_WAIT_MINUTES=m]` creates bare, backup-eligible pool VMs (one OS per pool; Debian is not supported; `POOL` defaults to an OS-prefixed timestamp like `rhel-<MMDDhhmmss>`, and a `POOL` that already has VMs in the namespace is refused); `make density-status` prints the read-only fleet view (all pools plus un-pooled managed VMs; `POOL=<id>` restricts to one pool). Pool run IDs are fixed `<pool>-NNNN`, so a pool VM joins the normal pipeline without recreation:
 
 ```sh
 make e2e EXISTING_VM=vm-<pool>-NNNN   # TYPE=all|full only; cannot combine with VM/NAME

@@ -160,7 +160,8 @@ Create a pool of bare, backup-eligible VMs in bulk, then drive individual VMs th
 ```sh
 make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10
 make e2e EXISTING_VM=vm-<pool>-0001
-make density-status [POOL=<pool>]
+make density-status                # fleet view: all pools + un-pooled VMs
+make density-status POOL=<pool>    # one pool's funnel
 ```
 
 - `make density-setup` runs preflight, then uses kube-burner to create `DENSITY_VM_COUNT` VMs named `vm-<pool>-NNNN` (one OS per pool: `VM_OS=rhel9|windows`; Debian is not supported for density). `POOL` defaults to an OS-prefixed timestamp (`rhel-<MMDDhhmmss>` / `win-<MMDDhhmmss>`), so VM names read `vm-rhel-<ts>-NNNN` and stay unique across runs. RHEL VMs get a root DataVolume and SSH Service; Windows VMs share one pool-scoped OOBE Secret (`windows-oobe-<pool>`, requires `WINDOWS_ADMIN_PASSWORD_FILE`). Pool VMs carry `virt-cbt-lab/pool`, `virt-cbt-lab/run-id`, and `app.kubernetes.io/managed-by` labels plus os-profile/manifest-variant/incremental-passes annotations; no local pool metadata is kept — pool state lives entirely in those labels/annotations. The script refuses a `POOL` name that already has VMs in the namespace and polls until every VM reports `.status.ready==true` (up to `DENSITY_WAIT_MINUTES`, default 240), independent of kube-burner's own waiters.
