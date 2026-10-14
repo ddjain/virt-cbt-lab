@@ -1,0 +1,118 @@
+# DENSITY RHEL 9 VM template for kube-burner (`make density-setup`).
+# Keep structurally in sync with manifests/vm-large-odf.yaml (RHEL 9 sizing,
+# cloud-init hard-coded for the rhel9 profile: package_update false, no
+# packages, wheel group, sshd service). Namespace comes from
+# manifests/density/config.yaml, so no Namespace document here.
+# $rid is re-declared per document; Go-template variables do not cross
+# document boundaries.
+{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: vm-{{ $rid }}
+  namespace: {{ .namespace }}
+  labels:
+    cbt-demo: enabled
+    {{ .managedByKey }}: {{ .managedByValue }}
+    {{ .runIdKey }}: {{ $rid }}
+    {{ .poolKey }}: {{ .poolId }}
+  annotations:
+    virt-cbt-lab/os-profile: rhel9
+    virt-cbt-lab/manifest-variant: "{{ .manifestVariant }}"
+    virt-cbt-lab/incremental-passes: "{{ .incrementalPasses }}"
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: vm-disk-{{ $rid }}
+        labels:
+          {{ .managedByKey }}: {{ .managedByValue }}
+          {{ .runIdKey }}: {{ $rid }}
+          {{ .poolKey }}: {{ .poolId }}
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: rhel9
+          namespace: openshift-virtualization-os-images
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: {{ .diskSize }}
+          storageClassName: {{ .storageClass }}
+          volumeMode: Filesystem
+  template:
+    metadata:
+      labels:
+        cbt-demo: enabled
+    spec:
+      evictionStrategy: None
+      domain:
+        cpu:
+          cores: 1
+        memory:
+          guest: 4Gi
+        resources:
+          requests:
+            memory: 4Gi
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: virtio
+            - name: cloudinitdisk
+              disk:
+                bus: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              ports:
+                - name: ssh
+                  port: 22
+                  protocol: TCP
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: vm-disk-{{ $rid }}
+        - name: cloudinitdisk
+          cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              package_update: false
+              packages: []
+              runcmd:
+                - [systemctl, enable, --now, qemu-guest-agent]
+                - [systemctl, enable, --now, sshd]
+              ssh_pwauth: false
+              users:
+                - name: cbt-demo
+                  gecos: CBT demo user
+                  groups: [wheel]
+                  sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+                  shell: /bin/bash
+                  lock_passwd: true
+                  ssh_authorized_keys:
+                    - {{ .sshPublicKey }}
+---
+{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-ssh-{{ $rid }}
+  namespace: {{ .namespace }}
+  labels:
+    {{ .managedByKey }}: {{ .managedByValue }}
+    {{ .runIdKey }}: {{ $rid }}
+    {{ .poolKey }}: {{ .poolId }}
+spec:
+  selector:
+    vm.kubevirt.io/name: vm-{{ $rid }}
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 22
+      protocol: TCP

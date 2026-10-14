@@ -1,0 +1,37 @@
+# kube-burner job config for density VM pools, rendered via
+# `kube-burner init --user-data <file>`. All template variables come from
+# scripts/density-setup.sh's user-data JSON.
+# `cleanup: false` + `namespacedIterations: false` are mandatory: kube-burner's
+# defaults would delete/own namespaces. Objects are created with `wait: false`;
+# scripts/density-setup.sh itself polls VM readiness, so the readiness
+# criterion is independent of the kube-burner version's waiters.
+global:
+  gc: false
+jobs:
+  - name: {{ .JOB_NAME }}
+    jobType: create
+    jobIterations: {{ .DENSITY_VM_COUNT }}
+    namespace: {{ .NAMESPACE }}
+    namespacedIterations: false
+    cleanup: false
+    preLoadImages: false
+    verifyObjects: false
+    waitWhenFinished: false
+    qps: {{ .DENSITY_QPS }}
+    burst: {{ .DENSITY_QPS }}
+    objects:
+      - objectTemplate: {{ .OBJECT_TEMPLATE }}
+        replicas: 1
+        wait: false
+        inputVars:
+          namespace: "{{ .NAMESPACE }}"
+          poolId: "{{ .POOL_ID }}"
+          sshPublicKey: "{{ .SSH_PUBLIC_KEY }}"
+          diskSize: "{{ .DISK_SIZE }}"
+          storageClass: "{{ .STORAGE_CLASS }}"
+          manifestVariant: "{{ .MANIFEST_VARIANT }}"
+          incrementalPasses: "{{ .INCREMENTAL_PASSES }}"
+          managedByKey: "{{ .MANAGED_BY_KEY }}"
+          managedByValue: "{{ .MANAGED_BY_VALUE }}"
+          runIdKey: "{{ .RUN_ID_KEY }}"
+          poolKey: "{{ .POOL_KEY }}"

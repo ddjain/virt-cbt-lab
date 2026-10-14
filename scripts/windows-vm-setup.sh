@@ -9,84 +9,56 @@ require_command python3
 
 WINDOWS_IMAGES_NAMESPACE="vm-cbt-images"
 WINDOWS_ADMIN_PASSWORD_FILE="${WINDOWS_ADMIN_PASSWORD_FILE:-}"
-if [[ -z "$WINDOWS_ADMIN_PASSWORD_FILE" || ! -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
-  printf 'Set WINDOWS_ADMIN_PASSWORD_FILE to a readable local password file (see .env.example).\n' >&2
-  exit 1
-fi
 
-new_run_id
+# shellcheck source=scripts/windows-oobe-secret.sh
+source "$ROOT_DIR/scripts/windows-oobe-secret.sh"
 
-workflow_step "1/5 Prepare the cached Windows golden image"
-if ! oc_cmd get datasource windows-server-2022 -n "$WINDOWS_IMAGES_NAMESPACE" >/dev/null 2>&1; then
-  workflow_action "Windows DataSource is absent; running the one-time ISO install and sysprep workflow"
-  "$ROOT_DIR/scripts/windows-golden-image-setup.sh"
-fi
-oc_cmd wait dv/windows-golden -n "$WINDOWS_IMAGES_NAMESPACE" \
-  --for=jsonpath='{.status.phase}'=Succeeded --timeout=30m >/dev/null
-workflow_status "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
-workflow_success "Windows DataSource is ready"
+create_windows_vm_resources() {
+  if [[ -z "$WINDOWS_ADMIN_PASSWORD_FILE" || ! -r "$WINDOWS_ADMIN_PASSWORD_FILE" ]]; then
+    printf 'Set WINDOWS_ADMIN_PASSWORD_FILE to a readable local password file (see .env.example).\n' >&2
+    exit 1
+  fi
 
-workflow_step "2/5 Generate the run-scoped OOBE secret"
-OOBE_SECRET="windows-oobe-${RUN_ID}"
-TMP_OOBE_FILE="$(mktemp)"
-chmod 600 "$TMP_OOBE_FILE"
-cleanup() {
-  local status=$?
-  trap - EXIT INT TERM
-  [[ -z "${TMP_OOBE_FILE:-}" || ! -f "$TMP_OOBE_FILE" ]] || rm -f "$TMP_OOBE_FILE"
-  exit "$status"
+  new_run_id
+
+  workflow_step "1/5 Prepare the cached Windows golden image"
+  if ! oc_cmd get datasource windows-server-2022 -n "$WINDOWS_IMAGES_NAMESPACE" >/dev/null 2>&1; then
+    workflow_action "Windows DataSource is absent; running the one-time ISO install and sysprep workflow"
+    "$ROOT_DIR/scripts/windows-golden-image-setup.sh"
+  fi
+  oc_cmd wait dv/windows-golden -n "$WINDOWS_IMAGES_NAMESPACE" \
+    --for=jsonpath='{.status.phase}'=Succeeded --timeout=30m >/dev/null
+  workflow_status "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
+  workflow_success "Windows DataSource is ready"
+
+  workflow_step "2/5 Generate the run-scoped OOBE secret"
+  OOBE_SECRET="windows-oobe-${RUN_ID}"
+  create_windows_oobe_secret "$OOBE_SECRET" "$RUN_LABEL_RUN_ID_KEY" "$RUN_ID"
+  workflow_success "Run-scoped Windows OOBE Secret is ready"
+
+  workflow_step "3/5 Create the CBT-enabled Windows VM"
+  workflow_action "Ensure namespace $NAMESPACE exists"
+  oc_cmd create namespace "$NAMESPACE" --dry-run=client -o yaml | oc_cmd apply -f - >/dev/null
+  workflow_action "Apply Windows VM $VM_NAME with cloned 40Gi root disk and OOBE Secret $OOBE_SECRET"
+  sed \
+    -e "s|__NAMESPACE__|$NAMESPACE|g" \
+    -e "s|__VM_NAME__|$VM_NAME|g" \
+    -e "s|__DV_NAME__|$DV_NAME|g" \
+    -e "s|__OOBE_SECRET__|$OOBE_SECRET|g" \
+    -e "s|__RUN_ID__|$RUN_ID|g" \
+    -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
+    "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f - >/dev/null
+  workflow_progress "Windows VM resources applied in namespace $NAMESPACE"
+  workflow_success "Windows VM resources created"
 }
-trap cleanup EXIT INT TERM
-python3 - "$WINDOWS_ADMIN_PASSWORD_FILE" "$ROOT_DIR/scripts/windows-oobe.xml.tmpl" "$TMP_OOBE_FILE" <<'PY'
-import pathlib
-import sys
-import xml.etree.ElementTree as ET
-from xml.sax.saxutils import escape
 
-password_path, template_path, output_path = map(pathlib.Path, sys.argv[1:])
-password = password_path.read_text(encoding="utf-8")
-if password.endswith("\n"):
-    password = password[:-1]
-if password.endswith("\r"):
-    password = password[:-1]
-if not password or "\n" in password or "\r" in password:
-    raise SystemExit("WINDOWS_ADMIN_PASSWORD_FILE must contain one non-empty password line")
-template = template_path.read_text(encoding="utf-8")
-if template.count("__ADMIN_PASSWORD__") != 1:
-    raise SystemExit("Windows OOBE template must contain exactly one password placeholder")
-rendered = template.replace("__ADMIN_PASSWORD__", escape(password))
-ET.fromstring(rendered)
-output_path.write_text(rendered, encoding="utf-8")
-PY
-workflow_action "Create run-labeled Secret $OOBE_SECRET with key unattend.xml (password never logged)"
-oc_cmd delete secret "$OOBE_SECRET" -n "$NAMESPACE" --ignore-not-found=true >/dev/null 2>&1 || true
-oc_cmd create secret generic "$OOBE_SECRET" -n "$NAMESPACE" \
-  --from-file=unattend.xml="$TMP_OOBE_FILE" \
-  --dry-run=client -o json |
-  jq --arg managed_key "$RUN_LABEL_MANAGED_BY_KEY" \
-     --arg managed_value "$RUN_LABEL_MANAGED_BY_VALUE" \
-     --arg run_key "$RUN_LABEL_RUN_ID_KEY" \
-     --arg run_id "$RUN_ID" \
-     '.metadata.labels = {($managed_key): $managed_value, ($run_key): $run_id}' |
-  oc_cmd apply -f - >/dev/null
-rm -f "$TMP_OOBE_FILE"
-TMP_OOBE_FILE=
-workflow_success "Run-scoped Windows OOBE Secret is ready"
-
-workflow_step "3/5 Create the CBT-enabled Windows VM"
-workflow_action "Ensure namespace $NAMESPACE exists"
-oc_cmd create namespace "$NAMESPACE" --dry-run=client -o yaml | oc_cmd apply -f - >/dev/null
-workflow_action "Apply Windows VM $VM_NAME with cloned 40Gi root disk and OOBE Secret $OOBE_SECRET"
-sed \
-  -e "s|__NAMESPACE__|$NAMESPACE|g" \
-  -e "s|__VM_NAME__|$VM_NAME|g" \
-  -e "s|__DV_NAME__|$DV_NAME|g" \
-  -e "s|__OOBE_SECRET__|$OOBE_SECRET|g" \
-  -e "s|__RUN_ID__|$RUN_ID|g" \
-  -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
-  "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f - >/dev/null
-workflow_progress "Windows VM resources applied in namespace $NAMESPACE"
-workflow_success "Windows VM resources created"
+if [[ -n "${EXISTING_VM:-}" ]]; then
+  adopt_existing_run_id
+  workflow_step "1-3/5 Skip VM creation"
+  workflow_success "Adopting existing VM $VM_NAME"
+else
+  create_windows_vm_resources
+fi
 
 # shellcheck source=scripts/windows-guest-agent.sh
 source "$ROOT_DIR/scripts/windows-guest-agent.sh"

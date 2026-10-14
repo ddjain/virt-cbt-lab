@@ -30,6 +30,9 @@ tmp-*/
 
 /runs/
 
+# Density pool records (expected VM lists; run adoption state lives in runs/)
+/density/
+
 /cbt-chaos/scenarios/*/runs/
 
 /cbt-chaos/scenarios_v2/*/runs/**

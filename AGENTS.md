@@ -15,6 +15,9 @@ This repository is a shell-driven KubeVirt CBT demonstration. `make e2e` runs se
 - `scripts/clean-all.sh`: namespace/PV/key cleanup.
 - `scripts/monitor.sh <vm_name>`: read-only, watches a run's full/incremental `vmbackup` objects and prints real start/done timestamps and duration for each; run it alongside `make e2e` in a separate terminal.
 - `sync.sh`: optional SSH/rsync helper; it reads `REMOTE_HOST` and `REMOTE_DIR` from the environment or local `.env`.
+- `scripts/density-setup.sh`: creates a pool of bare VMs with kube-burner (`make density-setup`); pools VM, root DataVolume, and (RHEL) SSH Service named `vm-<pool>-NNNN` etc., records `density/<pool>/pool.json`, then polls VM readiness itself.
+- `scripts/density-status.sh` (+ `scripts/density-lib.sh`): read-only per-pool funnel (total/creating/created/full/incremental-pass states) from cluster VM and `vmbackup` objects.
+- `scripts/windows-oobe-secret.sh`: sourced library that builds a labeled Windows OOBE Secret; shared by `windows-vm-setup.sh` (run-scoped) and `density-setup.sh` (pool-scoped).
 
 ## Setup and validation
 
@@ -39,6 +42,16 @@ make e2e TYPE=incremental VM=vm-my-existing-run
 `TYPE=full` creates a new run ID when `NAME`/`VM` is omitted, sets up a new VM, and takes its full backup; the lifecycle remains incomplete until incremental passes are added. `TYPE=incremental` requires the existing managed VM (replace `vm-my-existing-run` with its exact name) and its valid `runs/<run-id>/run.json` in this checkout; it runs the next planned incremental pass without recreating the VM. The final planned pass performs verification. Do not copy a live VM name into permanent examples; resolve the exact VM/run ID from the active workflow state.
 
 These modes are supported only when the active checkout's `Makefile`/workflow scripts implement `TYPE`. Check `make help` and the target source, especially when running from a remote checkout: an older `e2e` target may ignore `TYPE=incremental` and run the complete demo instead. `make e2e` with default `TYPE=all` remains the full lifecycle.
+
+### Density pools and adopting a pool VM
+
+`make density-setup VM_OS=rhel9|windows DENSITY_VM_COUNT=N [POOL=<id>] [DENSITY_INCREMENTAL_PASSES=n] [DENSITY_QPS=q] [DENSITY_WAIT_MINUTES=m]` creates bare, backup-eligible pool VMs (one OS per pool; Debian is not supported); `make density-status [POOL=<id>]` prints the read-only funnel. Pool run IDs are fixed `<pool>-NNNN`, so a pool VM joins the normal pipeline without recreation:
+
+```sh
+make e2e EXISTING_VM=vm-<pool>-NNNN   # TYPE=all|full only; cannot combine with VM/NAME
+```
+
+Adoption rules: the VM must carry the density-pool labels; the pool's os-profile/manifest-variant/incremental-passes annotations override the environment; `runs/<pool>-NNNN/` is created only at adoption (re-adoption after artifacts exist fails — continue with `TYPE=incremental VM=...`). RHEL adoption requires the same checkout: the pool was created with this `$GUEST_KEY`'s public half. Workload sizing (`GUEST_*_FILE_COUNT`, file MiB range) still comes from the environment, not the pool. `ready` in density-status is VM-object-level only (`.status.ready==true`); guest-OS boot/SSH usability is verified at adoption — vm-setup re-waits on readiness, asserts CBT `Enabled`, and logs in via SSH to write the baseline, so an unusable VM fails loudly at adoption. Never use `make clean-all` for pool cleanup; delete by label: `oc delete vm,svc,secret -n "$NAMESPACE" -l virt-cbt-lab/pool=<pool>` plus `virt-cbt-lab/run-id=<pool>-NNNN`-labeled backups/PVCs/trackers.
 
 `make clean-all` deletes the workflow-managed resources for all runs in the namespace. Do not run it for scenario triage, E2E/chaos validation, or post-run cleanup; use it only for an explicitly requested cleanup task.
 
