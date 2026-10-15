@@ -21,6 +21,10 @@ spec:
       hostPath:
         path: /dev
         type: Directory
+    - name: host-modules
+      hostPath:
+        path: /lib/modules
+        type: Directory
   containers:
     - name: restore-verify
       image: __HELPER_IMAGE__
@@ -35,6 +39,9 @@ spec:
           mountPath: /work
         - name: host-dev
           mountPath: /dev
+        - name: host-modules
+          mountPath: /lib/modules
+          readOnly: true
       command: ["/bin/bash", "-c"]
       args:
         - |
@@ -42,18 +49,43 @@ spec:
           workload_dir="__WORKLOAD_DIR__"
           active_loop=""
           active_mount=""
+          active_nbd=""
+          attached_kind=""
+          attached_dev=""
+          attached_raw=""
+          convert_pid=""
 
           cleanup_restore() {
             local status=$?
             trap - EXIT
             set +e
+            if [[ -n "$convert_pid" ]]; then
+              wait "$convert_pid" 2>/dev/null
+              convert_pid=""
+            fi
             if [[ -n "$active_mount" ]]; then umount "$active_mount" >/dev/null 2>&1; fi
             if [[ -n "$active_loop" ]]; then losetup -d "$active_loop" >/dev/null 2>&1; fi
+            if [[ -n "$active_nbd" ]]; then qemu-nbd --disconnect "$active_nbd" >/dev/null 2>&1; fi
             exit "$status"
           }
           trap cleanup_restore EXIT
           trap 'exit 130' INT
           trap 'exit 143' TERM
+
+          # qemu-nbd binds a lock file under /run/lock (/var/lock is a symlink
+          # to it in the helper image); create it so the NBD fast path can be
+          # used when the node makes the nbd module available.
+          mkdir -p /run/lock 2>/dev/null || true
+
+          # Bound the hash fan-out: enough parallelism to saturate the read
+          # path, without spawning a worker per core on very large nodes.
+          hash_jobs() {
+            local cores
+            cores="$(nproc 2>/dev/null || echo 2)"
+            if ((cores > 16)); then cores=16; fi
+            if ((cores < 1)); then cores=1; fi
+            printf '%s' "$cores"
+          }
 
           full_qcow2="$(find /backups/full -type f -name '*.qcow2' -print | LC_ALL=C sort | head -n1)"
           if [[ -z "$full_qcow2" ]]; then
@@ -72,32 +104,167 @@ spec:
           fi
           echo "FULL_QCOW2=$full_qcow2"
 
+          # Attach a qcow2 image (with its backing chain) and print the block
+          # device that exposes it, or fail. Two mechanisms, in order:
+          #   1. qemu-nbd: exposes the qcow2 chain directly, so no full-size
+          #      raw intermediate has to be written. Needs the nbd kernel
+          #      module in the host kernel.
+          #   2. qemu-img convert to a raw file + losetup: always available.
+          # Both paths mount the same read-only filesystem and run the same
+          # hash comparison, so the verification result is identical.
+          probe_nbd() {
+            local candidate partition
+            command -v qemu-nbd >/dev/null 2>&1 || return 1
+            if command -v modprobe >/dev/null 2>&1; then
+              modprobe nbd >/dev/null 2>&1 || true
+            fi
+            rm -f /work/nbd-probe.qcow2
+            qemu-img create -f qcow2 -b "$full_qcow2" -F qcow2 /work/nbd-probe.qcow2 >/dev/null 2>&1 || return 1
+            for candidate in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5 /dev/nbd6 /dev/nbd7; do
+              [[ -b "$candidate" ]] || continue
+              if ! qemu-nbd --connect="$candidate" --fork /work/nbd-probe.qcow2 >/dev/null 2>&1; then
+                continue
+              fi
+              udevadm settle --timeout=5 >/dev/null 2>&1 || sleep 1
+              partition="$(lsblk -blnpo NAME,SIZE "$candidate" 2>/dev/null | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
+              qemu-nbd --disconnect "$candidate" >/dev/null 2>&1 || true
+              if [[ -n "$partition" ]]; then
+                nbd_candidate="$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+          nbd_candidate=""
+          nbd_available=false
+          if probe_nbd; then
+            nbd_available=true
+          fi
+          printf 'RESTORE_MOUNT_MODE=%s\n' "$([[ "$nbd_available" == true ]] && printf nbd || printf convert)"
+
+          attach_image() {
+            local image="$1" label="$2" raw snap
+            attached_kind=""
+            attached_dev=""
+            attached_raw=""
+            if [[ "$nbd_available" == true ]]; then
+              # A CBT backup is taken from a running guest, so the captured
+              # filesystem may still need journal replay before it can be
+              # mounted. Expose a writable snapshot overlay instead of a
+              # read-only device: the overlay absorbs those writes and the
+              # backup PVCs stay mounted read-only.
+              snap="/work/${label,,}-nbd-overlay.qcow2"
+              rm -f "$snap"
+              if qemu-img create -f qcow2 -b "$image" -F qcow2 "$snap" >/dev/null 2>&1; then
+                qemu-nbd --disconnect "$nbd_candidate" >/dev/null 2>&1 || true
+                if qemu-nbd --connect="$nbd_candidate" --fork "$snap" >/dev/null 2>&1; then
+                  udevadm settle --timeout=5 >/dev/null 2>&1 || sleep 1
+                  active_nbd="$nbd_candidate"
+                  attached_kind="nbd"
+                  attached_dev="$nbd_candidate"
+                  return 0
+                fi
+                qemu-nbd --disconnect "$nbd_candidate" >/dev/null 2>&1 || true
+              fi
+              printf 'WARN: qemu-nbd attach failed for %s; using qemu-img convert for this image\n' "$label" >&2
+              nbd_available=false
+            fi
+            raw="/work/${label,,}.raw"
+            qemu-img convert -f qcow2 -O raw "$image" "$raw"
+            attached_kind="loop"
+            attached_raw="$raw"
+            attached_dev="$(losetup -fP --show "$raw")"
+            active_loop="$attached_dev"
+          }
+
+          detach_image() {
+            if [[ -n "$active_mount" ]]; then
+              umount "$active_mount" >/dev/null 2>&1 || true
+              active_mount=""
+            fi
+            if [[ "$attached_kind" == nbd && -n "$active_nbd" ]]; then
+              qemu-nbd --disconnect "$active_nbd" >/dev/null 2>&1 || true
+              active_nbd=""
+            elif [[ -n "$active_loop" ]]; then
+              losetup -d "$active_loop" >/dev/null 2>&1 || true
+              active_loop=""
+            fi
+            if [[ -n "$attached_raw" ]]; then
+              rm -f "$attached_raw"
+            fi
+            attached_kind=""
+            attached_dev=""
+            attached_raw=""
+          }
+
+          # Inspect one image, retrying with the always-available convert path
+          # when the NBD mount cannot be used. A structural read failure (for
+          # example a missing workload directory) fails in both paths, so the
+          # retry cannot turn a real verification failure into a pass.
+          inspect_image() {
+            local image="$1" label="$2"
+            if [[ "$nbd_available" == true ]]; then
+              attach_image "$image" "$label"
+              if inspect_workload "$attached_dev" "$label"; then
+                detach_image
+                return 0
+              fi
+              detach_image
+              printf 'WARN: NBD read of %s failed; retrying this image with qemu-img convert\n' "$label" >&2
+              nbd_available=false
+            fi
+            attach_image "$image" "$label"
+            inspect_workload "$attached_dev" "$label"
+            detach_image
+          }
+
+          # Read the guest workload directory from the restored disk and print
+          # the file count, payload size, and manifest digest. Partitions are
+          # tried largest-first until one mounts and contains the workload
+          # directory; names are validated first, then sizes come from one
+          # batched stat and hashes from a parallel sha256sum fan-out, so a
+          # 1000-file workload no longer forks one process per file.
           inspect_workload() {
-            local raw_image="$1" label="$2" loop_dev part mount_dir mounted_dir entries entry name size_bytes sha256 record
-            local file_count=0 total_bytes=0 manifest_rows=""
-            loop_dev="$(losetup -fP --show "$raw_image")"
-            active_loop="$loop_dev"
+            local device="$1" label="$2"
+            local part mount_dir mounted_dir entry name candidate mounted_partition="" probed=false
+            local sizes_file hashes_file file_count total_bytes manifest_rows digest cores
+            local -a candidates=()
             udevadm settle --timeout=5 2>/dev/null || sleep 1
-            part="$(lsblk -blnpo NAME,SIZE "$loop_dev" | tail -n +2 | sort -k2 -n | tail -n1 | awk '{print $1}')"
-            if [[ -z "$part" ]]; then
-              echo "ERROR: could not find a root partition in $raw_image" >&2
+            mapfile -t candidates < <(lsblk -blnpo NAME,SIZE "$device" 2>/dev/null \
+              | tail -n +2 | sort -k2 -n -r | awk '{print $1}')
+            if ((${#candidates[@]} == 0)); then
+              echo "ERROR: could not find a partition in $label image" >&2
               return 1
             fi
             mount_dir="/work/${label,,}-mount"
             mkdir -p "$mount_dir"
-            mount -o ro "$part" "$mount_dir"
-            active_mount="$mount_dir"
-            mounted_dir="$mount_dir$workload_dir"
-            if [[ ! -d "$mounted_dir" ]]; then
-              echo "ERROR: workload directory $workload_dir is missing from $label restore" >&2
+            for candidate in "${candidates[@]}"; do
+              probed=true
+              if ! mount -o ro "$candidate" "$mount_dir" 2>/dev/null; then
+                continue
+              fi
+              if [[ -d "$mount_dir$workload_dir" ]]; then
+                mounted_partition="$candidate"
+                active_mount="$mount_dir"
+                break
+              fi
+              # Not the guest root filesystem (for example an EFI or boot
+              # partition); try the next candidate.
+              umount "$mount_dir" >/dev/null 2>&1 || true
+            done
+            if [[ -z "$mounted_partition" ]]; then
+              if [[ "$probed" == true ]]; then
+                echo "ERROR: no partition with $workload_dir found in $label restore" >&2
+              fi
               return 1
             fi
+            printf 'RESTORE_PARTITION_%s=%s\n' "$label" "$mounted_partition"
+            mounted_dir="$mount_dir$workload_dir"
             entry="$(find "$mounted_dir" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
             if [[ -n "$entry" ]]; then
               echo "ERROR: unexpected non-file workload entry in $label restore: $entry" >&2
               return 1
             fi
-            entries="$(find "$mounted_dir" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)"
             while IFS= read -r entry; do
               [[ -n "$entry" ]] || continue
               name="${entry##*/}"
@@ -105,30 +272,35 @@ spec:
                 echo "ERROR: unexpected workload filename in $label restore: $name" >&2
                 return 1
               fi
-              size_bytes="$(stat -c '%s' "$entry")"
-              sha256="$(sha256sum "$entry" | awk '{print $1}')"
-              printf -v record '%s\t%s\t%s\n' "$name" "$size_bytes" "$sha256"
-              manifest_rows+="$record"
-              file_count=$((file_count + 1))
-              total_bytes=$((total_bytes + size_bytes))
-            done <<< "$entries"
-            if ((file_count == 0)); then
+            done < <(find "$mounted_dir" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort)
+            sizes_file="/work/${label,,}-sizes.txt"
+            hashes_file="/work/${label,,}-hashes.txt"
+            find "$mounted_dir" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort \
+              | xargs -d '\n' stat -c '%n %s' > "$sizes_file"
+            if [[ ! -s "$sizes_file" ]]; then
               echo "ERROR: workload directory is empty in $label restore" >&2
               return 1
             fi
-            sha256="$(printf '%s' "$manifest_rows" | sha256sum | awk '{print $1}')"
+            cores="$(hash_jobs)"
+            find "$mounted_dir" -mindepth 1 -maxdepth 1 -type f -print | LC_ALL=C sort \
+              | xargs -d '\n' -P "$cores" -n 32 sha256sum > "$hashes_file"
+            manifest_rows="$(awk 'FILENAME==ARGV[1] { hash[$2]=$1; next } { p=$1; sub(/.*\//, "", p); printf "%s\t%s\t%s\n", p, $2, hash[$1] }' \
+              "$hashes_file" "$sizes_file" | LC_ALL=C sort)"
+            file_count="$(wc -l < "$sizes_file")"
+            total_bytes="$(awk '{sum += $2} END {print sum + 0}' "$sizes_file")"
+            digest="$(printf '%s\n' "$manifest_rows" | sha256sum | awk '{print $1}')"
+            rm -f "$sizes_file" "$hashes_file"
             umount "$mount_dir"
             active_mount=""
-            losetup -d "$loop_dev"
-            active_loop=""
             printf '%s_WORKLOAD_FILE_COUNT=%s\n' "$label" "$file_count"
             printf '%s_WORKLOAD_PAYLOAD_BYTES=%s\n' "$label" "$total_bytes"
-            printf '%s_WORKLOAD_MANIFEST_SHA256=%s\n' "$label" "$sha256"
+            printf '%s_WORKLOAD_MANIFEST_SHA256=%s\n' "$label" "$digest"
           }
 
-          qemu-img convert -f qcow2 -O raw "$full_qcow2" /work/full.raw
-          inspect_workload /work/full.raw FULL
-          rm -f /work/full.raw
+          # Each incremental qcow2 records a backing path from the pod that
+          # produced the backup, so a writable copy is rebased onto the
+          # preceding checkpoint before it is read here.
+          overlay_paths=()
           base_qcow2="$full_qcow2"
           expected_pass=1
           for incremental_dir in "${incremental_dirs[@]}"; do
@@ -144,12 +316,58 @@ spec:
               exit 1
             fi
             overlay="/work/${pass_name}.qcow2"
-            raw="/work/${pass_name}.raw"
             cp "${pass_qcow2s[0]}" "$overlay"
             qemu-img rebase -b "$base_qcow2" -F qcow2 -f qcow2 -u "$overlay"
-            qemu-img convert -f qcow2 -O raw "$overlay" "$raw"
-            inspect_workload "$raw" "PASS_${pass_name#p}"
-            rm -f "$raw"
+            overlay_paths+=("$overlay")
             base_qcow2="$overlay"
             expected_pass=$((expected_pass + 1))
           done
+
+          start_convert() {
+            qemu-img convert -f qcow2 -O raw "$1" "$2" &
+            convert_pid=$!
+          }
+          await_convert() {
+            if [[ -n "$convert_pid" ]]; then
+              wait "$convert_pid"
+              convert_pid=""
+            fi
+          }
+
+          if [[ "$nbd_available" == true ]]; then
+            # The qcow2 chain is exposed through qemu-nbd; there is nothing to
+            # convert. A per-image failure falls back to the convert path.
+            inspect_image "$full_qcow2" FULL
+            expected_pass=1
+            for overlay in "${overlay_paths[@]}"; do
+              printf -v pass_label '%02d' "$expected_pass"
+              inspect_image "$overlay" "PASS_$pass_label"
+              expected_pass=$((expected_pass + 1))
+            done
+          else
+            # Convert the next image while the current one is inspected, so
+            # the hash pass overlaps the next raw conversion.
+            images=("$full_qcow2" "${overlay_paths[@]}")
+            labels=(FULL)
+            expected_pass=1
+            for overlay in "${overlay_paths[@]}"; do
+              printf -v pass_label '%02d' "$expected_pass"
+              labels+=("PASS_$pass_label")
+              expected_pass=$((expected_pass + 1))
+            done
+            start_convert "${images[0]}" "/work/${labels[0],,}.raw"
+            for ((index = 0; index < ${#images[@]}; index++)); do
+              await_convert
+              next=$((index + 1))
+              if ((next < ${#images[@]})); then
+                start_convert "${images[$next]}" "/work/${labels[$next],,}.raw"
+              fi
+              raw="/work/${labels[$index],,}.raw"
+              active_loop="$(losetup -fP --show "$raw")"
+              attached_kind="loop"
+              attached_dev="$active_loop"
+              attached_raw="$raw"
+              inspect_workload "$attached_dev" "${labels[$index]}"
+              detach_image
+            done
+          fi

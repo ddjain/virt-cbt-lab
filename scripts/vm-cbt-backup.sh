@@ -139,10 +139,29 @@ if [[ "$baseline_expected_count" != "$GUEST_BASE_FILE_COUNT" ]]; then
   exit 1
 fi
 
-if [[ "$VM_OS" == windows ]]; then
-  # shellcheck source=scripts/windows-guest-agent.sh
-  source "$ROOT_DIR/scripts/windows-guest-agent.sh"
-  windows_inventory_command="\$ErrorActionPreference = 'Stop'
+incremental_plan="$(workload_file_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$incremental_pass")"
+modification_plan="$(workload_modified_file_plan "$incremental_pass")"
+IFS='|' read -r modified_workload_name modified_workload_size_bytes <<< "$modification_plan"
+modified_content_pattern="$(workload_modified_content_pattern "$modified_workload_name" "$incremental_pass")"
+
+# The pre-mutation inventory re-checks the guest workload against the saved
+# manifest before it is changed. GUEST_INVENTORY_VERIFY controls how much of it
+# is hashed; the inventory taken after the mutation and the restore
+# verification always hash every file.
+inventory_verify_mode="$GUEST_INVENTORY_VERIFY"
+if [[ "$VM_OS" == windows && "$inventory_verify_mode" == sample ]]; then
+  workflow_warning "GUEST_INVENTORY_VERIFY=sample applies to Linux guests only; using full verification for this Windows run"
+  inventory_verify_mode=full
+fi
+
+expected_before_records="$(workload_manifest_current_records "$manifest_path" "$completed_passes")"
+if [[ "$inventory_verify_mode" == skip ]]; then
+  workflow_action "GUEST_INVENTORY_VERIFY=skip: trust the saved manifest and skip the pre-mutation guest inventory (pass $incremental_pass)"
+else
+  if [[ "$VM_OS" == windows ]]; then
+    # shellcheck source=scripts/windows-guest-agent.sh
+    source "$ROOT_DIR/scripts/windows-guest-agent.sh"
+    windows_inventory_command="\$ErrorActionPreference = 'Stop'
 \$directory = 'C:\\cbt-data\\workload'
 if (-not (Test-Path -LiteralPath \$directory -PathType Container)) {
   throw \"Workload directory is missing: \$directory\"
@@ -155,47 +174,31 @@ foreach (\$entry in Get-ChildItem -LiteralPath \$directory -Force) {
   \$sha256 = (Get-FileHash -LiteralPath \$entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
   Write-Output ('FILE_RECORD=' + \$entry.Name + '|' + \$entry.Length + '|' + \$sha256)
 }"
-  workflow_action "Read the mounted Windows guest workload and confirm its baseline manifest before changing it"
-  before_guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_inventory_command")"
-else
-  workflow_action "Read the Linux guest workload and confirm its baseline manifest before changing it"
-  linux_inventory_command="
-set -euo pipefail
-workload_dir='$LINUX_GUEST_WORKLOAD_DIR'
-rm -f \"\$workload_dir\"/.cbt-workload-*.tmp
-if [[ ! -d \"\$workload_dir\" ]]; then
-  printf 'Workload directory is missing: %s\\n' \"\$workload_dir\" >&2
-  exit 1
-fi
-entries=\"\$(find \"\$workload_dir\" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)\"
-while IFS= read -r workload_file; do
-  [[ -n \"\$workload_file\" ]] || continue
-  if [[ ! -f \"\$workload_file\" ]]; then
-    printf 'Unexpected workload directory entry: %s\\n' \"\$workload_file\" >&2
-    exit 1
+    workflow_action "Read the mounted Windows guest workload and confirm its baseline manifest before changing it"
+    before_guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_inventory_command")"
+  else
+    workflow_action "Read the Linux guest workload and confirm its baseline manifest before changing it (GUEST_INVENTORY_VERIFY=$inventory_verify_mode)"
+    linux_inventory_command="$(linux_guest_inventory_command "$inventory_verify_mode" "$modified_workload_name")"
+    # Redirect instead of a command substitution so the persistent guest SSH
+    # connection survives for the mutation command below.
+    guest_inventory_output_file="$(mktemp)"
+    if ! guest_ssh "$linux_inventory_command" > "$guest_inventory_output_file"; then
+      rm -f "$guest_inventory_output_file"
+      printf 'Reading the Linux guest workload failed.\n' >&2
+      exit 1
+    fi
+    before_guest_output="$(<"$guest_inventory_output_file")"
+    rm -f "$guest_inventory_output_file"
   fi
-  name=\"\${workload_file##*/}\"
-  if [[ ! "\$name" =~ ^(base-[0-9]{6}|incremental-[0-9]{2}-[0-9]{6})[.]dat\$ ]]; then
-    printf 'Unexpected workload filename: %s\\n' "\$name" >&2
-    exit 1
+  before_records="$(workload_records_from_output "$before_guest_output")"
+  if [[ "$inventory_verify_mode" == full ]]; then
+    workload_manifest_verify_inventory "$before_records" "$expected_before_records" "Guest before pass $incremental_pass"
+  else
+    workload_manifest_verify_inventory_partial "$before_records" "$expected_before_records" "Guest before pass $incremental_pass"
   fi
-  size_bytes=\"\$(stat -c '%s' \"\$workload_file\")\"
-  sha256=\"\$(sha256sum \"\$workload_file\" | awk '{print \$1}')\"
-  printf 'FILE_RECORD=%s|%s|%s\\n' \"\$name\" \"\$size_bytes\" \"\$sha256\"
-done <<< \"\$entries\"
-"
-  before_guest_output="$(guest_ssh "$linux_inventory_command")"
+  workflow_status "Baseline and $manifest_passes_completed prior incremental pass(es) match the manifest"
+  workflow_success "Existing workload matches the saved manifest"
 fi
-before_records="$(workload_records_from_output "$before_guest_output")"
-expected_before_records="$(workload_manifest_current_records "$manifest_path" "$completed_passes")"
-workload_manifest_verify_inventory "$before_records" "$expected_before_records" "Guest before pass $incremental_pass"
-workflow_status "Baseline and $manifest_passes_completed prior incremental pass(es) match the manifest"
-workflow_success "Existing workload matches the saved manifest"
-
-incremental_plan="$(workload_file_plan incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$incremental_pass")"
-modification_plan="$(workload_modified_file_plan "$incremental_pass")"
-IFS='|' read -r modified_workload_name modified_workload_size_bytes <<< "$modification_plan"
-modified_content_pattern="$(workload_modified_content_pattern "$modified_workload_name" "$incremental_pass")"
 if [[ "$VM_OS" == windows ]]; then
   windows_incremental_items=""
   while IFS='|' read -r workload_name workload_size_bytes; do
@@ -292,15 +295,20 @@ set -euo pipefail
 workload_dir='$LINUX_GUEST_WORKLOAD_DIR'
 mkdir -p \"\$workload_dir\"
 trap 'rm -f \"\$workload_dir\"/.cbt-workload-*.tmp' EXIT
-for workload_spec in ${incremental_items}; do
-  IFS='|' read -r name size_bytes <<< \"\$workload_spec\"
+export workload_dir
+# New files are generated independently, so the generation runs in parallel;
+# each file still gets its own size check and atomic rename. The expected
+# content hash is computed only when the target already exists (re-run safety
+# check), because the inventory below re-hashes every file from disk anyway.
+generate_incremental_file() {
+  local spec=\"\$1\" name size_bytes target tmp_path actual_size actual_hash expected_hash
+  IFS='|' read -r name size_bytes <<< \"\$spec\"
   target=\"\$workload_dir/\$name\"
   tmp_path=\"\$workload_dir/.cbt-workload-\${name}.tmp\"
   set +o pipefail
   yes \"CBT-WORKLOAD-V1:\${name}\" | head -c \"\$size_bytes\" > \"\$tmp_path\"
   set -o pipefail
   actual_size=\"\$(stat -c '%s' \"\$tmp_path\")\"
-  expected_hash=\"\$(sha256sum \"\$tmp_path\" | awk '{print \$1}')\"
   if [[ \"\$actual_size\" != \"\$size_bytes\" ]]; then
     printf 'Generated file %s has size %s; expected %s bytes.\\n' \"\$name\" \"\$actual_size\" \"\$size_bytes\" >&2
     exit 1
@@ -310,6 +318,7 @@ for workload_spec in ${incremental_items}; do
       printf 'Expected a file at %s.\\n' \"\$target\" >&2
       exit 1
     fi
+    expected_hash=\"\$(sha256sum \"\$tmp_path\" | awk '{print \$1}')\"
     actual_size=\"\$(stat -c '%s' \"\$target\")\"
     actual_hash=\"\$(sha256sum \"\$target\" | awk '{print \$1}')\"
     if [[ \"\$actual_size\" != \"\$size_bytes\" || \"\$actual_hash\" != \"\$expected_hash\" ]]; then
@@ -320,7 +329,11 @@ for workload_spec in ${incremental_items}; do
   else
     mv \"\$tmp_path\" \"\$target\"
   fi
-done
+}
+export -f generate_incremental_file
+generation_jobs=\"\$(nproc 2>/dev/null || printf 4)\"
+if ((generation_jobs > 8)); then generation_jobs=8; fi
+printf '%s\\n' ${incremental_items} | xargs -r -n 1 -P \"\$generation_jobs\" bash -c 'generate_incremental_file \"\$1\"' _
 modified_name='${modified_workload_name}'
 modified_size_bytes='${modified_workload_size_bytes}'
 modified_pattern='${modified_content_pattern}'
@@ -340,24 +353,16 @@ if [[ \"\$modified_actual_size\" != \"\$modified_size_bytes\" ]]; then
 fi
 mv -f \"\$modified_tmp\" \"\$modified_target\"
 sync
-entries=\"\$(find \"\$workload_dir\" -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort)\"
-while IFS= read -r workload_file; do
-  [[ -n \"\$workload_file\" ]] || continue
-  if [[ ! -f \"\$workload_file\" ]]; then
-    printf 'Unexpected workload directory entry: %s\\n' \"\$workload_file\" >&2
-    exit 1
-  fi
-  name=\"\${workload_file##*/}\"
-  if [[ ! "\$name" =~ ^(base-[0-9]{6}|incremental-[0-9]{2}-[0-9]{6})[.]dat\$ ]]; then
-    printf 'Unexpected workload filename: %s\\n' "\$name" >&2
-    exit 1
-  fi
-  size_bytes=\"\$(stat -c '%s' \"\$workload_file\")\"
-  sha256=\"\$(sha256sum \"\$workload_file\" | awk '{print \$1}')\"
-  printf 'FILE_RECORD=%s|%s|%s\\n' \"\$name\" \"\$size_bytes\" \"\$sha256\"
-done <<< \"\$entries\"
+$(linux_guest_inventory_command full)
 "
-  guest_output="$(guest_ssh "$guest_mutation_command")"
+  guest_mutation_output_file="$(mktemp)"
+  if ! guest_ssh "$guest_mutation_command" > "$guest_mutation_output_file"; then
+    rm -f "$guest_mutation_output_file"
+    printf 'Updating the Linux guest workload failed.\n' >&2
+    exit 1
+  fi
+  guest_output="$(<"$guest_mutation_output_file")"
+  rm -f "$guest_mutation_output_file"
 fi
 all_guest_records="$(workload_records_from_output "$guest_output")"
 workload_validate_plan "$all_guest_records" incremental "$GUEST_INCREMENTAL_FILE_COUNT" "$incremental_pass"
@@ -391,6 +396,7 @@ sed \
   -e "s|__NAMESPACE__|$NAMESPACE|g" \
   -e "s|__TRACKER_NAME__|$TRACKER_NAME|g" \
   -e "s|__INCREMENTAL_BACKUP_NAME__|$INCREMENTAL_BACKUP_NAME|g" \
+  -e "s|__INCREMENTAL_BACKUP_PVC__|$INCREMENTAL_BACKUP_PVC_NAME|g" \
   -e "s|__INCREMENTAL_PVC_SIZE__|$INCREMENTAL_PVC_SIZE|g" \
   -e "s|__RUN_ID__|$RUN_ID|g" \
   -e "s|__MANAGED_BY_KEY__|$RUN_LABEL_MANAGED_BY_KEY|g" \

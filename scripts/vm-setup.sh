@@ -114,8 +114,13 @@ if [[ -n \"\$(find \"\$workload_dir\" -mindepth 1 -maxdepth 1 -print -quit)\" ]]
   exit 1
 fi
 trap 'rm -f \"\$workload_dir\"/.cbt-workload-*.tmp' EXIT
-for workload_spec in ${baseline_items}; do
-  IFS='|' read -r name size_bytes <<< \"\$workload_spec\"
+export workload_dir
+# Each file is generated independently from its deterministic per-name
+# content, so the generation is parallelised; the size check and the atomic
+# rename per file are unchanged.
+generate_baseline_file() {
+  local spec=\"\$1\" name size_bytes tmp_path actual_size
+  IFS='|' read -r name size_bytes <<< \"\$spec\"
   tmp_path=\"\$workload_dir/.cbt-workload-\${name}.tmp\"
   set +o pipefail
   yes \"CBT-WORKLOAD-V1:\${name}\" | head -c \"\$size_bytes\" > \"\$tmp_path\"
@@ -126,17 +131,22 @@ for workload_spec in ${baseline_items}; do
     exit 1
   fi
   mv \"\$tmp_path\" \"\$workload_dir/\$name\"
-done
+}
+export -f generate_baseline_file
+generation_jobs=\"\$(nproc 2>/dev/null || printf 4)\"
+if ((generation_jobs > 8)); then generation_jobs=8; fi
+printf '%s\\n' ${baseline_items} | xargs -r -n 1 -P \"\$generation_jobs\" bash -c 'generate_baseline_file \"\$1\"' _
 sync
-for workload_file in \"\$workload_dir\"/base-*.dat; do
-  [[ -f \"\$workload_file\" ]] || continue
-  name=\"\${workload_file##*/}\"
-  size_bytes=\"\$(stat -c '%s' \"\$workload_file\")\"
-  sha256=\"\$(sha256sum \"\$workload_file\" | awk '{print \$1}')\"
-  printf 'FILE_RECORD=%s|%s|%s\\n' \"\$name\" \"\$size_bytes\" \"\$sha256\"
-done
+$(linux_guest_inventory_command full)
 "
-guest_output="$(guest_ssh "$guest_setup_command")"
+guest_setup_output_file="$(mktemp)"
+if ! guest_ssh "$guest_setup_command" > "$guest_setup_output_file"; then
+  rm -f "$guest_setup_output_file"
+  printf 'Initializing the Linux guest workload failed.\n' >&2
+  exit 1
+fi
+guest_output="$(<"$guest_setup_output_file")"
+rm -f "$guest_setup_output_file"
 baseline_records="$(workload_records_from_output "$guest_output")"
 workload_manifest_initialize "$baseline_records"
 vm_info_initialize "$vm_uid"

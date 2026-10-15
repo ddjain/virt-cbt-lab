@@ -151,9 +151,8 @@ workload_records_from_output() {
     [[ "$line" == FILE_RECORD=* ]] || continue
     record="${line#FILE_RECORD=}"
     IFS='|' read -r path size_bytes sha256 extra <<< "$record"
-    if [[ -n "${extra:-}" ||
-          ! "$size_bytes" =~ ^[1-9][0-9]*$ ||
-          ! "$sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
+    if [[ -n "${extra:-}" || ! "$size_bytes" =~ ^[1-9][0-9]*$ ]] ||
+       [[ "$sha256" != unverified && ! "$sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
       printf 'Malformed guest workload record: %s\n' "$line" >&2
       return 1
     fi
@@ -415,6 +414,36 @@ workload_manifest_verify_inventory() {
   if [[ "$actual_count" != "$expected_count" || "$actual_hash" != "$expected_hash" ]]; then
     printf '%s workload inventory mismatch: expected %s files/%s, got %s files/%s.\n' \
       "$label" "$expected_count" "$expected_hash" "$actual_count" "$actual_hash" >&2
+    return 1
+  fi
+}
+
+# Compare a guest inventory that may carry the "unverified" hash marker
+# (GUEST_INVENTORY_VERIFY=sample|skip). Every file must be present with the
+# expected size; the hash is compared only for records the guest actually
+# hashed. Extra files are reported as mismatches.
+workload_manifest_verify_inventory_partial() {
+  local actual_records="$1" expected_records="$2" label="$3"
+  local summary mismatch extra
+  # The record arrays are streamed through stdin: a few thousand records exceed
+  # the per-argument OS limit when passed to jq as --argjson values.
+  summary="$(printf '%s\n%s\n' "$actual_records" "$expected_records" | jq -s -c '
+    .[0] as $actual | .[1] as $expected
+    | ($expected | map({key: .path, value: .}) | from_entries) as $expected_by_path
+    | ($actual | map({key: .path, value: .}) | from_entries) as $actual_by_path
+    | ([ $expected_by_path | keys[] | select(
+           ($actual_by_path[.] == null)
+           or ($actual_by_path[.].size_bytes != $expected_by_path[.].size_bytes)
+           or (($actual_by_path[.].sha256 != "unverified")
+               and ($actual_by_path[.].sha256 != $expected_by_path[.].sha256))
+         ) ] | length) as $mismatch
+    | ([ $actual_by_path | keys[] | select($expected_by_path[.] == null) ] | length) as $extra
+    | {mismatch: $mismatch, extra: $extra}')"
+  mismatch="$(jq -r '.mismatch' <<<"$summary")"
+  extra="$(jq -r '.extra' <<<"$summary")"
+  if ((mismatch != 0 || extra != 0)); then
+    printf '%s workload inventory mismatch: %s unverified-or-differing file(s) and %s unexpected file(s).\n' \
+      "$label" "$mismatch" "$extra" >&2
     return 1
   fi
 }
