@@ -1,0 +1,67 @@
+# qemu-inspect-pod.yaml — read-only backup-artifact inspection pod.
+#
+# Mounts backup PVCs and runs the restore-helper image (which provides
+# qemu-img) so preserved backup artifacts can be inspected after a run:
+# `qemu-img info` (format, virtual/disk size, backing file — proves the
+# physical chain relationship) and optionally `qemu-img map --output=json`
+# (extent map, requires a resolvable backing chain — see notes below).
+#
+# Improvised twice during run 20261015-cbtf04-r03 and ticketed as H4; now a
+# supported tool. Usage (from the checkout root, with KUBECONFIG_PATH set):
+#
+#   # substitute __NAMESPACE__, __POD_NAME__, __FULL_PVC__, __INC_PVC__:
+#   sed -e 's/__NAMESPACE__/vm-cbt-demo/' -e 's/__POD_NAME__/inspect-<run-id>/' \
+#       -e 's/__FULL_PVC__/<full-backup-pvc>/' -e 's|__INC_PVC__|<incremental-pvc>|' \
+#       manifests/qemu-inspect-pod.yaml | oc apply -f -
+#   oc wait pod/inspect-<run-id> -n vm-cbt-demo --for=condition=Ready --timeout=300s
+#   oc exec -n vm-cbt-demo inspect-<run-id> -- ls -la /backups/full /backups/inc
+#   oc exec -n vm-cbt-demo inspect-<run-id> -- bash -c \
+#     'for f in $(find /backups -name "*.qcow2"); do echo "== $f"; qemu-img info "$f"; done'
+#   oc delete pod/inspect-<run-id> -n vm-cbt-demo
+#
+# Notes:
+# - Mounts are readOnly; the pod performs no writes to the backup artifacts.
+# - qemu-img info works on any qcow2 without its backing chain.
+# - qemu-img map on an INCREMENTAL artifact needs the backing chain: the
+#   incremental's backing path resolves to the live VM disk (absent here).
+#   For a chain map, replicate the restore-verify pattern instead: copy the
+#   overlay to an emptyDir, `qemu-img rebase -u` onto the full-backup qcow2,
+#   then map the copy (see manifests/restore-verify-pod.yaml).
+# - The inspection PVCs are RWO: ensure no other pod (e.g. the live VM's
+#   hotplug or a prior inspection pod) holds them before applying.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __POD_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    virt-cbt-lab/inspection: "true"
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: full-backup
+      persistentVolumeClaim:
+        claimName: __FULL_PVC__
+        readOnly: true
+    - name: inc-backup
+      persistentVolumeClaim:
+        claimName: __INC_PVC__
+        readOnly: true
+    - name: work
+      emptyDir: {}
+  containers:
+    - name: restore-verify
+      image: __RESTORE_HELPER_IMAGE__
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: full-backup
+          mountPath: /backups/full
+          readOnly: true
+        - name: inc-backup
+          mountPath: /backups/inc
+          readOnly: true
+        - name: work
+          mountPath: /work
+      command: ["/bin/bash", "-c"]
+      args: [sleep 3600]

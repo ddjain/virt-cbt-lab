@@ -38,7 +38,12 @@ fi
 validate_positive_integer DENSITY_QPS "$DENSITY_QPS"
 validate_positive_integer DENSITY_WAIT_MINUTES "$DENSITY_WAIT_MINUTES"
 if [[ -z "$POOL" ]]; then
-  POOL="d$(date -u +%m%d%H%M%S)"
+  # OS-prefixed timestamp: names read vm-<os>-<ts>-NNNN, unique across runs.
+  case "$VM_OS" in
+    rhel9) POOL="rhel-$(date -u +%m%d%H%M%S)" ;;
+    windows) POOL="win-$(date -u +%m%d%H%M%S)" ;;
+    *) POOL="d$(date -u +%m%d%H%M%S)" ;;
+  esac
 fi
 if ! valid_pool_id "$POOL"; then
   printf 'POOL must be lowercase alphanumeric with internal hyphens and at most 20 characters (got: %s).\n' "$POOL" >&2

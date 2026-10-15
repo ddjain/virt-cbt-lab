@@ -480,6 +480,14 @@ if ((status == 0)); then
       fi
       vm_name="$VM"
       ;;
+    reconcile)
+      if run_profiled_make vm-cbt-reconcile RUN_ID="$run_id"; then
+        :
+      else
+        status=$?
+      fi
+      vm_name="$VM"
+      ;;
     recover)
       if run_profiled_make vm-cbt-recover RUN_ID="$run_id"; then
         recovery_attempt_status="$(jq -r '.recovery.attempts[-1].status // empty' "$vm_info_path")"

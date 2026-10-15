@@ -1,0 +1,114 @@
+{
+  "utc": "2026-10-15T08:05:00Z",
+  "verdict": "PASS",
+  "reject_reasons": [],
+  "notes": {
+    "criteria_source": "scenario-spec.md section 5 pass list, derived independently",
+    "sha256_verification": "all cited files verified against evidence-index.json; no mismatch or absence",
+    "unexpected_observations": [
+      "HotplugFailed events (lstat disk.img) fired during hotplug detach in both full and incremental passes, yet SuccessfulDelete of hp-volume pods and backup completion followed - product anomaly recorded, not graded per skill rule",
+      "Workload env deviation: actual baseline was 1000 files x 15-20MiB instead of script defaults 8 x 1024MiB (trigger/exit-statuses.json workload_env_actual) - window-widening measure only; spec does not set a pass criterion on workload shape",
+      "runs/20261015-cbtf04-r02/summary.json reports full backup status PENDING (stale framework field after Lead repair of run.json); contradicted by live Done=True objects - flagged as framework-record inconsistency, not product failure",
+      "Trigger abort at ~06:49:12Z (process group killed post-injection due to harness env leak); full backup and injection had already fired; incremental follow-up executed by RecoveryWorker instead of scripted path - outcome criteria all evidenced, deviation noted"
+    ]
+  },
+  "criteria": [
+    {
+      "criterion": "Observer records exact run-derived launcher pod/UID and 'Backup started' timestamp before disruption",
+      "status": "PROVEN",
+      "citation": "observer/evidence-terminal/launcher-name.txt (virt-launcher-vm-20261015-cbtf04-r02-jl5lt, uid 21ffa719-490e-47b5-a533-e880f10ade80); observer/evidence-terminal/launcher-backup-lines.log line 2 ('Backup started' for vm-backup-20261015-cbtf04-r02, 06:48:50.467875Z); trigger/action-request.json (signal before utc_krkn_pod_deletion 06:49:07.697Z)",
+      "false_positives_checked": [
+        "signal not from this run: backupName in log line is the exact run backup",
+        "signal inferred from Progressing/creation: raw launcher JSON log line cited, not condition"
+      ]
+    },
+    {
+      "criterion": "Krkn targets exactly one Lease-holder virt-controller pod; deletion and replacement evidence recorded",
+      "status": "PROVEN",
+      "citation": "trigger/trigger.log ('Gracefully deleting pod virt-controller-6f7bc6b44c-5h4hs', 06:49:07.697); trigger/action-request.json leader=virt-controller-6f7bc6b44c-5h4hs; observer/watches/ctrl-pods.jsonl lines 8-13 (5h4hs Failed->DELETED uid 6e575ccb; mrspr 2a01807b Running Ready=True); observer/watches/ctrl-events.jsonl Killing on 5h4hs at 06:49:07Z (only Killing event on any virt-controller pod in the stream); observer/watches/lease.jsonl holderIdentity 5h4hs -> kgtth (rv transition at record 221); ctrl-events LeaderElection 'kgtth became leader' 06:49:24Z",
+      "false_positives_checked": [
+        "standby or non-holder pod hit: only one Killing event stream-wide; victim matches Lease holder at arming (ARMED.json baseline_identity)",
+        "more than one controller disrupted: single DELETED record; kgtth and mrspr never Failed/DELETED",
+        "replacement is new pod not old respawn: replacement mrspr has distinct uid 2a01807b"
+      ]
+    },
+    {
+      "criterion": "Both controller replicas return Ready and a new Lease holder is observed",
+      "status": "PROVEN",
+      "citation": "observer/evidence-terminal/ctrl-pods-final.json and ctrl-pods-post-incremental.json (kgtth df277fc4 Running Ready=True; mrspr 2a01807b Running Ready=True); observer/evidence-terminal/lease-final.json spec.holderIdentity=virt-controller-6f7bc6b44c-kgtth acquireTime 06:49:24.783954Z",
+      "false_positives_checked": [
+        "stale snapshot: ctrl-pods-post-incremental.json (07:20Z) is later than final and still 2/2 Ready; lease renewTime 07:19:21Z proves liveness",
+        "old holder retained: holderIdentity differs from deleted 5h4hs"
+      ]
+    },
+    {
+      "criterion": "Original full backup Done=True with non-failure reason, type=Full, non-empty checkpointName, includedVolumes rootdisk/vda, no duplicate backup/checkpoint object; conditions inspected twice",
+      "status": "PROVEN",
+      "citation": "observer/evidence-terminal/vmbackup-final.json (.status.conditions Done=True reason='Successfully completed VirtualMachineBackup'; Progressing=False same reason; type=Full; checkpointName=vm-backup-20261015-cbtf04-r02-2026-10-15_06-48-48; includedVolumes rootdisk/vda; uid eb1e4bb2); observer/watches/vmbackup-20261015-cbtf04-r02.jsonl (8 records: single progression rv 25859200->25860568, Done=True once, no replay/re-Progressing); second inspection: recovery/incremental-followup.log ('full Full' read at 07:12Z, i.e. post-reconciliation, plus vmbackup-final.json at PRESERVED 06:53Z)",
+      "false_positives_checked": [
+        "Done=True masking failure: Done reason is 'Successfully completed VirtualMachineBackup', not a failure reason; events watch shows VirtualMachineBackupCompletedSuccessfully at 06:49:55Z",
+        "duplicate objects: VirtualMachineBackup-kind events across whole namespace watch contain only vm-backup-20261015-cbtf04-r02 and vm-incremental-20261015-cbtf04-r02-p01; tracker stream shows each checkpoint set exactly once; distinct checkpoint names",
+        "retry/replay after abort: vmbackup rv strictly increases 25859200..25860568, generation 1, no second Progressing=True window after Done",
+        "later-retry contamination: object creationTimestamp 06:48:48Z predates injection; final object is the original uid"
+      ]
+    },
+    {
+      "criterion": "Temp backup attachment cleaned up (attachment pod gone, volume detached), destination PVC remains run PVC and Bound",
+      "status": "PROVEN",
+      "citation": "observer/watches/events-20261015-cbtf04-r02.jsonl (06:49:55Z SuccessfulDelete 'Deleted attachment pod hp-volume-bn45q' and 'Deleted hotplug attachment pod hp-volume...'; VolumeUnMountedFromPod for vm-backup-20261015-cbtf04-r02); observer/evidence-terminal/backup-pvc-final.json (vm-backup-pvc-20261015-cbtf04-r02 phase=Bound, 80Gi); observer/evidence-terminal/pvc-list-run.txt (4 run PVCs all Bound; no stale hp PVC)",
+      "false_positives_checked": [
+        "stale temp attachment: attachment pod hp-volume-bn45q and hp-volume-fc4cn both SuccessfulDelete; pvc-list-run.txt shows no leftover attachment artifacts",
+        "wrong PVC: backup spec.pvcName matches run PVC; PVC watch shows only run-labeled PVCs Pending->Bound",
+        "PVC unbound at end: final snapshot phase Bound, capacity 80Gi"
+      ]
+    },
+    {
+      "criterion": "Tracker exactly one advancement to full checkpoint, latestCheckpoint equals full backup's checkpoint before incremental",
+      "status": "PROVEN",
+      "citation": "observer/watches/tracker-20261015-cbtf04-r02.jsonl (3 records total: ADDED latestCheckpoint=null rv 25859197; MODIFIED to vm-backup-20261015-cbtf04-r02-2026-10-15_06-48-48 rv 25860551; no further change until incremental); recovery/tracker-pre-incremental.yaml (pre-incremental capture, same rv 25860551, same checkpoint, captured before the incremental stage)",
+      "false_positives_checked": [
+        "post-recovery read used as pre-state: tracker-pre-incremental.yaml is RecoveryWorker's pre-incremental capture and corroborates the stream - two independent sources agree at rv 25860551",
+        "multiple advancements hidden by watch resync: full stream is 3 lines; exactly one transition to the full checkpoint",
+        "checkpoint-name without state: corroborated by checkpoint tree and backup object checkpointName equality"
+      ]
+    },
+    {
+      "criterion": "Incremental advances tracker exactly once more to a distinct child checkpoint",
+      "status": "PROVEN",
+      "citation": "observer/watches/tracker-20261015-cbtf04-r02.jsonl record 2 (single MODIFIED to vm-incremental-20261015-cbtf04-r02-p01-2026-10-15_07-12-14 rv 25885911); recovery/checkpoint-tree.txt (virsh tree: full checkpoint with child vm-incremental-...-p01 checkpoint - distinct, tree-linked); observer/evidence-terminal/tracker-post-incremental.json (latestCheckpoint = incremental child); observer/evidence-terminal/incremental-backup-final.json (Done=True, 'Successfully completed', type=Incremental, own checkpointName)",
+      "false_positives_checked": [
+        "checkpoint-name field alone: recovery/checkpoint-tree.txt provides actual libvirt checkpoint tree evidence, not just API fields",
+        "child identical to parent: names differ; tree shows parent-child relation",
+        "incremental is a retry of full: distinct object name/uid/PVC, type=Incremental, separate pvc vm-incremental-pvc-...-p01 Bound"
+      ]
+    },
+    {
+      "criterion": "VM/VMI Running, replacement launcher Ready, VM changedBlockTracking.state=Enabled; uninterrupted copy evidenced by launcher result",
+      "status": "PROVEN",
+      "citation": "observer/evidence-terminal/vm-post-incremental.json (.status.changedBlockTracking.state=Enabled); observer/evidence-terminal/vmi-post-incremental.json (phase=Running; Ready=True; activePods uid 21ffa719-... = original launcher jl5lt - same pod/UID as pre-injection, restarts=0 in observer/watches/pods-20261015-cbtf04-r02.jsonl); launcher copy result: observer/evidence-terminal/launcher-backup-lines.log (Backup begin called + Backup started) with completion in vmbackup stream rv 25860568 and events VirtualMachineBackupCompletedSuccessfully 06:49:55Z",
+      "false_positives_checked": [
+        "launcher replaced during chaos: pod stream shows single launcher jl5lt Pending->Running, 0 restarts, never Failed/DELETED - the data plane pod survived controller deletion",
+        "CBT enabled only post-hoc: VM snapshot at FINAL and post-incremental both Enabled; incremental backup succeeded against the same VM which requires CBT chain"
+      ]
+    },
+    {
+      "criterion": "Restore verification: file count, payload bytes, canonical manifest hash match baseline; qemu-img where available",
+      "status": "PROVEN",
+      "citation": "runs/20261015-cbtf04-r02/report.json verification.checks full_restore_file_count_match (expected 1000 / actual 1000), full_restore_payload_bytes_match (18277728256/18277728256), full_restore_manifest_match (351c3fab.../351c3fab...), pass_01_restore_* (2000, 36561747968, a9ca19b4...), overall_passed=true; independent corroboration: events watch shows restore-verify pod vm-restore-verify-20261015-cbtf04-r02 Scheduled/AttachVolume/Pulled/Created/Started 07:12:42-07:12:49Z (pod actually ran against restored volumes FULL_QCOW2=/backups/full/vm-20261015-cbtf04-r02/... per runs/20261015-cbtf04-r02/logs/restore-verify-pod.log)",
+      "false_positives_checked": [
+        "restore claim only repeats framework: report.json records separate expected and actual values for count/bytes/manifest on full and pass_01; a restore-verify pod demonstrably executed (cluster events + restore log naming the exact run qcow2 path)",
+        "wrong-run artifact: qcow2 path and manifest hashes are run-scoped vm-20261015-cbtf04-r02 values",
+        "qemu-img info/map: not captured anywhere (both recovery/summary.json and observer finding acknowledge this); spec marks it 'where available' - file/byte/hash checks are the required minimum and are present, so not REJECT-worthy; flagged as evidence gap"
+      ]
+    },
+    {
+      "criterion": "Same-VM distinct incremental follow-up after successful full backup with recorded injection signal",
+      "status": "PROVEN",
+      "citation": "recovery/incremental-followup.log (make e2e TYPE=incremental against existing VM vm-20261015-cbtf04-r02: 'Existing VirtualMachine: vm-20261015-cbtf04-r02', new backup vm-incremental-20261015-cbtf04-r02-p01, 'Existing workload matches the saved manifest', 5/5 steps passed); recovery/incremental-followup.exit EXIT_STATUS=0 (workflow exit only, not used as product evidence); injection signal recorded in trigger/action-request.json; observer/evidence-terminal/launcher-backup-lines-post-incremental.log ('Backup started' for vm-incremental-20261015-cbtf04-r02-p01, 07:12:19.934532Z, same launcher pod)",
+      "false_positives_checked": [
+        "new VM instead of same VM: log confirms EXISTING_VM reused; launcher pod identical to full-pass launcher; tracker uid unchanged 4365ea70",
+        "exit code as product evidence: disregarded; actual product evidence is the incremental backup object Done with own checkpoint, tracker advancement, checkpoint tree child, and restore checks"
+      ]
+    }
+  ]
+}

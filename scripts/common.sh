@@ -53,7 +53,7 @@ WINDOWS_GUEST_WORKLOAD_DIR='C:\cbt-data\workload'
 # shellcheck disable=SC2034
 GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
 # shellcheck disable=SC2034
-GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
+INCREMENTAL_PVC_SIZE="${INCREMENTAL_PVC_SIZE:-30Gi}"
 # Number of sequential incremental backups in one lifecycle.
 # shellcheck disable=SC2034
 GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
