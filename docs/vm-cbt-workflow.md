@@ -30,7 +30,7 @@ The target server needs:
 - The default `rhel9`/`large-odf` profile requires the cluster-provided RHEL 9 DataSource and a `Bound` source PVC in `openshift-virtualization-os-images`, plus the `ocs-storagecluster-ceph-rbd` storage class.
 - Debian overrides require `cbt-demo-hpp` or an ODF storage class; the cluster's CDI importer needs outbound HTTPS to `cloud.debian.org` only for the first Debian golden-image import.
 - Bash, Make, `oc`, `ssh`, `ssh-keygen`, `jq`, and a SHA-256 utility (`shasum` or `sha256sum`) for the per-run workload manifest, plus access to the local kubeconfig.
-- For `make vm-cbt-restore-test` and successful `TYPE=recover`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img` and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
+- For `make vm-cbt-restore-test` and successful `TYPE=recover`: build and push `images/restore-helper/Dockerfile` (provides `qemu-img`, `qemu-nbd`, `kmod`, and `util-linux`; Windows restore also requires `ntfs-3g`) to a registry you control, and set `RESTORE_HELPER_IMAGE` to that reference. The cluster must allow the privileged pod.
 
 Run the scripts on a server where the kubeconfig is available. Set
 `KUBECONFIG_PATH` or `KUBECONFIG` to select a kubeconfig; otherwise `oc` uses
@@ -128,16 +128,7 @@ The recovery verifier selects the successful recovery attempt explicitly and rec
 Any failed readiness/API-schema/name precondition reports `BLOCKED` without creating the recovery PVC or backup. A failed create, backup, tracker/PVC validation, or restore records a failed attempt and preserves all resources already created. `TYPE=full` remains unchanged and creates a new VM; incremental and extension workflows are unchanged.
 
 
-Each step can also be run separately:
-
-```sh
-make preflight
-make vm-setup
-# Replace vm-my-run with the run VM name printed during setup.
-make vm-backup VM=vm-my-run
-make vm-cbt-backup VM=vm-my-run
-make vm-cbt-verify VM=vm-my-run
-```
+Each step can also be run separately; see [Running individual stages](#running-individual-stages) for the target table, the argument and identity rules, and each stage's preconditions and evidence.
 
 The `logs/workflow.log` file records UTC timestamps for numbered steps, actions, statuses, progress, successes, warnings, and failures. In normal mode, terminal output uses plain separators and all-caps phase names (`PREFLIGHT`, `VM SETUP`, `FULL BACKUP`, `INCREMENTAL BACKUP`, `VERIFICATION`), two-space-indented numbered steps, and eight-space-indented `✓` success, `⚠` warning, or `✗` failure results. Routine commands, watcher transitions, heartbeat lines, and raw condition/VMI snapshots stay out of normal console output; concise step results and important warnings/failures remain visible.
 Before preflight, `make e2e` prints the effective settings as `NAME=value` pairs: type, VM OS, manifest variant, namespace, debug mode, guest file counts/size range, incremental plan, restore-helper configuration status, run ID, and VM name. It then lists resource names created by that invocation, or pass-specific patterns; resources deferred to later staged commands are labeled. Credential paths, private registry references, and secret values are omitted.
@@ -148,6 +139,49 @@ Each staged `make e2e TYPE=...` invocation prints the final result box and recor
 During backup waits, normal output shows the concise completion result; `DEBUG=true` exposes observed backup-condition and PVC-state changes plus 30-second heartbeats. The Backup API exposes no copied-byte counter, so logs report phase and elapsed time rather than a percentage. `Done=True` still requires checking its reason, type, checkpoint, and tracker.
 
 After a successful workflow with all planned incrementals complete, the automatic cluster-read-only monitor reports API-object creation-to-Done durations for the full and every planned incremental backup; these include controller/PVC work, not only QEMU's data-copy interval. It also persists `created_at`, `done_at`, `duration_seconds`, and `done_reason` under `backup_timings` in the report, VM lifecycle JSON, and a `backup-timings.json` fragment for report regeneration. `TYPE=full` and non-final `TYPE=incremental` defer automatic timing collection until the plan is complete, so the staged command exits instead of waiting for backups created by later commands. A separate live monitor started with `make monitor VM=vm-<run-id>` waits for every planned backup object to appear; run it alongside the workflow or after all planned passes are complete.
+
+## Running individual stages
+
+Every stage has a Make target, and all of them share one dispatcher (`scripts/stage.sh <stage>`; the dispatcher also accepts `list` and a `--dry-run` flag). `make e2e` runs preflight once up front and then invokes the same stage entry points in order with `E2E_STAGE_WRAPPED=true`, so the one-shot and staged commands execute identical code — `make e2e` is not a second implementation. `make help` lists the stages; `make stage-list` prints the same mapping as a machine-readable table.
+
+| Target | Required args | Purpose | Produces / verifies |
+|---|---|---|---|
+| `make vm-setup` | `NAME=<id>` optional | Start a lifecycle: create the CBT-enabled VM and the deterministic baseline workload (`VM_OS=windows` runs the Windows setup script instead). | `runs/<run-id>/run.json`, `workload-manifest.json`, and the VM/root disk/SSH service. |
+| `make vm-backup` | `RUN_ID=<id>` or `VM=vm-<id>` | Take the lifecycle's single full backup. | Full `VirtualMachineBackup` checkpoint, tracker checkpoint, and backup PVC recorded in `run.json`. |
+| `make vm-cbt-backup` | `RUN_ID=<id>` or `VM=vm-<id>` | Mutate the guest workload and take the next planned incremental pass. | One incremental checkpoint and its pass record in `run.json`; verification is a separate step, so run `make vm-cbt-verify RUN_ID=<id>` after the last planned pass. |
+| `make vm-cbt-extend` | `RUN_ID`/`VM` plus `EXTEND_TO_PASS=N` | Prepare exactly one extra pass on a completed lifecycle; `N` is the new total (completed total + 1, `2`–`99`). | The extension plan and an `extension-pass-NN` fragment; run `make vm-cbt-backup RUN_ID=<id>` to create the pass, then `make vm-cbt-verify RUN_ID=<id>` to verify the chain and the restores. |
+| `make vm-cbt-recover` | `RUN_ID=<id>` or `VM=vm-<id>` | After a terminally failed full backup, take a new full backup on the existing VM through the saved tracker (`forceFullBackup:true`). | A recorded recovery attempt and baseline restore verification; never creates a new VM. |
+| `make vm-cbt-reconcile` | `RUN_ID=<id>` or `VM=vm-<id>` | Reset a failed incremental pass (`incremental_failed`) to `incremental_ready` after its failed backup/PVC are deleted. | A `reconcile_events` audit entry in `run.json`; refuses unless the tracker still holds the prior checkpoint. |
+| `make vm-cbt-verify` | `RUN_ID=<id>` or `VM=vm-<id>` | Recheck VM CBT state, backup types, completion, every checkpoint, and the restored baseline and prefixes without adding a pass. | Merged `runs/<run-id>/report.json` verification results. |
+| `make vm-cbt-restore-test` | `RUN_ID=<id>` or `VM=vm-<id>` | Rebuild the guest disk from the full backup and every incremental PVC and verify each cumulative file set. | Restore checks in `report.json`; see [restore-verification.md](restore-verification.md). |
+| `make monitor` | `RUN_ID=<id>` or `VM=vm-<id>` | Watch the full and every planned incremental backup and record API creation-to-`Done` timings. | `runs/<run-id>/fragments/backup-timings.json`, plus `report.json`/`run.json` `backup_timings` when present. |
+| `make run-summary` | `RUN_ID=<id>` or `VM=vm-<id>`; optional stage and result (`PASS`, `FAIL`, or `INCOMPLETE`) | Regenerate the compact lifecycle summary. | `runs/<run-id>/summary.json`. |
+
+**Identity and arguments.** `make vm-setup` starts the run — pass `NAME=<id>` (a fixed `RUN_ID=<id>` works the same way), or let it generate an ID and print it. Every later stage selects that same lifecycle with `RUN_ID=<id>` or `VM=vm-<id>` and never creates a run; the selected lifecycle must exist as `runs/<run-id>/run.json`, otherwise the stage stops and points at `make vm-setup RUN_ID=<id>`. Existing-lifecycle stages reuse the profile and workload settings saved by setup instead of re-reading the environment, which is why the staged examples above pass only `VM`/`RUN_ID`.
+
+**Knobs.** Mutating stages (`setup`, `full`, `incremental`, `extend`, `recover`, `reconcile`) run `./preflight` before they start, and `STAGE_SKIP_PREFLIGHT=true` skips that readiness check; `verify`, `restore-test`, `monitor`, and `summary` never run preflight themselves. `STAGE_DRY_RUN=true` (or `--dry-run`) resolves the identity, prints the exact shell-quoted command, and exits without executing anything or contacting the cluster. `make e2e` sets `E2E_STAGE_WRAPPED=true`, which turns the dispatcher into a pure passthrough — no extra preflight, no hints, and the child's stdout/stderr and exit code unchanged.
+
+```sh
+make vm-setup NAME=foo            # starts run foo; prints RUN_ID=foo, VM=vm-foo
+make vm-backup RUN_ID=foo         # or VM=vm-foo
+make vm-cbt-backup RUN_ID=foo     # one pass; repeat for each planned pass
+make vm-cbt-verify RUN_ID=foo
+```
+
+**Preconditions and evidence.** The stage scripts enforce their own preconditions; each stage writes its evidence into `runs/<run-id>/` (the [Run report](#run-report) section below lists the JSON fragment each one contributes).
+
+- **setup** — needs no existing run and refuses a run ID whose cluster resources already exist. Creates the run directory and writes `run.json` plus `workload-manifest.json`; see [step 1](#1-make-vm-setup).
+- **full** — needs the setup record and the saved workload manifest; it creates the backup PVC, tracker, and full backup, and records the full checkpoint in `run.json`; see [step 2](#2-make-vm-backup).
+- **incremental** — needs the full backup, its tracker checkpoint, and the saved manifest; it adds the next planned pass only after the guest inventory matches and the new checkpoint is recorded by the tracker, and it does not run chain or restore verification itself; see [step 3](#3-make-vm-cbt-backup).
+- **extend** — needs a completed lifecycle, `EXTEND_TO_PASS` equal to the completed total plus one, and the target pass's backup/PVC to be absent; it records the extension plan, updates the saved lifecycle total, and reuses the saved profile, VM, full backup, and tracker. It creates no backup: add the pass with `make vm-cbt-backup RUN_ID=<id>`, then verify with `make vm-cbt-verify RUN_ID=<id>`.
+- **recover** — needs the managed VM whose original full backup failed terminally (see [Same-VM recovery after a failed full backup](#same-vm-recovery-after-a-failed-full-backup)); it records a separate attempt and never patches, deletes, or reuses the failed backup/PVC.
+- **reconcile** — needs lifecycle status `incremental_failed` with the failed backup/PVC already deleted and the tracker still at the prior checkpoint (see [Reconciling a failed incremental pass](#reconciling-a-failed-incremental-pass)); it writes the `reconcile_events` audit entry.
+- **verify** — needs every planned pass complete; it re-checks CBT state, types, completion, and the checkpoint chain, then merges the fragments into `report.json`; see [step 4](#4-make-vm-cbt-verify).
+- **restore-test** — needs the full and every planned incremental PVC `Bound` and `RESTORE_HELPER_IMAGE` set; it rebuilds and verifies each prefix; see [step 5](#5-restore-verification-scriptsvm-cbt-restore-testsh-runs-as-step-44-of-vm-cbt-verify).
+- **monitor** — needs `runs/<run-id>/run.json` and is read-only on the cluster; it waits for every planned backup, including objects created later, and writes `fragments/backup-timings.json`.
+- **summary** — needs `runs/<run-id>/run.json`; it regenerates `summary.json` from `run.json` and, when present, `report.json`. It takes an optional stage name and result, which default to `all` and `INCOMPLETE`.
+
+Every run directory carries `run.json` (resumable lifecycle index), `workload-manifest.json`, `report.json` (merged fragments), `summary.json`, the `fragments/` and `evidence/` directories, and `logs/workflow.log` with the UTC-stamped numbered-step trace and the final verdict.
 
 ## Step-by-step behavior
 
@@ -188,6 +222,10 @@ All three are labeled with the run's ownership labels. The script waits for the 
 5. Waits for `Done=True`, requires `.status.type == Incremental`, verifies the new checkpoint is distinct and recorded by the tracker, then advances lifecycle state only after success.
 
 File names, sizes, and bytes are stable across retries. Prior files must match their latest recorded hashes; each pass deliberately rewrites one baseline file with deterministic pass-specific content. Missing files are created, and unexpected or changed unrelated files fail before the incremental backup.
+
+`GUEST_INVENTORY_VERIFY` (default `full`) sets how much of the step-3 pre-mutation inventory is hashed: `full` re-hashes every workload file, `sample` verifies names and sizes for every file and hashes every `GUEST_INVENTORY_SAMPLE_STRIDE`-th file plus the file the pass modifies, and `skip` verifies names and sizes only. Every mode still verifies exact file names and byte sizes and still rejects missing, extra, or changed unrelated files; the modes only shorten the early drift check. The inventory recorded after the mutation (which becomes the manifest the restore test compares against) and the restore verification itself always hash every file, so the end-state guarantee is unchanged. Windows guests always use `full`. On the 1000+1000-file RHEL 9 profile, `sample` shortened the incremental phase from ~126s to ~107s.
+
+Guest file generation, inventory hashing, and the SSH transport are batched and parallelised: new files are written concurrently (each with its own size check and atomic rename), each inventory uses one `stat` pass plus a bounded parallel `sha256sum` fan-out, and one `oc port-forward` plus one multiplexed SSH connection is reused for every guest command in a run.
 
 **Extend a completed lifecycle.** For a completed three-pass VM, add pass four
 without recreating the VM or full backup:
@@ -258,6 +296,15 @@ The verifier waits up to 30 minutes for a terminal pod phase before failing. A t
    - Mounts each raw disk's root filesystem read-only and computes a sorted manifest of the workload directory.
 4. Reports restored file counts, payload bytes, and canonical manifest hashes for the full-only image and every incremental prefix.
 5. Requires every restore count, byte total, and manifest hash to match the corresponding baseline or cumulative pass manifest.
+
+The pod prints `RESTORE_MOUNT_MODE=nbd|convert` so the log shows which read path it used. Both paths mount the same read-only filesystem and compute the same manifest:
+
+- **`nbd`** — when the node offers the `nbd` kernel module, the qcow2 chain is exposed with `qemu-nbd` and mounted directly, so no full-size raw intermediate is written. The pod mounts the node `/dev` and `/lib/modules` and runs `modprobe nbd` when the helper image provides `kmod`, so the fast path is available even when the node has not loaded the module yet.
+- **`convert`** — otherwise each image is converted with `qemu-img convert` and attached with `losetup`. Conversions run one stage ahead of the verification pass that consumes them, so hashing overlaps the next conversion.
+
+Per-image hashing uses one batched `stat` and a bounded parallel `sha256sum` fan-out instead of one process per file; the sorted records, counts, byte totals, and manifest digests are identical to the previous serial implementation.
+
+Measured effect of the two changes together (RHEL 9, `large-odf`, 1000 baseline + 1000 incremental files of 15-20 MiB): the verification step fell from ~323s to ~77-80s on the same backups, and a complete `make e2e` from ~655s to ~394s, with every count, byte total, and manifest hash still verified. The pod logs its chosen read path (`RESTORE_MOUNT_MODE`) and the partition it mounted (`RESTORE_PARTITION_<label>`) so the evidence is visible in the run log. Guest-side hashing and generation parallelise only when the guest has more than one vCPU; the standard profile uses a single vCPU, where the batching still removes the per-file process overhead.
 
 Any mismatch fails the step (exit 1): missing or extra files, changed contents, stale/corrupt restores, or an unapplied incremental delta. The report records every comparison; PVC status alone is not treated as proof.
 

@@ -42,6 +42,41 @@ Use `VM=vm-<run-id>` for `incremental`, `recover`, `verify`, and `extend`. `EXTE
 
 Key Make variables such as `VM_OS`, `MANIFEST_VARIANT`, `GUEST_*`, and `DEBUG` are documented in [Supported variables](#supported-variables). Run `make preflight` for a read-only readiness check and `make help` for the other public Make targets. `make clean-all` deletes every workflow-managed resource in the namespace; reports are retained.
 
+## Staged CBT lifecycle commands
+
+Each lifecycle stage is one Make target backed by the shared dispatcher (`scripts/stage.sh <stage>`, also `scripts/stage.sh list` and `scripts/stage.sh --dry-run <stage>`). `make e2e` runs preflight once up front and then drives those same stage entry points in order with `E2E_STAGE_WRAPPED=true`, so the one-shot and staged commands execute identical code. `make help` lists the stages; `make stage-list` prints the same mapping as a machine-readable table.
+
+| Target | Required args | Purpose | Produces / verifies |
+|---|---|---|---|
+| `make vm-setup` | `NAME=<id>` optional | Create the CBT-enabled VM and the deterministic baseline workload (`VM_OS=windows` runs the Windows setup script instead). | `runs/<run-id>/run.json`, `workload-manifest.json`, and the VM/root disk/SSH service. |
+| `make vm-backup` | `RUN_ID=<id>` or `VM=vm-<id>` | Take the lifecycle's single full backup. | Full `VirtualMachineBackup` checkpoint, tracker checkpoint, and backup PVC recorded in `run.json`. |
+| `make vm-cbt-backup` | `RUN_ID=<id>` or `VM=vm-<id>` | Mutate the guest workload and take the next planned incremental pass. | One incremental checkpoint and its pass record in `run.json`; verification is a separate step, so run `make vm-cbt-verify RUN_ID=<id>` after the last planned pass. |
+| `make vm-cbt-extend` | `RUN_ID`/`VM` plus `EXTEND_TO_PASS=N` | Prepare exactly one extra pass on a completed lifecycle; `N` is the new total (completed total + 1, `2`–`99`). | The extension plan and an `extension-pass-NN` fragment; run `make vm-cbt-backup RUN_ID=<id>` to create the pass, then `make vm-cbt-verify RUN_ID=<id>` to verify the chain and the restores. |
+| `make vm-cbt-recover` | `RUN_ID=<id>` or `VM=vm-<id>` | After a terminally failed full backup, take a new full backup on the existing VM through the saved tracker (`forceFullBackup:true`). | A recorded recovery attempt and baseline restore verification; never creates a new VM. |
+| `make vm-cbt-reconcile` | `RUN_ID=<id>` or `VM=vm-<id>` | Reset a failed incremental pass (`incremental_failed`) to `incremental_ready` after its failed backup/PVC are deleted. | A `reconcile_events` audit entry in `run.json`; refuses unless the tracker still holds the prior checkpoint. |
+| `make vm-cbt-verify` | `RUN_ID=<id>` or `VM=vm-<id>` | Recheck VM CBT state, backup types, completion, every checkpoint, and the restored baseline and prefixes without adding a pass. | Merged `runs/<run-id>/report.json` verification results. |
+| `make vm-cbt-restore-test` | `RUN_ID=<id>` or `VM=vm-<id>` | Rebuild the guest disk from the full backup and every incremental PVC and verify each cumulative file set. | Restore checks in `report.json`; see [`docs/restore-verification.md`](docs/restore-verification.md). |
+| `make monitor` | `RUN_ID=<id>` or `VM=vm-<id>` | Watch the full and every planned incremental backup and record API creation-to-`Done` timings. | `runs/<run-id>/fragments/backup-timings.json`, plus `report.json`/`run.json` `backup_timings` when present. |
+| `make run-summary` | `RUN_ID=<id>` or `VM=vm-<id>`; optional stage and result (`PASS`, `FAIL`, or `INCOMPLETE`) | Regenerate the compact lifecycle summary. | `runs/<run-id>/summary.json`. |
+
+Run identity: `make vm-setup` starts the run — pass `NAME=<id>` (a fixed `RUN_ID=<id>` works the same way), or let it generate an ID and print it — and every later stage selects that same lifecycle with `RUN_ID=<id>` or `VM=vm-<id>`. Existing-lifecycle commands never create a run: if the selected run has no `runs/<run-id>/run.json`, the stage stops and tells you to run `make vm-setup RUN_ID=<id>` first.
+
+Mutating stages (`setup`, `full`, `incremental`, `extend`, `recover`, `reconcile`) run `./preflight` before they start; `verify`, `restore-test`, `monitor`, and `summary` never do, because `make e2e` already ran it once up front. Two knobs apply to every staged command: `STAGE_SKIP_PREFLIGHT=true` skips the per-invocation readiness check, and `STAGE_DRY_RUN=true` prints the resolved identity and the exact command that would run, changing nothing and not contacting the cluster.
+
+Run one lifecycle stage by stage:
+
+```sh
+# The first stage starts the run and prints its ID (here: foo, VM vm-foo).
+make vm-setup NAME=foo
+
+# Every later stage selects the same lifecycle; it is never re-created.
+make vm-backup RUN_ID=foo        # or VM=vm-foo
+make vm-cbt-backup RUN_ID=foo    # repeat for each planned pass
+make vm-cbt-verify RUN_ID=foo
+```
+
+With `GUEST_INCREMENTAL_PASSES` greater than 1, repeat `make vm-cbt-backup RUN_ID=<run-id>` for each planned pass and run `make vm-cbt-verify RUN_ID=<run-id>` afterwards; individual stages record their checkpoint but never verify the chain themselves. `make e2e` performs exactly this sequence in one invocation, including verification once the last planned pass completes, then records the backup timings and the run summary.
+
 ## Architecture and workflow
 
 ```text
@@ -110,13 +145,15 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `VM` | For staged `incremental`/`recover`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
 | `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when neither `NAME` nor `VM` supplies it, a new UTC timestamp-prefixed run ID is generated. |
 | `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `debian`, or `windows`. |
-| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` and successful `TYPE=recover` | Unset | Image providing `qemu-img`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
+| `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` and successful `TYPE=recover` | Unset | Image providing `qemu-img`, `qemu-nbd`, `kmod`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `DEBUG` | No | `false` | Normal output shows effective non-secret pipeline settings, target VM/resource names, concise phase/step results, warnings/failures, and the final PASS/FAIL/INCOMPLETE box. `DEBUG=true` adds timestamped command, status, progress, and backup-condition/VMI diagnostics. |
 | `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
 | `GUEST_INCREMENTAL_FILE_COUNT` | No | `4` | Number of new deterministic files added in each pass; every pass also modifies one deterministic baseline file. |
 | `GUEST_INCREMENTAL_PASSES` | No | `1` | Number of incremental backups after the single full backup; maximum `99`. |
 | `EXTEND_TO_PASS` | For `TYPE=extend` | Unset | Target total incremental count when adding exactly one pass; valid range `2`–`99`. For example, `4` extends a three-pass run. |
 | `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | `4` / `12` | Inclusive whole-MiB size range for each file. Selected sizes and SHA-256 hashes are recorded in the run manifest. |
+| `GUEST_INVENTORY_VERIFY` | No | `full` | Strength of the guest inventory check before each incremental mutation: `full` re-hashes every workload file, `sample` verifies names and sizes for every file and hashes every `GUEST_INVENTORY_SAMPLE_STRIDE`-th file plus the file that pass modifies, and `skip` verifies names and sizes only. The post-mutation inventory and the restore verification always hash every file. Linux guests only; Windows runs use `full`. |
+| `GUEST_INVENTORY_SAMPLE_STRIDE` | No | `16` | Stride used by `GUEST_INVENTORY_VERIFY=sample`. |
 | `MANIFEST_VARIANT` | No | `large-odf` | `large-odf` is the standard RHEL 9 ODF profile; Debian also supports `odf`, `default`, and `large`. RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. |
 | `WINDOWS_ISO_PATH` | If the ISO is not already staged | Unset | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
 | `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Unset | Local, gitignored file containing the Administrator password; never committed or logged. |
@@ -278,16 +315,7 @@ Use a fixed, deterministic run name with the default RHEL 9 profile instead of t
 make e2e NAME=foo
 ```
 
-Run individual stages for the default RHEL 9 profile:
-
-```sh
-make preflight
-make vm-setup
-# Replace vm-my-run with the VM name printed during setup.
-make vm-backup VM=vm-my-run
-make vm-cbt-backup VM=vm-my-run
-make vm-cbt-verify VM=vm-my-run
-```
+Each stage can also be run separately; see [Staged CBT lifecycle commands](#staged-cbt-lifecycle-commands) for the target table, the argument and identity rules, and a stage-by-stage example.
 
 ### Timestamped E2E logs
 
@@ -407,5 +435,5 @@ For a chaos run's Jira-ready engineering issue, use [`cbt-chaos/template/enginee
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
 - Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
-- `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod.
+- `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `qemu-nbd`, `kmod`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod. The pod mounts the node's `/dev` and `/lib/modules`: when the `nbd` kernel module is available (or can be loaded by the pod's `modprobe`), the backup's qcow2 chain is mounted directly through `qemu-nbd`; otherwise the pod falls back to converting each image to a raw file and mounting it with `losetup`. Both paths run the identical read-only mount and hash verification.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.

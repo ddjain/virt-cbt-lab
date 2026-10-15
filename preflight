@@ -167,6 +167,8 @@ check_environment() {
   GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
   GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
   GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
+  GUEST_INVENTORY_VERIFY="${GUEST_INVENTORY_VERIFY:-full}"
+  GUEST_INVENTORY_SAMPLE_STRIDE="${GUEST_INVENTORY_SAMPLE_STRIDE:-16}"
   local setting
   for setting in GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB; do
     if [[ "${!setting}" =~ ^[1-9][0-9]*$ ]]; then
@@ -187,6 +189,12 @@ check_environment() {
   else
     result FAIL "GUEST_FILE_SIZE_MAX_MIB must be at least GUEST_FILE_SIZE_MIN_MIB"
 
+  fi
+  if [[ "$GUEST_INVENTORY_VERIFY" =~ ^(full|sample|skip)$ &&
+        "$GUEST_INVENTORY_SAMPLE_STRIDE" =~ ^[1-9][0-9]*$ ]]; then
+    result PASS "GUEST_INVENTORY_VERIFY is $GUEST_INVENTORY_VERIFY (pre-mutation inventory check)"
+  else
+    result FAIL "GUEST_INVENTORY_VERIFY must be full, sample, or skip with a positive GUEST_INVENTORY_SAMPLE_STRIDE"
   fi
   if [[ "$DEBUG" == true || "$DEBUG" == false ]]; then
     result PASS "DEBUG is $DEBUG"

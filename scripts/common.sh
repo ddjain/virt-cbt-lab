@@ -52,6 +52,10 @@ WINDOWS_GUEST_WORKLOAD_DIR='C:\cbt-data\workload'
 # Default deterministic assignments total 55 MiB baseline and 33 MiB incremental.
 # shellcheck disable=SC2034
 GUEST_BASE_FILE_COUNT="${GUEST_BASE_FILE_COUNT:-8}"
+# Defaults mirror scripts/e2e-stage.sh and the documented profile; staged runs
+# replace both from the saved run.json when the lifecycle is loaded.
+# shellcheck disable=SC2034
+GUEST_INCREMENTAL_FILE_COUNT="${GUEST_INCREMENTAL_FILE_COUNT:-4}"
 # shellcheck disable=SC2034
 INCREMENTAL_PVC_SIZE="${INCREMENTAL_PVC_SIZE:-30Gi}"
 # Number of sequential incremental backups in one lifecycle.
@@ -64,6 +68,15 @@ EXTEND_TO_PASS="${EXTEND_TO_PASS:-}"
 GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-4}"
 # shellcheck disable=SC2034
 GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-12}"
+# Strength of the guest-side inventory check that runs before each incremental
+# mutation: full re-hashes every workload file, sample hashes every
+# GUEST_INVENTORY_SAMPLE_STRIDE-th file plus the file the pass will modify, and
+# skip verifies names and sizes only. The inventory written after the mutation
+# and the restore verification always remain full.
+# shellcheck disable=SC2034
+GUEST_INVENTORY_VERIFY="${GUEST_INVENTORY_VERIFY:-full}"
+# shellcheck disable=SC2034
+GUEST_INVENTORY_SAMPLE_STRIDE="${GUEST_INVENTORY_SAMPLE_STRIDE:-16}"
 
 # RHEL 9 is the standard profile; Debian remains an explicit override.
 # shellcheck disable=SC2034
@@ -155,6 +168,15 @@ if ((GUEST_FILE_SIZE_MAX_MIB < GUEST_FILE_SIZE_MIN_MIB)); then
     "$GUEST_FILE_SIZE_MAX_MIB" "$GUEST_FILE_SIZE_MIN_MIB" >&2
   exit 1
 fi
+case "$GUEST_INVENTORY_VERIFY" in
+  full|sample|skip) ;;
+  *)
+    printf 'GUEST_INVENTORY_VERIFY must be "full", "sample", or "skip" (got: %s).\n' \
+      "$GUEST_INVENTORY_VERIFY" >&2
+    exit 1
+    ;;
+esac
+validate_positive_integer GUEST_INVENTORY_SAMPLE_STRIDE "$GUEST_INVENTORY_SAMPLE_STRIDE"
 
 # Resolves a manifest base name to the selected guest profile/size variant.
 manifest_path() {
@@ -611,26 +633,195 @@ ensure_guest_key() {
 }
 
 
+# --- persistent guest SSH transport -----------------------------------------
+# One oc port-forward plus one SSH ControlMaster connection are established per
+# script run and reused by every guest_ssh call, instead of rebuilding the
+# forward and paying a probe handshake and a command handshake for each call.
+# guest_ssh owns the process EXIT/INT/TERM traps so the forward and the master
+# connection are always torn down.
+GUEST_SSH_FORWARD_LOG=""
+GUEST_SSH_FORWARD_PID=""
+GUEST_SSH_PORT=""
+GUEST_SSH_CONTROL_DIR=""
+GUEST_SSH_CONTROL_PATH=""
+GUEST_SSH_READY=false
+GUEST_SSH_TRAPS_INSTALLED=false
+
 ssh_guest_command() {
   local port="$1" remote_command="$2"
+  local -a control_args=()
+  if [[ -n "$GUEST_SSH_CONTROL_PATH" ]]; then
+    control_args=(-o ControlMaster=auto -o "ControlPath=$GUEST_SSH_CONTROL_PATH" -o ControlPersist=300)
+  fi
   # Host-key checking is disabled only for this randomized localhost forward.
   ssh -i "$GUEST_KEY" -p "$port" \
     -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+    "${control_args[@]}" \
     "$GUEST_USER@127.0.0.1" "$remote_command"
 }
 
-probe_guest_ssh() {
-  local port="$1" probe_log="$2"
-  if ssh_guest_command "$port" true >/dev/null 2>"$probe_log"; then
-    return 0
+guest_ssh_stop_forward() {
+  if [[ -n "$GUEST_SSH_FORWARD_PID" ]]; then
+    kill "$GUEST_SSH_FORWARD_PID" 2>/dev/null || true
+    wait "$GUEST_SSH_FORWARD_PID" 2>/dev/null || true
+    GUEST_SSH_FORWARD_PID=
   fi
-  return 1
+  GUEST_SSH_PORT=
 }
 
-extract_forwarded_port() {
-  local forward_log="$1"
-  sed -n 's/^Forwarding from 127[.]0[.]0[.]1:\([0-9][0-9]*\) -> 22$/\1/p' "$forward_log" | sed -n '1p'
+# Close every multiplexed connection and drop the control sockets. The sockets
+# are removed as well so a later call cannot reuse a stale master.
+guest_ssh_stop_master() {
+  local socket
+  if [[ -n "$GUEST_SSH_CONTROL_DIR" ]]; then
+    for socket in "$GUEST_SSH_CONTROL_DIR"/*; do
+      [[ -S "$socket" ]] || continue
+      ssh -o ControlPath="$socket" -o BatchMode=yes -o LogLevel=ERROR \
+        -O exit "$GUEST_USER@127.0.0.1" >/dev/null 2>&1 || true
+      rm -f "$socket"
+    done
+  fi
+}
+
+guest_ssh_teardown() {
+  guest_ssh_stop_master
+  guest_ssh_stop_forward
+  if [[ -n "$GUEST_SSH_CONTROL_DIR" ]]; then
+    rm -rf "$GUEST_SSH_CONTROL_DIR"
+    GUEST_SSH_CONTROL_DIR=""
+  fi
+  GUEST_SSH_CONTROL_PATH=""
+  if [[ -n "$GUEST_SSH_FORWARD_LOG" ]]; then
+    rm -f "$GUEST_SSH_FORWARD_LOG"
+    GUEST_SSH_FORWARD_LOG=""
+  fi
+  GUEST_SSH_READY=false
+}
+
+guest_ssh_cleanup() {
+  trap - EXIT INT TERM
+  guest_ssh_teardown
+}
+
+# The calling script keeps its own traps; guest_ssh installs this cleanup once.
+guest_ssh_install_traps() {
+  [[ "$GUEST_SSH_TRAPS_INSTALLED" == true ]] && return 0
+  GUEST_SSH_TRAPS_INSTALLED=true
+  trap 'guest_ssh_cleanup' EXIT
+  trap 'guest_ssh_cleanup; exit 130' INT
+  trap 'guest_ssh_cleanup; exit 143' TERM
+}
+
+# Cheap local check for the forwarded listener, so a not-yet-ready guest is
+# detected without spending an SSH handshake.
+tcp_port_ready() {
+  local port="$1"
+  (exec 3<>"/dev/tcp/127.0.0.1/$port") >/dev/null 2>&1
+}
+
+guest_ssh_probe() {
+  local port="$1" probe_log="$2"
+  ssh_guest_command "$port" true >/dev/null 2>"$probe_log"
+}
+
+guest_ssh_ensure_ready() {
+  local attempt wait_attempt port probe_log port_ready
+  if [[ "$GUEST_SSH_READY" == true ]]; then
+    return 0
+  fi
+  if [[ -z "$GUEST_SSH_CONTROL_DIR" ]]; then
+    GUEST_SSH_CONTROL_DIR="$(mktemp -d)"
+    GUEST_SSH_CONTROL_PATH="$GUEST_SSH_CONTROL_DIR/cm-%p"
+    GUEST_SSH_FORWARD_LOG="$(mktemp)"
+  fi
+  guest_ssh_install_traps
+  probe_log="$(mktemp)"
+
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    if [[ -z "$GUEST_SSH_PORT" ]]; then
+      workflow_action "oc port-forward -n $NAMESPACE service/$SSH_SERVICE :22 (attempt $attempt/30)"
+      : > "$GUEST_SSH_FORWARD_LOG"
+      oc_cmd port-forward -n "$NAMESPACE" "service/$SSH_SERVICE" :22 >"$GUEST_SSH_FORWARD_LOG" 2>&1 &
+      GUEST_SSH_FORWARD_PID=$!
+      port=
+      for ((wait_attempt = 1; wait_attempt <= 50; wait_attempt++)); do
+        port="$(extract_forwarded_port "$GUEST_SSH_FORWARD_LOG")"
+        if [[ -n "$port" ]]; then
+          break
+        fi
+        if ! kill -0 "$GUEST_SSH_FORWARD_PID" 2>/dev/null; then
+          break
+        fi
+        sleep 0.2
+      done
+      if [[ -z "$port" ]]; then
+        guest_ssh_stop_forward
+        if ((attempt % 5 == 0)); then
+          workflow_status "Guest SSH port-forward is not ready (attempt $attempt/30)"
+        fi
+        sleep 1
+        continue
+      fi
+      GUEST_SSH_PORT="$port"
+      workflow_action "Port-forward ready on 127.0.0.1:$port"
+    fi
+
+    # Keep the forward across probe retries; only a dead forward is replaced.
+    port_ready=false
+    for ((wait_attempt = 1; wait_attempt <= 10; wait_attempt++)); do
+      if tcp_port_ready "$GUEST_SSH_PORT"; then
+        port_ready=true
+        break
+      fi
+      if ! kill -0 "$GUEST_SSH_FORWARD_PID" 2>/dev/null; then
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$port_ready" != true ]]; then
+      guest_ssh_stop_forward
+      sleep 1
+      continue
+    fi
+
+    workflow_action "ssh $GUEST_USER@127.0.0.1:$GUEST_SSH_PORT (probe, then guest command)"
+    if guest_ssh_probe "$GUEST_SSH_PORT" "$probe_log"; then
+      GUEST_SSH_READY=true
+      workflow_status "Guest SSH is ready after attempt $attempt/30"
+      rm -f "$probe_log"
+      return 0
+    fi
+    # Authentication failures are terminal; startup failures can recover.
+    if grep -q 'Permission denied' "$probe_log"; then
+      cat "$probe_log" >&2
+      rm -f "$probe_log"
+      printf 'Could not authenticate to the VM guest over SSH.\n' >&2
+      return 1
+    fi
+    if ((attempt % 5 == 0)); then
+      workflow_status "Guest SSH probe failed; retrying (attempt $attempt/30)"
+    fi
+    # The forward is usually healthy while sshd is still starting, so keep it
+    # and only drop the half-open master; recreate the forward periodically in
+    # case the tunnel itself has wedged.
+    guest_ssh_stop_master
+    if ((attempt % 3 == 0)); then
+      guest_ssh_stop_forward
+    fi
+    sleep 1
+  done
+
+  printf '[guest-ssh] Timed out waiting for guest SSH.\n' >&2
+  if [[ -r "$GUEST_SSH_FORWARD_LOG" ]]; then
+    cat "$GUEST_SSH_FORWARD_LOG" >&2
+  fi
+  if [[ -r "$probe_log" ]]; then
+    cat "$probe_log" >&2
+  fi
+  rm -f "$probe_log"
+  printf 'Could not connect to the VM guest over SSH.\n' >&2
+  return 1
 }
 
 guest_ssh() {
@@ -641,78 +832,91 @@ guest_ssh() {
   fi
   guest_command="$1"
 
-  workflow_status "Connecting to guest $SSH_SERVICE over a temporary local port-forward"
-  local forward_log probe_log forward_pid port
-  forward_log="$(mktemp)"
-  probe_log="$(mktemp)"
-  forward_pid=
+  workflow_status "Connecting to guest $SSH_SERVICE over a persistent local port-forward"
+  if ! guest_ssh_ensure_ready; then
+    return 1
+  fi
+  ssh_guest_command "$GUEST_SSH_PORT" "$guest_command"
+}
 
-  stop_forward() {
-    if [[ -n "${forward_pid:-}" ]]; then
-      kill "$forward_pid" 2>/dev/null || true
-      wait "$forward_pid" 2>/dev/null || true
-      forward_pid=
-    fi
-  }
-  cleanup() {
-    trap - EXIT INT TERM
-    stop_forward
-    rm -f "$forward_log" "$probe_log"
-  }
-  trap cleanup EXIT INT TERM
+# Build the guest-side bash command that inventories the Linux workload
+# directory and prints one FILE_RECORD=name|bytes|sha256 line per file.
+#
+# Modes (GUEST_INVENTORY_VERIFY):
+#   full   - hash every file; identical verification to the serial loop, but
+#            with one batched stat and a parallel sha256sum fan-out instead of
+#            one stat and one sha256sum process per file.
+#   sample - hash every GUEST_INVENTORY_SAMPLE_STRIDE-th file plus the file the
+#            pass is about to modify; names and sizes are still verified for
+#            every file, and files that were not hashed are reported with the
+#            "unverified" hash marker.
+#   skip   - verify names and sizes only.
+# The inventory taken after the mutation and the restore verification always
+# hash every file, so these modes only trade the strength of the pre-mutation
+# drift check.
+linux_guest_inventory_command() {
+  local mode="$1" always_hash="${2:-}" stride="${GUEST_INVENTORY_SAMPLE_STRIDE:-16}"
+  local hash_select
+  case "$mode" in
+    full)
+      hash_select="printf '%s\\0' \"\$workload_file\" >> \"\$hash_list\""
+      ;;
+    sample)
+      hash_select="if [[ \"\$name\" == '$always_hash' ]] || (( index % $stride == 0 )); then printf '%s\\0' \"\$workload_file\" >> \"\$hash_list\"; fi"
+      ;;
+    skip)
+      hash_select=":"
+      ;;
+    *)
+      printf 'Unsupported inventory verification mode: %s\n' "$mode" >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "
+set -euo pipefail
+workload_dir='$LINUX_GUEST_WORKLOAD_DIR'
+rm -f \"\$workload_dir\"/.cbt-workload-*.tmp
+if [[ ! -d \"\$workload_dir\" ]]; then
+  printf 'Workload directory is missing: %s\\n' \"\$workload_dir\" >&2
+  exit 1
+fi
+index=0
+list_file=/tmp/cbt-inventory-all
+hash_list=/tmp/cbt-inventory-hash
+sizes_file=/tmp/cbt-inventory-sizes
+hashes_file=/tmp/cbt-inventory-hashes
+: > \"\$list_file\"
+: > \"\$hash_list\"
+while IFS= read -r -d '' workload_file; do
+  if [[ ! -f \"\$workload_file\" ]]; then
+    printf 'Unexpected workload directory entry: %s\\n' \"\$workload_file\" >&2
+    exit 1
+  fi
+  name=\"\${workload_file##*/}\"
+  if [[ ! \"\$name\" =~ ^(base-[0-9]{6}|incremental-[0-9]{2}-[0-9]{6})[.]dat\$ ]]; then
+    printf 'Unexpected workload filename: %s\\n' \"\$name\" >&2
+    exit 1
+  fi
+  printf '%s\\0' \"\$workload_file\" >> \"\$list_file\"
+  $hash_select
+  index=\$((index + 1))
+done < <(find \"\$workload_dir\" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+if [[ ! -s \"\$list_file\" ]]; then
+  printf 'Workload directory is empty: %s\\n' \"\$workload_dir\" >&2
+  exit 1
+fi
+hash_jobs=\"\$(nproc 2>/dev/null || printf 2)\"
+if ((hash_jobs > 8)); then hash_jobs=8; fi
+xargs -0 -r -n 256 stat -c '%n %s' < \"\$list_file\" > \"\$sizes_file\"
+xargs -0 -r -n 32 -P \"\$hash_jobs\" sha256sum < \"\$hash_list\" | LC_ALL=C sort -k2 > \"\$hashes_file\"
+awk 'FILENAME==ARGV[1] { hash[\$2]=\$1; next } { p=\$1; sub(/.*\//, \"\", p); printf \"FILE_RECORD=%s|%s|%s\\n\", p, \$2, ((\$1 in hash) ? hash[\$1] : \"unverified\") }' \"\$hashes_file\" \"\$sizes_file\"
+rm -f \"\$list_file\" \"\$hash_list\" \"\$sizes_file\" \"\$hashes_file\"
+"
+}
 
-  for ((attempt = 1; attempt <= 30; attempt++)); do
-    workflow_action "oc port-forward -n $NAMESPACE service/$SSH_SERVICE :22 (attempt $attempt/30)"
-    : > "$forward_log"
-    oc_cmd port-forward -n "$NAMESPACE" "service/$SSH_SERVICE" :22 >"$forward_log" 2>&1 &
-    forward_pid=$!
-    port=
-    for ((wait_attempt = 1; wait_attempt <= 30; wait_attempt++)); do
-      port="$(extract_forwarded_port "$forward_log")"
-      if [[ -n "$port" ]]; then
-        workflow_action "Port-forward ready on 127.0.0.1:$port"
-        break
-      fi
-      if ! kill -0 "$forward_pid" 2>/dev/null; then
-        break
-      fi
-      sleep 1
-    done
-
-    if [[ -n "$port" ]]; then
-      workflow_action "ssh $GUEST_USER@127.0.0.1:$port (probe, then guest command)"
-      if probe_guest_ssh "$port" "$probe_log"; then
-        workflow_status "Guest SSH is ready after attempt $attempt/30"
-        if ssh_guest_command "$port" "$guest_command"; then
-          cleanup
-          return 0
-        fi
-        cleanup
-        return 1
-      fi
-      # Authentication failures are terminal; startup failures can recover.
-      if grep -q 'Permission denied' "$probe_log"; then
-        cat "$probe_log" >&2
-        cleanup
-        return 1
-      fi
-      if ((attempt % 5 == 0)); then
-        workflow_status "Guest SSH probe failed; retrying (attempt $attempt/30)"
-      fi
-    elif ((attempt % 5 == 0)); then
-      workflow_status "Guest SSH port-forward is not ready (attempt $attempt/30)"
-    fi
-
-    stop_forward
-    sleep 1
-  done
-
-  printf '[guest-ssh] Timed out waiting for guest SSH.\n' >&2
-  cat "$forward_log" >&2
-  cat "$probe_log" >&2
-  printf 'Could not connect to the VM guest over SSH.\n' >&2
-  cleanup
-  return 1
+extract_forwarded_port() {
+  local forward_log="$1"
+  sed -n 's/^Forwarding from 127[.]0[.]0[.]1:\([0-9][0-9]*\) -> 22$/\1/p' "$forward_log" | sed -n '1p'
 }
 
 watch_backup_status() {
