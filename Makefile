@@ -62,6 +62,10 @@ vm-cbt-extend:
 	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Extend a completed VM lifecycle by one planned incremental pass.\n' "$(UTC_TIMESTAMP)"; fi
 	@./scripts/vm-cbt-extend.sh
 
+vm-cbt-reconcile:
+	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Reconcile a failed incremental pass back to incremental_ready after its resources are deleted and the tracker is verified.\n' "$(UTC_TIMESTAMP)"; fi
+	@./scripts/vm-cbt-reconcile.sh
+
 
 vm-cbt-verify:
 	@if [[ "$(DEBUG)" == true ]]; then printf '[%s] [make] [1/1] Verification: validate VM CBT state, backup types, completion, and checkpoints.\n' "$(UTC_TIMESTAMP)"; fi
@@ -137,6 +141,8 @@ help:
 	  '  make e2e TYPE=recover VM=vm-demo  Take and restore-verify a new full on the existing VM.' \
 	  '  make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4' \
 	  '                                    Add one pass; value is the total planned passes.' \
+	  '  make e2e TYPE=reconcile VM=vm-demo  Reset a failed incremental pass to incremental_ready' \
+	  '                                    after deleting its failed backup/PVC (tracker verified).' \
 	  '  make e2e TYPE=verify VM=vm-demo Re-run chain and restore verification.' \
 	  '  make e2e GUEST_INCREMENTAL_PASSES=3 Run three sequential incremental passes.' \
 	  '  make e2e EXISTING_VM=vm-<pool>-0001   Run the pipeline on a density-pool VM (TYPE=all|full).' \

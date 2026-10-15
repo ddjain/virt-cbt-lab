@@ -33,10 +33,12 @@ This runs the default single incremental pass after the full backup; the final p
 | `incremental` | Add the next planned pass to `VM`; the final planned pass also verifies. Alias: `make e2e-incremental VM=vm-<run-id>`. |
 | `verify` | Recheck checkpoints and restored data without adding a pass; e.g. `make e2e TYPE=verify VM=vm-demo`. |
 | `extend` | Add one pass to a completed lifecycle; e.g. `make e2e TYPE=extend VM=vm-demo EXTEND_TO_PASS=4` after three passes. |
+| `reconcile` | Reset a failed incremental pass back to `incremental_ready` after its failed backup/PVC are deleted (evidence preserved out-of-band) and the tracker is verified at the prior checkpoint; then retry with `TYPE=incremental`. |
 | `recover` | On an existing managed VM with a terminally failed full, create a distinct full-backup attempt using the existing tracker and restore-verify its baseline; never initializes a new VM. |
-
 Use `VM=vm-<run-id>` for `incremental`, `recover`, `verify`, and `extend`. `EXTEND_TO_PASS` must be exactly one above the completed total.
 `make e2e TYPE=recover VM=vm-<run-id>` acquires the checkout lifecycle lock, validates the failed full/PVC and VM/VMI/CBT state, then creates a new PVC and `VirtualMachineBackup` with `forceFullBackup:true` against the saved tracker. It preserves the failed artifacts and records every attempt separately. Recovery passes only when the new request is a successful `Full`, the tracker records its checkpoint, the output PVC is Bound, and a read-only restore matches the saved baseline file set, bytes, and hashes.
+
+`make e2e TYPE=reconcile VM=vm-<run-id>` is the supported retry path for a failed incremental pass (`incremental_failed`). It refuses to act unless the failed pass's backup object and PVC are already deleted (preserve their evidence out-of-band first) and the live tracker still sits at the prior checkpoint with the base backup still `Done=True`. On success it resets the lifecycle to `incremental_ready`, removes the failed pass pointer, and records a `reconcile_events` audit entry in the run metadata; it never deletes or mutates cluster resources itself.
 
 Key Make variables such as `VM_OS`, `MANIFEST_VARIANT`, `GUEST_*`, and `DEBUG` are documented in [Supported variables](#supported-variables). Run `make preflight` for a read-only readiness check and `make help` for the other public Make targets. `make clean-all` deletes every workflow-managed resource in the namespace; reports are retained.
 

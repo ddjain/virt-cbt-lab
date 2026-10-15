@@ -87,6 +87,28 @@ the next target to extend again. File counts, size range, OS, and storage
 variant remain fixed. Use `TYPE=verify` to rerun verification without adding
 a pass.
 
+### Reconciling a failed incremental pass
+
+When an incremental pass fails (lifecycle status `incremental_failed`), the
+supported retry path is:
+
+```sh
+# 1. Preserve the failed backup/PVC evidence out-of-band (YAML snapshots,
+#    logs), then delete the failed pass's backup object and PVC.
+# 2. Reconcile the lifecycle:
+make e2e TYPE=reconcile VM=vm-foo
+# 3. Retry the pass:
+make e2e TYPE=incremental VM=vm-foo
+```
+
+The reconcile stage validates before touching the saved state: the failed
+pass's backup and PVC must already be gone from the cluster, the tracker
+must still hold the prior checkpoint (the failure advanced nothing), and the
+base backup must remain `Done=True` with a non-failure reason. It records a
+`reconcile_events` audit entry in `runs/<run-id>/run.json`. If any
+precondition fails, it refuses with the reason — the failed state is kept
+for manual inspection.
+
 ### Same-VM recovery after a failed full backup
 
 Use the explicit recovery stage only for the managed VM whose original full backup reached terminal failure:

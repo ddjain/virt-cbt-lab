@@ -43,4 +43,5 @@ PY
        --arg extra_value "$label_value" \
        '.metadata.labels = {($managed_key): $managed_value, ($extra_key): $extra_value}' |
     oc_cmd apply -f - >/dev/null
+  trap - RETURN
 }

@@ -32,7 +32,26 @@ make e2e TYPE=full NAME="$RUN_ID" VM_OS="${VM_OS:-rhel9}" \
 
 The larger deterministic workload is only a window-widening measure; the exact copy window is established by the launcher timestamps, never assumed from PVC size or object creation time. The test host must provide `make`, `oc`, `jq`, `krknctl`, and its normal host-local `KUBECONFIG_PATH`; the script does not contain a kubeconfig, host path, secret, or cleanup operation. Record the run's VM, launcher, full backup, tracker, and destination PVC names before injection. Do not reuse an existing run or run concurrent lifecycle commands in the same checkout.
 
+The trigger must be launched with a clean environment: only `RUN_ID`
+(required) and `KUBECONFIG_PATH` (plus a deliberate `NAMESPACE` override) may
+be set. Do not source the checkout-wide `.env` or any other environment file
+into the trigger's environment; extract the kubeconfig path (e.g.
+`KUBECONFIG_PATH="$(grep -E '^KUBECONFIG_PATH=' .env | cut -d= -f2-)"`)
+rather than sourcing the file. The trigger pins the spec's workload sizing
+(`GUEST_BASE_FILE_COUNT=8`, `GUEST_FILE_SIZE_MIN_MIB=1024`,
+`GUEST_FILE_SIZE_MAX_MIB=1024`, `MANIFEST_VARIANT=large-odf`,
+`VM_OS=rhel9`) and aborts before any mutation if the inherited environment
+carries different values — run 20261015-cbtf04-r02 lost its scripted
+incremental stage to exactly this leak.
+
 After the full stage, the same recovered VM needs a distinct post-chaos backup attempt. When the full backup succeeded and the chaos signal fired, the trigger runs the supported `TYPE=incremental VM=vm-${RUN_ID}` stage; this creates a new backup/PVC identity and performs final chain/restore verification without recreating the VM. If the full backup failed or has no valid checkpoint, the active helper has no unique-name full-retry override; mark the same-VM follow-up **BLOCKED**, preserve original resources, and request an approved manual API recovery path. A clean new `TYPE=all` lifecycle is supplemental only and never replaces the same-VM check.
+
+The trigger records each stage outcome incrementally to
+`runs/<RUN_ID>/trigger/stage-outcomes.jsonl` (one JSON line per stage
+start/exit). If the trigger dies or is killed at any point, this file — not
+the lifecycle `run.json` — is the authoritative record of which stages the
+script itself completed; the Lead reconciles `run.json` from live cluster
+state against it before any repair.
 
 ## 3. Target and disruption
 
@@ -73,8 +92,9 @@ The live cluster evidence supports this distinction: a full backup log recorded 
 - The controller completes cleanup: the temporary backup destination attachment/utility volume is detached, its attachment pod is gone or terminal as appropriate, and the destination PVC remains the intended run PVC and `Bound`. Preserve events before any natural garbage collection.
 - Before the same-VM `TYPE=incremental` follow-up, the tracker has exactly one advancement to the original full checkpoint and `latestCheckpoint.name` equals that full backup's checkpoint. The incremental follow-up must then advance it once to a distinct child checkpoint. Capture tracker and launcher checkpoint-tree state before injection, after full reconciliation, and after the incremental stage.
 - The VM/VMI remains or returns `Running`, the replacement launcher is Ready, and VM `.status.changedBlockTracking.state` is `Enabled`. The uninterrupted data copy is evidenced by the launcher result, not by controller process survival.
-- Restore verification reconstructs the full artifact and matches the baseline workload file count, payload bytes, and canonical manifest hash. Where available, record `qemu-img info` and `qemu-img map --output=json`; file size or `Done=True` alone is insufficient.
+- Restore verification reconstructs the full artifact and matches the baseline workload file count, payload bytes, and canonical manifest hash. Record `qemu-img info` on each preserved backup artifact after its stage (format, virtual/disk size, backing-file reference — this proves the physical chain relationship and delta size); a full `qemu-img map --output=json` extent map is additional evidence, captured only when the backing chain is cheaply resolvable (e.g. via the checkout's read-only inspection pod and, for chain maps, the restore-verify rebase pattern); if inspection is unavailable, record the absence and reason. File size or `Done=True` alone is insufficient; the workflow's own restore verification (convert + hash) remains the semantic proof of chain correctness.
 - After the original full stage succeeds and an injection signal was recorded, the script attempts a distinct same-VM backup with `make e2e TYPE=incremental VM="vm-${RUN_ID}" KUBECONFIG_PATH="$KUBECONFIG_PATH"`; this creates a new incremental backup/PVC, advances the tracker to a distinct checkpoint, and runs chain/restore verification. If the full backup has no valid checkpoint or the trigger signal was not observed, the follow-up is BLOCKED; preserve original resources and do not retry their names.
+- **Matrix Leg 3 (dirty-block reproduction) acknowledgment:** when the trigger is launched with `DIRTY_BLOCK_CHURN` set, the follow-up sequence gains one deliberate step between the full and incremental stages: `guest-churn.sh` writes `CHURN_BYTES_GIB` GiB (default 60) of deterministic files in the guest and deletes them, recording exact bytes/times to `runs/<RUN_ID>/trigger/churn-record.json`; the incremental destination is pre-sized via the make-argv `INCREMENTAL_PVC_SIZE` (default 100Gi) so the pass cannot fail for lack of destination capacity. The chaos phase itself is unchanged and spec-compliant; the leg's question is whether the incremental copies ~peak dirty volume (churn + pass mutation) rather than the live-data delta, with the restore verification still required to pass on the resulting artifact.
 
 **Fail:**
 
