@@ -82,6 +82,38 @@ recovery_unexpected_failure() {
 trap recovery_unexpected_failure ERR
 
 workflow_step "1/4 Inspect the original failed full and supported API schema"
+# Bounded readiness wait. The same-VM recovery normally runs immediately after
+# the interrupted backup, so KubeVirt may still be restarting the VM. Wait for
+# the three preconditions that cannot be forced from here - VM Ready, VMI
+# Running and CBT Enabled - before inspecting the failed full. A timeout is not
+# a verdict: the precondition table below still records the observed state and
+# blocks the attempt instead of claiming recovery.
+RECOVERY_READY_TIMEOUT_SECONDS="${RECOVERY_READY_TIMEOUT_SECONDS:-300}"
+if (( RECOVERY_READY_TIMEOUT_SECONDS > 0 )); then
+  ready_started=$SECONDS
+  ready_deadline=$((SECONDS + RECOVERY_READY_TIMEOUT_SECONDS))
+  ready_next_report=$((SECONDS + 30))
+  while :; do
+    ready_vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null || printf '{}')"
+    ready_vmi_json="$(oc_cmd get vmi "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null || printf '{}')"
+    ready_vm_state="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | .status] | last // "False"' <<<"$ready_vm_json")"
+    ready_vmi_phase="$(jq -r '.status.phase // "Unknown"' <<<"$ready_vmi_json")"
+    ready_cbt_state="$(jq -r '.status.changedBlockTracking.state // "Unknown"' <<<"$ready_vm_json")"
+    if [[ "$ready_vm_state" == True && "$ready_vmi_phase" == Running && "$ready_cbt_state" == Enabled ]]; then
+      workflow_progress "VM recovery readiness confirmed after $((SECONDS - ready_started))s (VM Ready, VMI Running, CBT Enabled)"
+      break
+    fi
+    if (( SECONDS >= ready_deadline )); then
+      workflow_progress "VM recovery readiness not confirmed within ${RECOVERY_READY_TIMEOUT_SECONDS}s (Ready=$ready_vm_state VMI=$ready_vmi_phase CBT=$ready_cbt_state); continuing to the precondition check"
+      break
+    fi
+    if (( SECONDS >= ready_next_report )); then
+      workflow_progress "Waiting for VM recovery readiness: Ready=$ready_vm_state VMI=$ready_vmi_phase CBT=$ready_cbt_state (budget ${RECOVERY_READY_TIMEOUT_SECONDS}s)"
+      ready_next_report=$((SECONDS + 30))
+    fi
+    sleep 2
+  done
+fi
 vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null || printf '{}')"
 vmi_json="$(oc_cmd get vmi "$VM_NAME" -n "$NAMESPACE" -o json 2>/dev/null || printf '{}')"
 failed_backup_name="$(jq -r '.backups.full_failure.name // .backups.full.name // empty' "$VM_INFO_PATH")"
