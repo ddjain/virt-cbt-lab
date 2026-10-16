@@ -13,6 +13,11 @@ id_ed25519*
 kubeconfig
 .kube/
 
+# AI-generated artifacts (reports, matrices, bug reports, analysis, plans,
+# closed-run evidence) — one dir per scenario plus _-prefixed categories.
+# Kept out of git; scripts/archive-run.sh files closed runs here.
+/artifacts/
+
 # Generated workflow state and credentials
 /keys/
 /state/

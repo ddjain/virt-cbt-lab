@@ -1,6 +1,0 @@
-run_id	checker	failure_class	citation
-20261015-cbtf04-r02	report-fidelity	report-presents-reconstructed-command-as-run	reports/test-run-report.md:86 (rev1) — virsh checkpoint-list --tree command presented; only output recovery/checkpoint-tree.txt recorded
-20261015-cbtf04-r02	report-fidelity	unsourced-precise-time-claim	reports/test-run-report.md:110 (rev1) — 07:16:55Z completion time in no artifact; evidence-backed 07:16:56Z
-20261015-cbtf04-r03	evidence-sufficiency	incomplete-evidence-artifact	recovery/qemu-img-preserved-artifacts.txt (rev2) - full map truncated without markers, no extent summary; incremental chain map absent
-20261015-cbtf04-r03	evidence-sufficiency	evidence-index-hash-drift	checkers/evidence-sufficiency.json rev2/rev3 - ledger appended after index generation, indexed sha256 stale
-20261015-cbtf04-r03	evidence-sufficiency	ledger-invalid-json-line	ledger.jsonl line 8 (rev3 flag) - unescaped quotes in detail string; corrected via appended ledger_correction line
