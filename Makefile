@@ -229,3 +229,6 @@ test:
 	@bash tests/test-density-setup.sh
 	@bash tests/test-existing-vm-adoption.sh
 	@bash tests/test-stage-dispatch.sh
+	@bash tests/test-scenario-verdict.sh
+	@bash tests/test-cbt-f-01-driver.sh
+	@bash tests/test-cbt-f-01-injection-evidence.sh

@@ -62,6 +62,34 @@ mark_incremental_failure() {
      .updated_at = $failed_at' "$vm_info_path" > "$tmp_path"
   mv -f "$tmp_path" "$vm_info_path"
 }
+# Append one stage's wall clock to the lifecycle state. Best effort by design:
+# a missing run.json (the setup make target creates it) or any jq failure keeps
+# the previous file and the pipeline continues unchanged.
+persist_stage_timing() {
+  local target="$1" seconds="$2" at="$3"
+  local info_path="${vm_info_path:-}" tmp_path
+  [[ -n "$info_path" && -r "$info_path" ]] || return 0
+  tmp_path="${info_path}.tmp.$$"
+  if jq --arg target "$target" --argjson seconds "$seconds" --arg at "$at" \
+      '.stage_timings = ((.stage_timings // []) + [{target: $target, seconds: $seconds, at: $at}])' \
+      "$info_path" > "$tmp_path" 2>/dev/null; then
+    mv -f "$tmp_path" "$info_path"
+  else
+    rm -f "$tmp_path"
+  fi
+}
+persist_total_elapsed() {
+  local seconds="$1"
+  local info_path="${vm_info_path:-}" tmp_path
+  [[ -n "$info_path" && -r "$info_path" ]] || return 0
+  tmp_path="${info_path}.tmp.$$"
+  if jq --argjson seconds "$seconds" '.total_elapsed_seconds = $seconds' \
+      "$info_path" > "$tmp_path" 2>/dev/null; then
+    mv -f "$tmp_path" "$info_path"
+  else
+    rm -f "$tmp_path"
+  fi
+}
 log_final_verdict() {
   local outcome="$1" message="$2" elapsed="$3" lifecycle="$4"
   local timestamp line log_path box_width=52 index result_row result_symbol
@@ -174,7 +202,7 @@ resolve_existing_vm() {
 
 load_vm_info() {
   if [[ -z "$VM" || "$VM" != vm-* ]]; then
-    fail 'TYPE=incremental, extend, recover, and verify require VM=vm-<run-id>.'
+    fail 'TYPE=incremental, extend, recover, reconcile, and verify require VM=vm-<run-id>.'
     return
   fi
   vm_name="$VM"
@@ -281,6 +309,10 @@ print_pipeline_summary() {
       fi
       printf '  Restore verification pod: %s (temporary)\n' "$RESTORE_POD_NAME"
       ;;
+    reconcile)
+      printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
+      printf '  Reconcile action: reset the failed incremental pass to incremental_ready after its backup/PVC are deleted and the tracker is verified\n'
+      ;;
     recover)
       printf '  Existing VirtualMachine: %s\n' "$VM_NAME"
       recovery_attempt_number="$(jq -r '(.recovery.attempts // []) | length + 1' "$vm_info_path")"
@@ -322,7 +354,7 @@ run_profiled_make() {
   local target="$1"
   shift
   local -a args=()
-  local start_epoch end_epoch step_status timing_timestamp timing_line
+  local start_epoch end_epoch step_status step_seconds timing_timestamp timing_line
   while IFS= read -r arg; do args+=("$arg"); done < <(profile_args)
   start_epoch="$(date +%s)"
   if "$MAKE_COMMAND" --no-print-directory "$target" "$@" "${args[@]}"; then
@@ -331,8 +363,10 @@ run_profiled_make() {
     step_status=$?
   fi
   end_epoch="$(date +%s)"
+  step_seconds=$((end_epoch - start_epoch))
   timing_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  timing_line="Step timing: target=$target elapsed_seconds=$((end_epoch - start_epoch))."
+  timing_line="Step timing: target=$target elapsed_seconds=$step_seconds."
+  persist_stage_timing "$target" "$step_seconds" "$timing_timestamp"
   if [[ -n "$run_id" && -d "$RUNS_ROOT_DIR/$run_id/logs" ]]; then
     printf '[%s] [make] %s\n' "$timing_timestamp" "$timing_line" >> "$RUNS_ROOT_DIR/$run_id/logs/workflow.log"
   fi
@@ -350,14 +384,14 @@ case "$TYPE" in
       resolve_new_run_id
     fi
     ;;
-  incremental|recover|verify|extend)
+  incremental|recover|verify|extend|reconcile)
     if [[ -n "$EXISTING_VM" ]]; then
       fail 'EXISTING_VM is only valid with TYPE=all or TYPE=full.'
     fi
     load_vm_info
     ;;
   *)
-    fail "TYPE must be all, full, incremental, recover, extend, or verify (got: $TYPE)."
+    fail "TYPE must be all, full, incremental, recover, extend, reconcile, or verify (got: $TYPE)."
     ;;
 esac
 if ((status == 0)); then
@@ -518,6 +552,7 @@ fi
 end_epoch="$(date +%s)"
 ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 elapsed_seconds=$((end_epoch - start_epoch))
+persist_total_elapsed "$elapsed_seconds"
 if [[ "$recovery_blocked" == true ]]; then
   result=blocked
 elif ((status == 0)); then

@@ -119,6 +119,12 @@ jq -n \
       passes_completed: ($run.incremental_passes_completed // 0),
       passes_planned: ($run.incremental_passes_total // 0)
     },
+    phases: [
+      ($run.stage_timings // [])[]? |
+      select((.target // "") != "") |
+      {stage: .target, seconds: (.seconds // null)}
+    ],
+    total_elapsed_seconds: ($run.total_elapsed_seconds // null),
     recovery_attempts: [
       $recovery_attempts[] |
       {id, status, resources_applied,
