@@ -77,6 +77,18 @@ jq -n \
    elif $overall_passed == true and $run_status == "complete" then "PASS"
    elif $overall_passed == false or ($run_status | test("(^|_)failed$")) then "FAIL"
    else "INCOMPLETE" end) as $verdict |
+  # Two scopes must never be confused: the lifecycle verdict is what the whole
+  # run state and its verification support, while a recovery invocation can be a
+  # legitimate PASS for its own action even though the interrupted lifecycle
+  # never completed its chain/restore verification.
+  (if ($invocation_type == "recover" and
+       ($invocation_result == "BLOCKED" or
+        ($invocation_result == "PASS" and any($recovery_attempts[]?; .status == "success"))))
+   then "recovery_invocation" else "lifecycle" end) as $verdict_scope |
+  (if $overall_passed == true and $run_status == "complete" then "PASS"
+   elif $overall_passed == false or ($run_status | test("(^|_)failed$")) then "FAIL"
+   elif any($recovery_attempts[]?; .status == "blocked") then "BLOCKED"
+   else "INCOMPLETE" end) as $lifecycle_verdict |
   (if ($restore_checks | length) == 0 then "PENDING"
    elif all($restore_checks[]; .passed == true) then "PASS"
    else "FAIL" end) as $restore_status |
@@ -99,6 +111,7 @@ jq -n \
                    then ["run.json", "report.json"] else ["run.json"] end),
     scope: "Workflow summary; does not independently inspect qcow2 allocation maps.",
     verdict: $verdict,
+    verdict_scope: $verdict_scope,
     verdict_reason:
       (if $verdict == "BLOCKED" then "Recovery was safely blocked before a successful full backup and baseline restore."
        elif $invocation_type == "recover" and $verdict == "PASS" then "The same-VM recovery full backup and baseline restore passed."
@@ -116,9 +129,16 @@ jq -n \
     },
     lifecycle: {
       state: $run_status,
+      verdict: $lifecycle_verdict,
       passes_completed: ($run.incremental_passes_completed // 0),
       passes_planned: ($run.incremental_passes_total // 0)
     },
+    phases: [
+      ($run.stage_timings // [])[]? |
+      select((.target // "") != "") |
+      {stage: .target, seconds: (.seconds // null)}
+    ],
+    total_elapsed_seconds: ($run.total_elapsed_seconds // null),
     recovery_attempts: [
       $recovery_attempts[] |
       {id, status, resources_applied,
@@ -139,9 +159,15 @@ jq -n \
     ],
     cbt: {
       status: $cbt_status,
+      # A CBT state is only known when the verify stage actually read the live
+      # VM. "PENDING" reads as a state and was consumed as one downstream
+      # (cbt-chaos/scenario-verdict.sh#cbt-recovered); say what is true instead.
       vm_state: (if check($checks; "vm_cbt_is_enabled") == true then "Enabled"
                  elif check($checks; "vm_cbt_is_enabled") == false then "NotEnabled"
-                 else "PENDING" end),
+                 else "UNVERIFIED" end),
+      vm_state_source: (if check($checks; "vm_cbt_is_enabled") == null
+                        then "report.verification.checks[vm_cbt_is_enabled]:absent"
+                        else "report.verification.checks[vm_cbt_is_enabled]" end),
       full_checkpoint: ($backups.full.checkpoint_name // null),
       incremental_checkpoints: [$incrementals[]? | .checkpoint_name],
       tracker_latest_checkpoint: ($report.tracker.latest_checkpoint // $run.tracker.latest_checkpoint // null),

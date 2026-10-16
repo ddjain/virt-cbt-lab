@@ -41,11 +41,19 @@ One job: decide GO or NO-GO for the run. You execute nothing live.
    describe <tag>` and `--dry-run` with the exact arguments from the script.
 6. **Cluster readiness**: VM/VMI Running, CBT Enabled, tracker/PVC states,
    no other VMB Progressing, controllers at ready replicas, storage healthy.
-7. **Capacity headroom (mandatory)**: destination PVC must fit the planned
-   full AND its follow-up incremental. Prior starvation: an 8 GiB backup PVC
-   was exhausted by the Full, so the required Incremental failed with
-   `No space left on device`. Inspect requested vs used capacity and expected
-   incremental size; NO-GO on insufficient headroom.
+7. **Capacity headroom (mandatory, fail-closed, correct filesystem)**: measure
+   the filesystem that backs the destination StorageClass, never its parent
+   hostPath. For the HPP pool that is the nested `/cbt-demo-pool-data-dir/csi`
+   (on `/dev/sdb`), NOT `/var/hpvolumes` (on `/dev/sda4`) — the parent
+   overstated free space by ~170 GiB in run 20261016-exp06-r02. Record the exact
+   command in the check's `command` field:
+   `oc exec -n openshift-cnv "$(oc get pods -n openshift-cnv -o name | grep hostpath-provisioner-csi | head -1 | cut -d/ -f2)" -c hostpath-provisioner -- df -B1 /cbt-demo-pool-data-dir/csi`.
+   The destination PVC must fit the planned full AND its follow-up incremental,
+   counting a fully materialising clone DataVolume and a fully allocated backup
+   qcow2 (r02 wrote ~2.5× its estimate). Prior starvation: an 8 GiB backup PVC
+   was exhausted by the Full, so the incremental failed with `No space left on
+   device`. Report device + mount in `filesystem`; NO-GO on insufficient
+   headroom.
 8. **Mode support**: the active Makefile actually implements the `TYPE` the
    spec needs (an older Makefile may ignore it and run the full demo).
 
@@ -54,6 +62,28 @@ Write `runs/<RUN_ID>/preflight.json`: `{"decision": "GO"|"NO-GO", "utc":
 "...", "checks": [{"name": ..., "result": ..., "evidence": "path:line"}],
 "blockers": [...]}` and message the Lead. NO-GO with named blockers beats a
 hedged GO; a wrong GO risks a live mutation on an invalid run.
+
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** GO/NO-GO is the only authority you grant: record the
+  evidence path of every check, and treat a missing/invalid spec or trigger
+  as NO-GO with the blocker named rather than guessing one.
 
 ## Never
 - Run `make e2e`, the trigger, Krkn live, or any mutation.

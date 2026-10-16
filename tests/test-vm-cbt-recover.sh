@@ -111,21 +111,32 @@ if grep -E '(^| )(apply|create|delete|patch)( |$)' "$OC_LOG" >/dev/null; then
   printf 'Recovery gate issued a mutating oc command.\n' >&2
   exit 1
 fi
-FAKE_VM_READY=False run_recovery > "$TEST_TMP/recovery-not-ready.log" 2>&1
+FAKE_VM_READY=False DEBUG=true RECOVERY_READY_TIMEOUT_SECONDS=4 run_recovery \
+  > "$TEST_TMP/recovery-not-ready.log" 2>&1
+grep -q 'VM recovery readiness not confirmed within 4s' "$TEST_TMP/recovery-not-ready.log" ||
+  { printf 'Recovery readiness wait did not report its bounded timeout.\n' >&2; exit 1; }
 jq -e '
   .recovery.attempts[1].vm.ready == "False" and
   any(.recovery.attempts[1].preconditions[]; .name == "vm_ready" and .passed == false) and
   any(.recovery.attempts[1].blocked_reasons[]; contains("precondition failed: vm_ready")) and
   .recovery.attempts[1].resources_applied.pvc == false
 ' "$RUN_DIR/run.json" >/dev/null
-FAKE_RECOVERY_COLLISION=vm-recovery-full-recover-test-r003 run_recovery \
+# A ready VM must not make the stage wait at all: the wait is a bounded guard,
+# not a fixed delay.
+DEBUG=true RECOVERY_READY_TIMEOUT_SECONDS=60 run_recovery \
+  > "$TEST_TMP/recovery-ready-wait.log" 2>&1
+grep -q 'VM recovery readiness confirmed after' "$TEST_TMP/recovery-ready-wait.log" ||
+  { printf 'Recovery readiness wait did not report a confirmed ready VM.\n' >&2; exit 1; }
+grep -q 'VM recovery readiness not confirmed' "$TEST_TMP/recovery-ready-wait.log" &&
+  { printf 'Recovery readiness wait timed out for a ready VM.\n' >&2; exit 1; }
+FAKE_RECOVERY_COLLISION=vm-recovery-full-recover-test-r004 run_recovery \
   > "$TEST_TMP/recovery-collision.log" 2>&1
 jq -e '
-  .recovery.attempts[2].id == "r003" and
-  .recovery.attempts[2].status == "blocked" and
-  .recovery.attempts[2].proposed_resources.backup_name_state == "present" and
-  any(.recovery.attempts[2].blocked_reasons[]; contains("precondition failed: recovery_backup_name_available")) and
-  .recovery.attempts[2].resources_applied.pvc == false and
+  .recovery.attempts[3].id == "r004" and
+  .recovery.attempts[3].status == "blocked" and
+  .recovery.attempts[3].proposed_resources.backup_name_state == "present" and
+  any(.recovery.attempts[3].blocked_reasons[]; contains("precondition failed: recovery_backup_name_available")) and
+  .recovery.attempts[3].resources_applied.pvc == false and
   .backups.full_failure.checkpoint_name == "failed-checkpoint"
 ' "$RUN_DIR/run.json" >/dev/null
 
@@ -170,8 +181,8 @@ if [[ "$stage_status" != 3 ]]; then
 fi
 [[ "$(cat "$TEST_TMP/make.log")" == $'preflight\nvm-cbt-recover' ]]
 [[ ! -e "$TEST_ROOT/state/e2e.lock" ]]
-[[ "$(jq -r '.recovery.attempts | length' "$RUN_DIR/run.json")" == 4 ]]
-[[ "$(jq -r '.recovery.attempts[3].id' "$RUN_DIR/run.json")" == r004 ]]
+[[ "$(jq -r '.recovery.attempts | length' "$RUN_DIR/run.json")" == 5 ]]
+[[ "$(jq -r '.recovery.attempts[4].id' "$RUN_DIR/run.json")" == r005 ]]
 [[ "$(jq -r '.verdict' "$TEST_ROOT/runs/$RUN_ID/summary.json")" == BLOCKED ]]
 if [[ "$(<"$TEST_TMP/stage.log")" != *'BLOCKED: recovery preconditions failed; no backup or PVC was created'* ||
       "$(<"$TEST_TMP/stage.log")" != *'Result: ▣ BLOCKED'* ]]; then

@@ -9,6 +9,8 @@ usage() {
   printf 'Read-only on the cluster: watches the full backup and all incremental passes in the saved VM lifecycle plan.\n' >&2
   printf 'Prints API creation/Done timestamps and durations, then persists timing records to report JSON.\n' >&2
   printf 'Run the monitor after runs/<run-id>/run.json exists; backup objects are watched even before lifecycle records are written.\n' >&2
+  printf 'Bounded wait: MONITOR_TIMEOUT_SECONDS (default 1800; 0 waits without a bound).\n' >&2
+  printf 'Exit: 0 every planned backup reached Done=True; 1 a backup failed or state is unusable; 2 the timeout expired with backups still pending.\n' >&2
 }
 
 if (($# != 1)) || [[ "$1" == "-h" || "$1" == "--help" ]]; then
@@ -64,12 +66,23 @@ if ((${#backup_names[@]} == 0)); then
 fi
 
 POLL_INTERVAL_SECONDS="${MONITOR_POLL_INTERVAL_SECONDS:-2}"
+MONITOR_TIMEOUT_SECONDS="${MONITOR_TIMEOUT_SECONDS:-1800}"
+if ! [[ "$MONITOR_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]]; then
+  printf 'Invalid MONITOR_TIMEOUT_SECONDS for VM %s: %s (expected a non-negative integer).\n' "$vm_name" "$MONITOR_TIMEOUT_SECONDS" >&2
+  exit 1
+fi
+# 0 is an explicit opt-in to waiting without a bound.
+deadline_seconds=0
+if ((MONITOR_TIMEOUT_SECONDS > 0)); then
+  deadline_seconds=$((SECONDS + MONITOR_TIMEOUT_SECONDS))
+fi
 
 declare -A reported_created=()
 declare -A reported_done=()
 declare -A reported_reason=()
 declare -A reported_duration=()
 failed_backup=0
+monitor_timed_out=0
 
 workflow_step "Watching $NAMESPACE for run $RUN_ID"
 workflow_progress "Tracking ${#backup_names[@]} backup object(s): ${backup_names[*]}"
@@ -208,9 +221,26 @@ while :; do
   if ((failed_backup || all_done)); then
     break
   fi
+  if ((deadline_seconds > 0 && SECONDS >= deadline_seconds)); then
+    monitor_timed_out=1
+    break
+  fi
   sleep "$POLL_INTERVAL_SECONDS"
 done
 persist_backup_timings
+
+if ((monitor_timed_out)); then
+  outstanding=()
+  for backup_name in "${backup_names[@]}"; do
+    if [[ -z "${reported_done[$backup_name]:-}" ]]; then
+      outstanding+=("${backup_label[$backup_name]} ($backup_name)")
+    fi
+  done
+  printf 'Monitor timed out after %ss with %s backup(s) still without Done=True for run %s: %s\n' \
+    "$MONITOR_TIMEOUT_SECONDS" "${#outstanding[@]}" "$RUN_ID" "${outstanding[*]}" >&2
+  printf 'Set MONITOR_TIMEOUT_SECONDS=0 to wait without a bound, or inspect them with: oc get vmbackup -n %s\n' "$NAMESPACE" >&2
+  exit 2
+fi
 
 if ((failed_backup)); then
   printf 'One or more backups reached Done=True with a terminal failure reason; see the lines above.\n' >&2

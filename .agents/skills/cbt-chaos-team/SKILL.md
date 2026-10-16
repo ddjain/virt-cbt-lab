@@ -82,6 +82,62 @@ Rules that bind every role:
   history, or reports during a live run. Post-run agents may read the current
   run's closed artifacts only, never a live run's.
 
+## Lead operating policy (stage-aware, deterministic-first)
+
+The Lead owns stage selection and mutation authority, so the plan-then-run
+policy belongs here rather than in each role:
+
+- **Interface.** Read `make help` (human-readable) and `make stage-list` (the
+  machine-readable stage/target/args/purpose table), and consult
+  `docs/agent-workflow-audit.md` — the shared capability matrix (inputs,
+  outputs, exit codes, read-only vs mutating, retries/timeouts, and what each
+  entry point proves and does *not* prove). Never assume a variable is honoured
+  merely because Make accepts it, and confirm the staged interface exists in
+  the active checkout before relying on it.
+- **Smallest valid stage per leg.** Prefer the narrowest stage that answers the
+  current hypothesis (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`,
+  `vm-cbt-restore-test`, `monitor`, `run-summary`) over a full
+  `make e2e`/`TYPE=all` rerun. Stages are state-machine transitions, not freely
+  re-runnable commands: check `runs/<id>/run.json` state before choosing one,
+  and treat a rejection as a state error rather than a product failure. A full
+  fresh lifecycle is correct only when the scenario's own acceptance criteria
+  demand it (for example the separate clean restore lifecycle in CBT-F-01).
+- **Deterministic first.** Reuse the existing script or Make target for every
+  repeated operational check; spawn a role only for judgement the scripts
+  cannot express. `cbt-chaos/scenario-verdict.sh` (see `cbt-chaos-run`)
+  computes the objective verdict from recorded artifacts and exits non-zero
+  unless every mandatory check passed: checkers grade the evidence, the
+  evaluator computes the outcome, and neither replaces the other. A script
+  `PASS` carrying an `UNKNOWN` check is at most PASS WITH FINDINGS; a script
+  `FAIL`/`INCONCLUSIVE`/`BLOCKED`/`INVALID` is reported as returned.
+- **Reuse before you build.** Inspect the script, Make target, test, and
+  `docs/agent-workflow-audit.md` row before adding anything: a new script is
+  justified only by an assertion none of them makes. It needs an offline test
+  under `tests/` wired into `make test`, an audit-matrix row, and a skill
+  reference in the same change, and `make test` must pass after any script,
+  Makefile, or skill edit — an edit to what the flow executes is not verified
+  by inspection alone (see `cbt-chaos-run`'s deterministic-tools policy).
+- **Spawn economy.** One Observer per run (below); the three Checkers are the
+  only judgement agents; never spawn an agent to perform what a documented
+  script or Make target already does, and never spawn a worker per
+  verification step. The Report Writer assembles its output from the evaluator
+  JSON, the evidence pack and the templates — it does not re-derive results
+  from prose.
+- **Timings are evidence.** Record each leg's duration
+  (`cbt-chaos/scenarios_v2/<id>/runs/<RUN_ID>/driver-timings.json`,
+  `run.json .stage_timings`, `summary.json .phases`) and attribute the run's
+  wall clock per phase at closeout.
+- **Rehearse before syncing.** After any trigger edit, and before the single
+  `make resync` of the run: `bash -n`, confirm every variable the action
+  command references is still defined, and run `bash <trigger> --plan`.
+- **Never bypass the guards.** No `make clean-all`, and never
+  `STAGE_SKIP_PREFLIGHT=true`: preflight is the fail-closed identity/resource
+  gate for every mutating stage.
+- **Bounded work.** Every spawned task carries a wall-clock budget, an attempt
+  cap and a terminal status (`COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`);
+  the heartbeat audit and the matrix stop conditions are the enforcement
+  points.
+
 ## Per-run state files (single source of truth)
 
 Every run has one root: the scenario's `runs/<RUN_ID>/` directory on the
@@ -103,7 +159,8 @@ runs/<RUN_ID>/
     watches/                        raw watch streams, never into model context
     finding.md                      compact final analysis
   trigger/
-    command.txt  trigger.log  action-request.json    Trigger-owned
+    command.txt  trigger.log  action-request.json
+    effect-check.json  exit-statuses.json      Trigger-owned
   recovery/                Recovery-owned logs and backup/restore evidence
   checkers/                one JSON verdict per checker (each checker-owned)
     injection-validity.json  evidence-sufficiency.json  report-fidelity.json
@@ -194,14 +251,34 @@ Checkers must not share blind spots with the workers they grade:
    before commit) — hand-written `printf` lines produced invalid JSON in run
    20261015-cbtf04-r03 (line 8) and cost a checker flag.
 2a. **Index ordering (mechanical, checker-enforced).** The evidence index is
-   valid only if it is the LAST write: append every ledger line (including
-   `run_closed` and any post-close approval records) FIRST, then regenerate
-   `evidence-index.json`, then write nothing further to any indexed file.
-   Run `cbt-chaos/pack-validate.sh <run-root>` before spawning checkers —
-   it checks ledger JSON validity, state/ledger phase agreement, indexed
-   sha256s, and index-vs-file mtimes, so ordering violations surface in
-   seconds instead of costing checker revision loops (two rejects in run
-   20261015-cbtf04-r03 came solely from post-index ledger appends).
+   valid only if it is the LAST evidence write OF THE PHASE: append every ledger
+   line for that phase FIRST, then regenerate `evidence-index.json`, then freeze
+   it, then write nothing further to any indexed file until every checker of
+   that phase has returned. Exactly this sequence, immediately before the
+   checker spawn (`<run-root>` = the run directory):
+   `cbt-chaos/evidence-index.sh <run-root> && cbt-chaos/pack-validate.sh --freeze <run-root>`.
+   `--freeze` validates (ledger JSON validity, state/ledger phase agreement,
+   indexed sha256s, index-vs-file mtimes) and records the index/ledger sha256 in
+   `checkers/pack-freeze.json`, so a ledger append after the index becomes
+   detectable instead of merely discouraged.
+   Each checker runs `cbt-chaos/pack-validate.sh --verify-freeze <run-root>` as
+   its FIRST action and again immediately before writing its verdict, and
+   records both exit codes plus `pack-freeze.json#index_sha256` in its output.
+   A closing failure means the pack moved under the grade: re-freeze, re-spawn
+   that checker, and record the re-run as a harness finding.
+   Rationale: post-index ledger appends cost a reject in 20261015-cbtf04-r03
+   and reappeared as a measured 23171-vs-27415-byte index drift in
+   20261016-exp06-r02, where the run carried no gate that could have caught it.
+2b. **Run-root sync (mechanical).** A run root is never PUSHED from the
+   workstation: `sync.sh` already excludes `cbt-chaos/scenarios_v2/*/runs/`, so
+   any bare `rsync` of a run root is a defect — the r02 in-run push truncated
+   `ledger.jsonl` and six events had to be re-appended (recorded as
+   `ledger_recovered` in `ledger.jsonl`), and the post-close mirror is stale
+   again (workstation 37 ledger lines + the 151-file pre-checker index vs the
+   remote's 42 lines + the 157-file index). After `closed`: `make pull-reports`
+   (remote → local, one direction only), then run
+   `cbt-chaos/pack-validate.sh <pulled run-root>` and require exit 0. If it
+   fails, the mirror is not evidence — re-pull it; never re-push over it.
 3. **Phase machine in `state.json`.** Allowed transitions, nothing else:
    `resolved → preflight_go → armed → executing → preserved → recovering →
    final → checked → verdict → reported → closed`. `closed` is the firewall
@@ -231,28 +308,42 @@ Checkers must not share blind spots with the workers they grade:
 ## Execution sequence (Lead checklist)
 
 1. Resolve scenario, `RUN_ID`, lifecycle `NAME`/`VM` per `cbt-chaos-run`
-   Phase 0; create run root, `ledger.jsonl`, initial `state.json`
-   (`resolved`).
+   Phase 0; read `make help` and `make stage-list` and select the smallest
+   valid stage for the leg; create run root, `ledger.jsonl`, initial
+   `state.json` (`resolved`).
 2. Issue `contracts/preflight.md`, spawn Preflight Worker → GO/NO-GO.
    Capacity preflight is mandatory: destination PVC headroom must fit the
    planned full AND follow-up incremental (prior starvation incident).
-3. On GO: `make resync` (only sync of the run), issue observer and trigger
-   contracts, spawn Observer Worker. Accept ARMED only after independent
-   watch-health verification; transition `armed`.
+3. On GO: run the trigger's `--plan` rehearsal (and the variable-definition
+   check after any edit), then `make resync` (the only sync of the run), issue
+   observer and trigger contracts, spawn Observer Worker. Accept ARMED only
+   after independent watch-health verification; transition `armed`.
 4. Spawn Trigger Worker; transition `executing`. Wait for PRESERVED before
    any recovery; transition `preserved`. Heartbeat audit is active during
    `executing`, `recovering`, and any phase expected to exceed 10 minutes.
 5. Issue recovery contract; spawn Recovery Worker (lead-authorized actions);
    transition `recovering`. Wait for FINAL; transition `final`.
 6. Spawn the three Checkers in parallel (blind contracts). On all verdicts,
+   Before spawning: `cbt-chaos/evidence-index.sh <run-root>` then
+   `cbt-chaos/pack-validate.sh --freeze <run-root>`; no ledger append until all
+   three have returned. A checker whose closing `--verify-freeze` fails has
+   graded a moved pack — re-freeze and re-spawn it (harness finding, not a
+   product finding).
    apply reject verification to any REJECT (see Reject verification), then
    reconcile against lifecycle records and API evidence per `cbt-chaos-run`
    Phase 4; assign PASS / PASS WITH FINDINGS / FAIL / BLOCKED; transition
    `checked` → `verdict`. Any verified checker REJECT on injection or
    evidence forces BLOCKED, never a downgraded PASS.
-7. Spawn Report Writer; spawn Report Fidelity Checker (max 2 revision loops,
-   then stop for human). Rsync reports both ways, `make pull-reports`;
-   transition `reported` → `closed`.
+   Run `cbt-chaos/scenario-verdict.sh` for the run's objective verdict and
+   reconcile it with the checker verdicts: the script verdict is the objective
+   core (a non-PASS verdict is never upgraded by prose, and a PASS carrying an
+   `UNKNOWN` check is at most PASS WITH FINDINGS), while a disagreement
+   between the script and the checkers is itself a harness finding to resolve
+   before a verdict is assigned. Record the script's JSON path in the ledger.
+7. Spawn Report Writer (assembling from the evaluator JSON, the evidence pack
+   and the templates, not re-derived prose); spawn Report Fidelity Checker
+   (max 2 revision loops, then stop for human). Rsync reports both ways,
+   `make pull-reports`; transition `reported` → `closed`.
 8. Post-run (firewall lifted): spawn Run Analyst, Scenario Improver, CBT Flow
    Analyst, Variation Decider in one parallel batch, each with the closed
    run's artifacts. Outputs to scenario-level files, not the run directory.

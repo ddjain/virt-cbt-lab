@@ -237,7 +237,7 @@ if [[ -z "$target" ]]; then
 fi
 printf '%s\n' "$target" >> "$MAKE_LOG"
 case "$target" in
-  preflight|monitor|vm-cbt-verify)
+  preflight|monitor|vm-cbt-verify|vm-cbt-reconcile)
     ;;
   vm-setup)
     run_id_arg=""
@@ -342,6 +342,19 @@ run_extend_stage() {
     FAKE_MAKE_FAIL_BACKUP=false \
     EXTEND_TO_PASS="$target_pass" \
     TYPE=extend \
+    VM="vm-$run_id" \
+    bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
+}
+run_reconcile_stage() {
+  local run_id="$1" info_path calls_path
+  info_path="$stage_checkout/runs/$run_id/run.json"
+  calls_path="$TEST_TMP/$run_id-make-calls.targets"
+  : > "$calls_path"
+  env \
+    MAKE_COMMAND="$fake_make" \
+    MAKE_LOG="$calls_path" \
+    TEST_VM_INFO="$info_path" \
+    TYPE=reconcile \
     VM="vm-$run_id" \
     bash "$stage_script" > "$TEST_TMP/$run_id-e2e-stage.log" 2>&1
 }
@@ -536,6 +549,36 @@ jq -e '
   .next_incremental_pass == null
 ' "$invalid_extension_info_path" >/dev/null
 
+# TYPE=reconcile is advertised by `make help` and implemented by the dispatcher;
+# the identity validation used to reject it with exit 2 before the reconcile
+# branch could run. Dispatch must now be preflight + vm-cbt-reconcile and the run
+# metadata must record the per-stage wall clock and the pipeline total.
+reconcile_run_id=reconcile-stage-test
+reconcile_info_path="$(prepare_stage_state "$reconcile_run_id" 1)"
+if run_reconcile_stage "$reconcile_run_id"; then
+  reconcile_status=0
+else
+  reconcile_status=$?
+fi
+[[ "$reconcile_status" == 0 ]]
+assert_stage_targets "$reconcile_run_id" '["preflight","vm-cbt-reconcile"]'
+reconcile_output="$(<"$TEST_TMP/$reconcile_run_id-e2e-stage.log")"
+if [[ "$reconcile_output" != *'Pipeline configuration'* ||
+      "$reconcile_output" != *'TYPE=reconcile'* ||
+      "$reconcile_output" != *'Reconcile action:'* ]]; then
+  printf 'Reconcile stage omitted its configuration summary.\n%s\n' "$reconcile_output" >&2
+  exit 1
+fi
+assert_final_verdict "$reconcile_run_id" \
+  "Final verdict: PASS; lifecycle and restore verification passed; report: $stage_checkout/runs/$reconcile_run_id/report.json"
+jq -e '
+  ([.stage_timings[].target] == ["preflight", "vm-cbt-reconcile"]) and
+  all(.stage_timings[]; (.seconds | type) == "number" and (.seconds >= 0) and
+                      (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))) and
+  (.total_elapsed_seconds | type) == "number" and .total_elapsed_seconds >= 0 and
+  .status == "incremental_ready"
+' "$reconcile_info_path" >/dev/null
+
 
 # Regression for high-cardinality inventories that exceeded jq's per-argument
 # limit. Keep file sizing deterministic and cheap; the small scenario above
@@ -593,4 +636,4 @@ done
 workload_manifest_validate "$large_manifest" true
 [[ "$(jq -r '.combined.total_file_count' "$large_manifest")" == 2500 ]]
 [[ "$(workload_records_digest "$large_combined_records")" == "$(jq -r '.combined.manifest_sha256' "$large_manifest")" ]]
-printf 'PASS: multi-pass lifecycle and 1,000/500x3 workload manifests scale beyond jq argv limits.\n'
+printf 'PASS: multi-pass lifecycle, reconcile dispatch, persisted stage timings, and 1,000/500x3 workload manifests scale beyond jq argv limits.\n'

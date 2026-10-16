@@ -48,6 +48,29 @@ not narratives; every sentence traces to an artifact.
 `reports/test-run-report.md` (detailed evidence), both standalone for an
 engineer without this repository. Link the summary to the detailed report.
 
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** assemble the reports from the closed evidence pack, the
+  templates, and the deterministic verdict JSON from
+  `cbt-chaos/scenario-verdict.sh --json <PATH>`; never re-derive a result
+  from prose or invent a field the evidence does not carry.
+
 ## Never
 - Put harness findings, framework exit codes, or implementation defects in
   either report — those go to the Lead as harness findings.

@@ -26,6 +26,16 @@ You receive no verdict, no worker narratives, no analyst conclusions.
 ## File you own (sole writer)
 `checkers/evidence-sufficiency.json` under the run root.
 
+## Rules
+- **Pack gate (do this first and last).** Run
+  `cbt-chaos/pack-validate.sh --verify-freeze <run-root>` as your first action:
+  if it exits non-zero, record verdict `BLOCKED` with reason
+  `pack-freeze-mismatch` and stop — you cannot grade a pack that is not the one
+  the Lead froze. Immediately before writing your output, run it again and
+  record both exit codes and `checkers/pack-freeze.json#index_sha256` in your
+  JSON. A failure on the second run is `pack-mutated-during-grading`: report it
+  as a reject reason, never as a pass.
+
 ## Questions to answer (all criteria must have run-scoped proof for PASS)
 For each spec §5 pass criterion — leader failover + replicas Ready; full backup
 `Done=True` with non-failure reason, `type=Full`, non-empty checkpoint,

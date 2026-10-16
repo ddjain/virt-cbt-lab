@@ -30,6 +30,12 @@ tmp-*/
 
 /runs/
 
+# Follow-up experiment raw captures (per-leg cluster evidence: component logs,
+# namespace event dumps, VMI/PVC snapshots). Same class as runs/** above: the
+# narrative and its citations are committed (*.md); the raw captures stay local.
+/cbt-chaos/scenarios_v2/*/followup/*/*
+!/cbt-chaos/scenarios_v2/*/followup/*/*.md
+
 # Density pool records (expected VM lists; run adoption state lives in runs/)
 /density/
 

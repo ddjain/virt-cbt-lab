@@ -76,6 +76,28 @@ All output paths relative to the run root's `observer/watches/`:
   Also attempt `qemu-img info` on the backup artifact where the recovered
   launcher provides it; if unavailable, record the absence and reason in
   your finding.
+- **Destroyer-style pre-state witness (two stages, never a cadence).** When the
+  injection destroys state that must be proven present beforehand, periodic
+  sampling is not evidence. Stage 1, at ARMED: resolve and record the
+  *selectors* only — the target's post-action identity (e.g. the `-format` QEMU
+  node whose file ends `/cbt/<disk>.qcow2`) and how it will be resolved; claim
+  nothing about a state that cannot exist yet. Stage 2, in the destroyer's own
+  window: read the target state as soon as the destroyer's handshake file
+  (`trigger/surgery-target.json`, naming checkpoint + node + disk) exists, with
+  no sleep between attempts, and write it to the contract's mandated artifact
+  (`observer/effect/<target>-pre.json`) plus a rendezvous marker
+  `observer/effect/PRE-READY` containing the capture UTC. Keep reading until the
+  destroyer's action is observed on the target, so the post-state is captured
+  by the same loop. Never resolve the target from a projection that lags the
+  real object (the tracker advertised the r02 checkpoint 55 s after libvirt
+  created it) and never back-fill a pre-state from the destroyer's files: a
+  missed pre-read is a witness gap to report, not a value to copy.
+- **Negative claims need a positive search record.** "No `<X>` line/exists/
+  occurred" is admissible only with the command, the paths and the window it was
+  searched over, written to `observer/effect/negatives.json`
+  (`{claim, command, paths[], window_utc, count}`). Run 20261016-exp06-r02:
+  `observer/finding.md` claimed "no virt-handler line" while the captured
+  `observer/effect/virt-handler-window.log` holds 20 of them.
 - Trigger/Krkn output is a request, not proof. Prove the deletion through your
   own ctrl-pods + lease + ctrl-events watches.
 - The Lead heartbeat-probes your watch PIDs every 10 min from disk: keep

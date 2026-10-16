@@ -1,0 +1,8 @@
+# scenario-verdict.sh check sets.
+# Format: <check-set key>	<comma-separated check ids, fixed order>
+# A scenario whose directory name has no row here falls back to `default`.
+# Every id must be implemented by cbt-chaos/scenario-verdict.sh (see
+# `--list-checks`); an id with no implementation is reported UNKNOWN
+# (fail-closed), so a check set can only narrow a verdict, never widen it.
+default	run-id-consistency,injection-signal,launcher-replacement,backup-interrupted,tracker-not-advanced,cbt-recovered,same-vm-recovery,clean-lifecycle
+CBT-EXP-06	run-id-consistency,injection-pre-state,injection-effect,affected-pass-outcome,cbt-recovered,same-vm-recovery,clean-lifecycle

@@ -62,6 +62,10 @@ ambiguous target means ABORT, not improvisation.
 6. Record `trigger/action-request.json`: UTC action-request time, run/backup
    identity, target kind/name/UID, observed signal. A tool exit code or
    second-resolution Killing event cannot establish subsecond order.
+   Confirm the trigger also wrote `trigger/effect-check.json` with the
+   replacement launcher's name and UID before you report PRESERVED: readiness
+   without a recorded identity is a harness finding, not an effect, and the
+   Injection Validity Checker will REJECT an unverifiable boundary.
 
 ## Trigger failure classification
 
@@ -75,14 +79,41 @@ next run — never an in-run patch or retry.
 
 ## Output
 `trigger/command.txt` (exact argv), `trigger/trigger.log` (raw output),
-`trigger/action-request.json`, and the two preserved exit codes reported to
-the Lead. If the trigger script itself fails, preserve its logs and report
+`trigger/action-request.json` (signal time, target kind/name/UID),
+`trigger/effect-check.json` (old pod UID gone, replacement launcher name **and**
+UID, readiness, elapsed time) and `trigger/exit-statuses.json` (the separately
+preserved workflow and observer exit codes) — the last two are what the
+Injection Validity Checker reads, so neither may be left stale or missing;
+report the exit codes to the Lead too, not only to the file.
+If the trigger script itself fails, preserve its logs and report
 the failure — never retry the action without a new Lead authorization.
 If the trigger writes incremental per-stage outcome records (e.g.
 `trigger/stage-outcomes.jsonl`), preserve that file and reference it in your
 exit-status report: after any abort or kill, it — not the lifecycle
 `run.json` — is the authoritative record of which stages the script itself
 completed.
+
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** execute exactly the one approved action and record each
+  command's own exit code plus its evidence path; a non-zero exit is a
+  finding for the Lead, never a verdict of your own.
 
 ## Never
 - Edit the trigger, spec, or any state file mid-run. You own `trigger/` only.

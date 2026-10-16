@@ -41,10 +41,18 @@ Under `__REMOTE_DIR__/__SCENARIO_DIR__/runs/__RUN_ID__/trigger/`:
    through Krkn: <leader>`) into `action-request.json`:
    `{"utc_action_request": "...", "leader": "...", "backup": "vm-backup-__RUN_ID__", "vm": "vm-__RUN_ID__", "signal_line": "..."}`.
    Derive the UTC time from the log's own timestamps where present.
-4. Preserve exit statuses separately: workflow exit (make e2e full), observer
+4. Handshake with the observer before any destructive step. Publish the resolved
+   target to `trigger/surgery-target.json` (`{utc, checkpoint, disk, qemu_node}`)
+   the moment it is resolved and before the mutation, then block (bounded, then
+   abort) until `observer/effect/PRE-READY` exists and the artifact it names
+   contains the target value; reject a witness older than 60 s and fail closed
+   (exit 7) otherwise. A run whose pre-state only the injector saw is a REJECT
+   for the injection checker (runs 20261016-exp06-r02), so aborting is cheaper
+   than grading it.
+5. Preserve exit statuses separately: workflow exit (make e2e full), observer
    exit, follow-up incremental exit, and overall trigger exit in
    `exit-statuses.json`. Do not flatten them into one status.
-5. Do not leave background processes running after the script exits.
+6. Do not leave background processes running after the script exits.
 
 ## Never
 - Edit the trigger, spec, Makefile, or any state/contract file.
