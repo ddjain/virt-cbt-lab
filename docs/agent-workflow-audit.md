@@ -100,9 +100,26 @@ one monitor agent / bounded evidence analysis" rules target.
 | focused skeptical reviewer | only for a novel, high-impact, or contradictory result (`SKILL.md:222`) | criteria + evidence, not told the parent's preferred verdict | no | none |
 
 Everything else the plan's §4 table lists as "keep as a capability" is either
-an existing script (verification, summary) or prose. The 15 worker/checker/
-analyst skills the campaign docs reference are gone: `.claude/skills/<name>`
-are dangling symlinks.
+an existing script (verification, summary) or, on `main`, a real skill.
+
+**The team topology exists.** `main` carries the full tree under
+`.agents/skills/` (PR #32, `ab93fbe`): 17 skills / ≈2000 lines, including
+`cbt-chaos-team` (332 lines, the Lead orchestrator) and 13 role skills
+(preflight/observer/trigger/recovery workers, three blind checkers, report
+writer, run analyst, scenario improver, flow analyst, variation decider,
+krkn preparer). This audit's first pass saw only two skills because the
+checkout predated that consolidation — a reminder to resolve "the repo" from a
+fetched `main`, not from a stale working tree.
+
+That changes the reading of plan §4: its spawn-reduction advice is **actionable
+rather than obsolete**. The 13 roles are judgement/observation roles that must
+stay, but every repeated operational check they might perform should route to a
+script or Make target instead, and the Lead's own policy (interface, smallest
+stage, deterministic-first, spawn economy, timings, guards, bounded work) must
+match the single-agent skill. Both are now stated explicitly: see
+`cbt-chaos-team/SKILL.md` → "Lead operating policy (stage-aware,
+deterministic-first)" and the deterministic-verdict reconciliation in its
+execution sequence.
 
 ## 5. Gaps found (each is either fixed in this change set or flagged)
 
@@ -114,7 +131,7 @@ are dangling symlinks.
 | G4 | Per-stage wall clock lives only as free text in `workflow.log`; `summary.json` has no phase timings | `e2e-stage.sh:334-338`; `write-run-summary.sh` has no `phases` key | Fixed: `.stage_timings` + `.total_elapsed_seconds` persisted, `phases` surfaced |
 | G5 | Local `.claude/skills/*` symlinks were broken against this checkout because the worker skills were not present in the tree, while the two live skills hard-referenced `krkn-scenario` / `cbt-chaos-krkn-preparer` as if they must exist | `.claude/skills/` (untracked); `cbt-chaos-run/SKILL.md:88`; `cbt-chaos-issue-triage/SKILL.md:63,65` | Fixed twice over: the skill tree is consolidated under `.agents/skills/` (upstream `ab93fbe`, PR #32), and both live skills now phrase those dependencies conditionally ("if the active harness provides it, otherwise …"), so a missing skill degrades to a documented fallback instead of a dead reference |
 | G6 | `make help` advertises `make e2e TYPE=reconcile` but the TYPE validation rejects it (branch unreachable) | `Makefile:156`; `e2e-stage.sh:345-362,487-493` | Fixed: `reconcile` accepted end to end |
-| G7 | Skills require only `make help`; `make stage-list`, the `STAGE_SKIP_PREFLIGHT` prohibition, and the shared audit doc were missing | `SKILL.md:83`; plan §12 | Fixed in both skills |
+| G7 | Skills require only `make help`; `make stage-list`, the `STAGE_SKIP_PREFLIGHT` prohibition, the deterministic verdict and the shared audit doc were missing | `SKILL.md:83`; plan §12 | Fixed in the runner, triage and team (`cbt-chaos-team`) skills |
 | G8 | Skills demand a `--plan` trigger rehearsal that no trigger implemented | `cbt-chaos-issue-triage/SKILL.md:98,107` | Fixed: CBT-F-01 trigger gained `--plan` |
 | G9 | `monitor.sh` waits unbounded for planned-but-never-run backups | `monitor.sh:66,211` | Flagged (see `docs/agent-workflow-flag.md`) |
 | G10 | No test refuses destructive `make clean-all` during triage; `./preflight` itself is never executed by a test | `clean-all.sh:6-12`; `test-stage-dispatch.sh:102-109` | Flagged: needs a live-cluster or stubbed preflight harness |

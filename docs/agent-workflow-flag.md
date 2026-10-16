@@ -26,12 +26,13 @@ this iteration), **AMBIGUOUS**.
 - **Risk:** "choose the smallest valid stage" is only safe with the state machine in view; without it, an agent will retry a stage the lifecycle forbids and report a harness failure.
 - **Instead:** read `runs/<id>/run.json status` (+ `make stage-list`) before selecting a stage; treat a rejection as a state error, not a product failure. Documented in `docs/agent-workflow-audit.md` §1-2 and in the skills.
 
-## F3 — §4 reduces "unnecessary spawns" that no longer exist (CONTRADICTS-REPO)
+## F3 — §4's spawn-reduction table is actionable, but its premise needed the right tree (CORRECTED)
 
-- **Plan:** §4 table ("keep `chaos test team` as lead", "keep one focused monitor", make evidence/injection/CBT verifiers conditional, …) and §3's four review lenses are written as if a 16-agent team is running today.
-- **Evidence:** `.agents/skills/` contains exactly two skills (`cbt-chaos-run`, `cbt-chaos-issue-triage`); `.claude/skills/` has 15 dangling symlinks to deleted worker/checker/analyst skills; the current run skill already forbids a second analyst agent (`SKILL.md:160`) and spawns exactly one monitor. Campaign docs (`docs/campaign-team-and-methodology.md:5`, `cbt-chaos/campaign-progress.md`) still describe the old team.
-- **Risk:** effort spent "removing agents" that are already gone, while the real defect — stale references to non-existent skills in the live skills — stays unfixed.
-- **Instead:** treat the work as reference repair (done) and as a rule for future spawns; do not reintroduce a lead/worker skill tree.
+- **Plan:** §4 table ("keep `chaos test team` as lead", "keep one focused monitor", make evidence/injection/CBT verifiers conditional, …) and §3's four review lenses.
+- **Evidence:** on `main` (PR #32, `ab93fbe`) the full topology exists under `.agents/skills/`: `cbt-chaos-team` (332 lines) plus 13 role skills and `krkn-scenario`. The first audit pass saw only two skills because the working tree predated that consolidation, so the review's claim that "the §4 table describes a team that no longer exists" was wrong for `main` — corrected here.
+- **Actual state:** the single-agent runner already spawns one monitor and forbids a second analyst, which satisfies §4's "one focused monitor". The team Lead already forbids a duplicate observer and requires keyed contracts. What was missing is that neither the Lead nor the runner routed repeated operational checks to scripts: no skill referenced `make stage-list`, the deterministic evaluator, the `STAGE_SKIP_PREFLIGHT` prohibition or the shared audit document.
+- **Instead:** keep the 13 roles (they are judgement/observation roles, not relays), and add the missing policy layer — done in both the runner skill and `cbt-chaos-team` ("Lead operating policy", deterministic-verdict reconciliation, `--plan` before `resync`, timings-as-evidence, spawn economy).
+- **Process lesson:** resolve "the repository" from a fetched `main` before auditing a plan against it; an audit against a stale working tree produced a wrong conclusion about which skills exist.
 
 ## F4 — Model-call/token metrics are not measurable in this harness (SCOPED-OUT → substituted)
 

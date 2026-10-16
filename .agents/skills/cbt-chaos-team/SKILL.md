@@ -82,6 +82,55 @@ Rules that bind every role:
   history, or reports during a live run. Post-run agents may read the current
   run's closed artifacts only, never a live run's.
 
+## Lead operating policy (stage-aware, deterministic-first)
+
+The Lead owns stage selection and mutation authority, so the plan-then-run
+policy belongs here rather than in each role:
+
+- **Interface.** Read `make help` (human-readable) and `make stage-list` (the
+  machine-readable stage/target/args/purpose table), and consult
+  `docs/agent-workflow-audit.md` — the shared capability matrix (inputs,
+  outputs, exit codes, read-only vs mutating, retries/timeouts, and what each
+  entry point proves and does *not* prove). Never assume a variable is honoured
+  merely because Make accepts it, and confirm the staged interface exists in
+  the active checkout before relying on it.
+- **Smallest valid stage per leg.** Prefer the narrowest stage that answers the
+  current hypothesis (`vm-backup`, `vm-cbt-backup`, `vm-cbt-verify`,
+  `vm-cbt-restore-test`, `monitor`, `run-summary`) over a full
+  `make e2e`/`TYPE=all` rerun. Stages are state-machine transitions, not freely
+  re-runnable commands: check `runs/<id>/run.json` state before choosing one,
+  and treat a rejection as a state error rather than a product failure. A full
+  fresh lifecycle is correct only when the scenario's own acceptance criteria
+  demand it (for example the separate clean restore lifecycle in CBT-F-01).
+- **Deterministic first.** Reuse the existing script or Make target for every
+  repeated operational check; spawn a role only for judgement the scripts
+  cannot express. `cbt-chaos/scenario-verdict.sh` (see `cbt-chaos-run`)
+  computes the objective verdict from recorded artifacts and exits non-zero
+  unless every mandatory check passed: checkers grade the evidence, the
+  evaluator computes the outcome, and neither replaces the other. A script
+  `PASS` carrying an `UNKNOWN` check is at most PASS WITH FINDINGS; a script
+  `FAIL`/`INCONCLUSIVE`/`BLOCKED`/`INVALID` is reported as returned.
+- **Spawn economy.** One Observer per run (below); the three Checkers are the
+  only judgement agents; never spawn an agent to perform what a documented
+  script or Make target already does, and never spawn a worker per
+  verification step. The Report Writer assembles its output from the evaluator
+  JSON, the evidence pack and the templates — it does not re-derive results
+  from prose.
+- **Timings are evidence.** Record each leg's duration
+  (`cbt-chaos/scenarios_v2/<id>/runs/<RUN_ID>/driver-timings.json`,
+  `run.json .stage_timings`, `summary.json .phases`) and attribute the run's
+  wall clock per phase at closeout.
+- **Rehearse before syncing.** After any trigger edit, and before the single
+  `make resync` of the run: `bash -n`, confirm every variable the action
+  command references is still defined, and run `bash <trigger> --plan`.
+- **Never bypass the guards.** No `make clean-all`, and never
+  `STAGE_SKIP_PREFLIGHT=true`: preflight is the fail-closed identity/resource
+  gate for every mutating stage.
+- **Bounded work.** Every spawned task carries a wall-clock budget, an attempt
+  cap and a terminal status (`COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`);
+  the heartbeat audit and the matrix stop conditions are the enforcement
+  points.
+
 ## Per-run state files (single source of truth)
 
 Every run has one root: the scenario's `runs/<RUN_ID>/` directory on the
@@ -231,14 +280,16 @@ Checkers must not share blind spots with the workers they grade:
 ## Execution sequence (Lead checklist)
 
 1. Resolve scenario, `RUN_ID`, lifecycle `NAME`/`VM` per `cbt-chaos-run`
-   Phase 0; create run root, `ledger.jsonl`, initial `state.json`
-   (`resolved`).
+   Phase 0; read `make help` and `make stage-list` and select the smallest
+   valid stage for the leg; create run root, `ledger.jsonl`, initial
+   `state.json` (`resolved`).
 2. Issue `contracts/preflight.md`, spawn Preflight Worker → GO/NO-GO.
    Capacity preflight is mandatory: destination PVC headroom must fit the
    planned full AND follow-up incremental (prior starvation incident).
-3. On GO: `make resync` (only sync of the run), issue observer and trigger
-   contracts, spawn Observer Worker. Accept ARMED only after independent
-   watch-health verification; transition `armed`.
+3. On GO: run the trigger's `--plan` rehearsal (and the variable-definition
+   check after any edit), then `make resync` (the only sync of the run), issue
+   observer and trigger contracts, spawn Observer Worker. Accept ARMED only
+   after independent watch-health verification; transition `armed`.
 4. Spawn Trigger Worker; transition `executing`. Wait for PRESERVED before
    any recovery; transition `preserved`. Heartbeat audit is active during
    `executing`, `recovering`, and any phase expected to exceed 10 minutes.
@@ -250,9 +301,16 @@ Checkers must not share blind spots with the workers they grade:
    Phase 4; assign PASS / PASS WITH FINDINGS / FAIL / BLOCKED; transition
    `checked` → `verdict`. Any verified checker REJECT on injection or
    evidence forces BLOCKED, never a downgraded PASS.
-7. Spawn Report Writer; spawn Report Fidelity Checker (max 2 revision loops,
-   then stop for human). Rsync reports both ways, `make pull-reports`;
-   transition `reported` → `closed`.
+   Run `cbt-chaos/scenario-verdict.sh` for the run's objective verdict and
+   reconcile it with the checker verdicts: the script verdict is the objective
+   core (a non-PASS verdict is never upgraded by prose, and a PASS carrying an
+   `UNKNOWN` check is at most PASS WITH FINDINGS), while a disagreement
+   between the script and the checkers is itself a harness finding to resolve
+   before a verdict is assigned. Record the script's JSON path in the ledger.
+7. Spawn Report Writer (assembling from the evaluator JSON, the evidence pack
+   and the templates, not re-derived prose); spawn Report Fidelity Checker
+   (max 2 revision loops, then stop for human). Rsync reports both ways,
+   `make pull-reports`; transition `reported` → `closed`.
 8. Post-run (firewall lifted): spawn Run Analyst, Scenario Improver, CBT Flow
    Analyst, Variation Decider in one parallel batch, each with the closed
    run's artifacts. Outputs to scenario-level files, not the run directory.
