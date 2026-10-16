@@ -283,3 +283,25 @@ These guidelines exist because real scenario metadata is the single source of tr
 - **Surface relevant warnings**: Use the scenario description and any per-field description/validation-message text to call out things the user should know -- these often prevent common mistakes. If `krknctl.has_rollback` is true (or `krknctl describe` mentions rollback), mention that rollback is available.
 
 - **The Quay API is public** -- no authentication needed for `krkn-chaos/krkn-hub`. Use `-L` with curl (follow redirects) or add a trailing `/` to the tag endpoint. It's only needed as a krknctl fallback or for the krkn-hub env var mapping.
+
+## Shared harness policy
+
+This skill builds commands; the run that fires them is governed by the same
+policy as every other role:
+
+- **Interface:** read `make help`, `make stage-list`, and
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** work inside the contract's wall-clock budget
+  and attempt cap, and end in exactly one of `COMPLETED`, `FAILED`, `TIMED_OUT`,
+  `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** reuse the existing script or Make target for every
+  repeated check; a new script needs an offline test under `tests/` wired into
+  `make test`, a row in `docs/agent-workflow-audit.md`, and a skill reference.
+- **This role:** a command you produce is a proposal — validate it against live
+  `krknctl` metadata and `--dry-run`, and never execute the disruption yourself.

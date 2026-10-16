@@ -19,6 +19,39 @@ CONTROLLER_NAMESPACE=openshift-cnv
 VM_NAME="vm-${RUN_ID}"
 BACKUP_NAME="vm-backup-${RUN_ID}"
 
+if [[ "${1:-}" == "--plan" ]]; then
+  # Rehearsal only: resolves identity and prints the exact commands, contacts no
+  # cluster, mutates nothing, and creates no directory.
+  printf '=== CBT-F-03 plan rehearsal: no cluster contact, no mutation, no directory creation ===\n'
+  printf 'scenario:          CBT-F-03\n'
+  printf 'RUN_ID:            %s\n' "$RUN_ID"
+  printf 'NAMESPACE:         %s\n' "$NAMESPACE"
+  printf 'controller ns:     %s\n' "$CONTROLLER_NAMESPACE"
+  printf 'VM_NAME:           %s\n' "$VM_NAME"
+  printf 'full backup:       %s\n' "$BACKUP_NAME"
+  printf 'lifecycle run dir: %s\n' "$ROOT_DIR/runs/$RUN_ID"
+  collision=false
+  if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
+    printf 'Run ID %s already exists in this checkout; refusing to reuse it.\n' "$RUN_ID" >&2
+    collision=true
+  fi
+  if [[ "$collision" == true ]]; then
+    printf 'local precondition check: COLLISION (pick a fresh RUN_ID)\n'
+    exit 1
+  fi
+  printf 'local precondition check: clear\n'
+  printf 'planned stage 1:   make e2e TYPE=full NAME=%s KUBECONFIG_PATH=<redacted>\n' "$RUN_ID"
+  printf 'disruption:        delete the virt-controller leader pod named by the\n'
+  printf '                   `virt-controller` Lease in %s, once the full backup is\n' "$CONTROLLER_NAMESPACE"
+  printf '                   Progressing and not Done (failover to the standby controller)\n'
+  printf 'planned stage 2:   make e2e TYPE=incremental VM=%s KUBECONFIG_PATH=<redacted>\n' "$VM_NAME"
+  printf 'observed result:   whether failover left the backup/checkpoint chain intact and\n'
+  printf '                   the post-chaos incremental/restore verification passed\n'
+  printf 'live collision check (oc get vm,vmbackup,vmbackuptracker,pvc,service,datavolume): skipped in --plan mode\n'
+  printf 'evidence written by a real run (nothing is written by --plan): runs/%s/ artifacts only\n' "$RUN_ID"
+  exit 0
+fi
+
 if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
   printf 'Run ID %s already exists in this checkout; refusing to reuse it.\n' "$RUN_ID" >&2
   exit 1

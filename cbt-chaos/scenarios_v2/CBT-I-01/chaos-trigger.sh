@@ -34,7 +34,10 @@ GUEST_INCREMENTAL_PASSES="${GUEST_INCREMENTAL_PASSES:-1}"
 GUEST_FILE_SIZE_MIN_MIB="${GUEST_FILE_SIZE_MIN_MIB:-15}"
 GUEST_FILE_SIZE_MAX_MIB="${GUEST_FILE_SIZE_MAX_MIB:-20}"
 VMI_READY_TIMEOUT="${VMI_READY_TIMEOUT:-600}"
-HOG_NODE="d38-h18-000-r660"  # expected VM node (placement guard only)
+# Optional expected VM node for the placement-guard log line. No default: an
+# environment-specific node name must never be committed (AGENTS.md). Set
+# HOG_NODE in the run environment to compare against a specific node.
+HOG_NODE="${HOG_NODE:-}"
 export NAMESPACE
 
 VM_NAME="vm-${RUN_ID}"
@@ -43,15 +46,93 @@ TRACKER_NAME="vm-tracker-${RUN_ID}"
 FULL_BACKUP_NAME="vm-backup-${RUN_ID}"
 EVIDENCE_DIR="$ROOT_DIR/cbt-chaos/scenarios_v2/CBT-I-01/runs/$RUN_ID"
 
+if [[ "${1:-}" == "--plan" ]]; then
+  # Rehearsal only: resolves identity and prints the exact commands, contacts no
+  # cluster, mutates nothing, and creates no directory.
+  printf '=== CBT-I-01 plan rehearsal: no cluster contact, no mutation, no directory creation ===\n'
+  printf 'scenario:          CBT-I-01\n'
+  printf 'RUN_ID:            %s\n' "$RUN_ID"
+  printf 'NAMESPACE:         %s\n' "$NAMESPACE"
+  printf 'VM_NAME:           %s\n' "$VM_NAME"
+  printf 'VMI_NAME:          %s\n' "$VMI_NAME"
+  printf 'full backup:       %s\n' "$FULL_BACKUP_NAME"
+  printf 'tracker name:      %s\n' "$TRACKER_NAME"
+  printf 'scenario run dir:  %s\n' "$EVIDENCE_DIR"
+  printf 'lifecycle run dir: %s\n' "$ROOT_DIR/runs/$RUN_ID"
+  collision=false
+  if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
+    printf 'Run ID %s already exists locally; refusing to reuse it.\n' "$RUN_ID" >&2
+    collision=true
+  fi
+  if [[ -d "$EVIDENCE_DIR" ]]; then
+    if [[ ! -d "$EVIDENCE_DIR/observer" ]]; then
+      printf 'Scenario run dir exists without the pre-armed observer directory: %s\n' "$EVIDENCE_DIR" >&2
+      collision=true
+    fi
+    existing_evidence="$(find "$EVIDENCE_DIR" -mindepth 1 -maxdepth 1 \
+      ! -name observer ! -name contracts ! -name trigger ! -name recovery \
+      ! -name checkers ! -name reports ! -name ledger.jsonl ! -name state.json \
+      ! -name preflight.json -print -quit)"
+    if [[ -n "$existing_evidence" ]]; then
+      printf 'Run ID %s already has run output (%s); refusing to reuse it.\n' \
+        "$RUN_ID" "$existing_evidence" >&2
+      collision=true
+    elif [[ -d "$EVIDENCE_DIR/trigger" ]] &&
+         [[ -n "$(ls -A "$EVIDENCE_DIR/trigger" 2>/dev/null || true)" ]]; then
+      printf 'Run ID %s already has trigger evidence; refusing to reuse it.\n' "$RUN_ID" >&2
+      collision=true
+    else
+      printf 'scenario run dir: pre-armed (only run scaffolding/observer output present, no trigger evidence)\n'
+    fi
+  fi
+  if [[ "$collision" == true ]]; then
+    printf 'local precondition check: COLLISION (pick a fresh RUN_ID)\n'
+    exit 1
+  fi
+  printf 'local precondition check: clear\n'
+  printf 'planned stage 1:   make e2e TYPE=full NAME=%s VM_OS=%s MANIFEST_VARIANT=%s \\\n' \
+    "$RUN_ID" "$VM_OS" "$MANIFEST_VARIANT"
+  printf '                     NAMESPACE=%s GUEST_BASE_FILE_COUNT=%s GUEST_INCREMENTAL_FILE_COUNT=%s \\\n' \
+    "$NAMESPACE" "$GUEST_BASE_FILE_COUNT" "$GUEST_INCREMENTAL_FILE_COUNT"
+  printf '                     GUEST_INCREMENTAL_PASSES=%s GUEST_FILE_SIZE_MIN_MIB=%s GUEST_FILE_SIZE_MAX_MIB=%s \\\n' \
+    "$GUEST_INCREMENTAL_PASSES" "$GUEST_FILE_SIZE_MIN_MIB" "$GUEST_FILE_SIZE_MAX_MIB"
+  printf '                     KUBECONFIG_PATH=<redacted>\n'
+  printf 'disruption:        oc delete vmi %s -n %s --wait=false\n' "$VMI_NAME" "$NAMESPACE"
+  printf '                   (only after the full backup is Done with a recorded checkpoint,\n'
+  printf '                   and only after the recreated VMI reports a new uid and Ready)\n'
+  printf 'planned stage 2:   make e2e TYPE=incremental VM=%s NAMESPACE=%s KUBECONFIG_PATH=<redacted>\n' \
+    "$VM_NAME" "$NAMESPACE"
+  printf 'observed result:   resulting backup type of vm-incremental-%s-p01 (incremental vs full fallback)\n' "$RUN_ID"
+  printf 'live collision check (oc get vm,vmi,vmbackup,vmbackuptracker,pvc,service,datavolume): skipped in --plan mode\n'
+  printf 'evidence written by a real run (nothing is written by --plan): %s/\n' "$EVIDENCE_DIR"
+  exit 0
+fi
+
 if [[ -e "$ROOT_DIR/runs/$RUN_ID" ]]; then
   printf 'Run ID %s already exists locally; refusing to reuse it.\n' "$RUN_ID" >&2
   exit 1
 fi
 if [[ -d "$EVIDENCE_DIR" ]]; then
+  # Pre-armed state is expected: the observer writes observer/ before this
+  # trigger runs, and the Lead pre-creates contracts/, trigger/, recovery/,
+  # checkers/, reports/ plus ledger.jsonl/state.json/preflight.json. Only real
+  # run output is a collision.
+  if [[ ! -d "$EVIDENCE_DIR/observer" ]]; then
+    printf 'Scenario run dir exists without the pre-armed observer directory: %s\n' "$EVIDENCE_DIR" >&2
+    exit 1
+  fi
   existing_evidence="$(find "$EVIDENCE_DIR" -mindepth 1 -maxdepth 1 \
-    ! -name observer -print -quit)"
-  if [[ -n "$existing_evidence" ]] || [[ ! -d "$EVIDENCE_DIR/observer" ]]; then
-    printf 'Run ID %s already has evidence; refusing to reuse it.\n' "$RUN_ID" >&2
+    ! -name observer ! -name contracts ! -name trigger ! -name recovery \
+    ! -name checkers ! -name reports ! -name ledger.jsonl ! -name state.json \
+    ! -name preflight.json -print -quit)"
+  if [[ -n "$existing_evidence" ]]; then
+    printf 'Run ID %s already has run output (%s); refusing to reuse it.\n' \
+      "$RUN_ID" "$existing_evidence" >&2
+    exit 1
+  fi
+  if [[ -d "$EVIDENCE_DIR/trigger" ]] &&
+     [[ -n "$(ls -A "$EVIDENCE_DIR/trigger" 2>/dev/null || true)" ]]; then
+    printf 'Run ID %s already has trigger evidence; refusing to reuse it.\n' "$RUN_ID" >&2
     exit 1
   fi
 fi
@@ -131,7 +212,7 @@ printf 'VMI recreated: new uid %s (old %s), new launcher %s (old %s), Ready at %
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 
 vmi_node="$(oc get vmi "$VMI_NAME" -n "$NAMESPACE" -o jsonpath='{.status.nodeName}')"
-printf 'VM %s ran on node %s (expected %s).\n' "$VM_NAME" "${vmi_node:-unavailable}" "$HOG_NODE" >&2
+printf 'VM %s ran on node %s (expected %s).\n' "$VM_NAME" "${vmi_node:-unavailable}" "${HOG_NODE:-<unset>}" >&2
 
 oc get vmi "$VMI_NAME" -n "$NAMESPACE" -o yaml >"$EVIDENCE_DIR/vmi-recreated.yaml" 2>/dev/null || true
 oc get vmbackup "$FULL_BACKUP_NAME" -n "$NAMESPACE" -o yaml >"$EVIDENCE_DIR/full-backup.yaml" 2>/dev/null || true

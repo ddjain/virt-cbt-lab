@@ -30,7 +30,7 @@ Plan one CBT Chaos v2 test from its Jira issue through implementation-ready scen
 
 ## Phase 1 — Resolve the issue
 
-1. Validate `{{ scenario_id }}` exactly against `cbt-chaos/scenarios_v2/{{ scenario_id }}/jira-issue.md`. Do not guess a similarly named directory or create a missing issue.
+1. Validate `{{ scenario_id }}` exactly against `cbt-chaos/scenarios_v2/{{ scenario_id }}/jira-issue.md`. Do not guess a similarly named directory or create a missing issue. If `jira-issue.md` is absent but a `scenario-spec.md` exists in that exact directory, continue from the spec (legacy or known-case triage), record in the spec that the canonical issue artifact was missing, and keep the criteria that the spec does carry. If neither file exists, stop and report the gap rather than inventing an issue.
 2. Read the complete issue file and, where useful, its matching row in `cbt-chaos/scenarios_v2/cbt-chaos-test-plan-v2.csv`. Extract every field: workflow, objective, target, action, injection window and signal, duration, expected behavior, recovery, verification, outcome, priority, technical scenario, and phase.
 3. Identify any conflict between what the issue requests and what the CBT implementation or cluster can actually exercise. At the beginning, ask one focused batch of follow-up questions before planning or mutating the cluster only if, after reading the issue, CSV row, and available repo/cluster state, at least one of the following is still genuinely undetermined: which workflow (full vs. incremental vs. other staged mode) applies, which resource/component is the target, or what the issue's expected outcome actually is. Do not ask about anything derivable from the issue, repository, or cluster; proceed directly to planning once those three are each resolvable from available evidence.
 
@@ -104,6 +104,14 @@ If neither Krkn nor a narrowly scoped `oc`/`kubectl` event-driven fallback can m
 - After `cbt-chaos-run` completes (including non-zero exits), run `make pull-reports` from the local checkout. It pulls the remote root `runs/` tree only; also use a targeted, quoted `rsync` to pull the selected `cbt-chaos/scenarios_v2/<scenario_id>/runs/<RUN_ID>/` folder to the matching local folder. Verify local JSON and observer evidence are present and parseable. Do not run `make resync` after the run.
 - Confirm no kubeconfig/credential content, private hostnames, or environment-specific absolute paths were added.
 - Never run `make clean-all`. Report the command/workflow actually used, live evidence and outcome, generated files, validation performed, and any unproven behavior.
+
+## Deterministic tools, tests, and bounded investigation
+
+- Apply the deterministic-tool-first policy defined in `cbt-chaos-run` here too: inspect the existing script, Make target, shared helper, offline test, and its `docs/agent-workflow-audit.md` row before repeating a check in prose, and never add a second script for an assertion an existing one already makes.
+- After editing any script, generated trigger, or Make target, run `make test` (the offline suite under `tests/`) and report the result. `bash -n`, the variable-definition check, `--plan`, and Krkn `--dry-run` are required static validation, but they are not a test. A new script needs an offline test wired into `make test` and a row in `docs/agent-workflow-audit.md` before this skill relies on it.
+- Triage stays static by design: do not open a live investigation from here. Hand the scenario to `cbt-chaos-run` when live evidence is required.
+- When a live run does produce an unexpected failure, ambiguous or contradictory evidence, an unexplained deterministic-verifier mismatch, or a meaningful coverage gap, route it to a bounded investigation whose contract states the question and scope, the evidence already collected with its artifact paths, the hypothesis under test, the single smallest experiment that distinguishes the plausible causes, the expected observation for each outcome, the exact stage target and verification script, and the limits — a wall-clock budget, a maximum attempt count, the terminal statuses `COMPLETED`/`FAILED`/`TIMED_OUT`/`BLOCKED` — plus its stop conditions (budget or attempt cap reached, no informative experiment remaining, environment unhealthy, target identity ambiguous, cleanup failed).
+- A missing spec, trigger, or canonical issue artifact changes the plan, not the discipline: follow the Phase 1 rule, keep whatever criteria the canonical artifacts do carry, and never substitute a guessed scenario.
 
 ## Clarifying questions
 

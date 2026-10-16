@@ -37,9 +37,14 @@
 #   run-id-consistency   lifecycle run.json run_id/vm_name match --run-id and
 #                        no trigger/observer artifact path references another run
 #   injection-signal     trigger evidence records an active-copy signal naming the
-#                        injection target (launcher) pod and its UID
-#   launcher-replacement trigger effect-check.json proves the old pod UID is gone
-#                        and a replacement pod became Ready
+#                        injection target (launcher) pod and its UID, the signal
+#                        does not predate the observer arming instant, and an
+#                        independent observer marker or watch stream exists (the
+#                        injector is never the sole authority for its injection)
+#   launcher-replacement trigger effect-check.json proves the old pod UID is gone,
+#                        a replacement pod became Ready, and the removed pod is
+#                        the pod the injection signal named (a provably different
+#                        pod is a wrong-target injection)
 #   backup-interrupted   the interrupted full backup is terminal+failed
 #                        (type=Full, Done=True, failure reason, failed PVC kept)
 #   tracker-not-advanced the tracker held no checkpoint at failure and none is
@@ -60,7 +65,9 @@
 #                 concluded when the environment itself was blocked.
 #   INVALID       the injected condition was never exercised: injection-signal
 #                 and launcher-replacement are FAIL/UNKNOWN while
-#                 backup-interrupted shows the full backup SUCCEEDED.
+#                 backup-interrupted shows the full backup SUCCEEDED, or the
+#                 removed pod is provably not the pod the signal named
+#                 (wrong-target injection).
 #   FAIL          any check FAILed.
 #   INCONCLUSIVE  no FAIL, but some check is UNKNOWN, or clean-lifecycle is
 #                 NOT_APPLICABLE (no --clean-lifecycle-run) — the verdict can be
@@ -268,6 +275,18 @@ status_of() {
 FULL_BACKUP_SUCCEEDED=false
 FULL_BACKUP_REASON=''
 FULL_BACKUP_RECORD='{}'
+# Set when the pod the trigger removed is provably not the pod the injection
+# signal named: the injected condition then targeted the wrong resource.
+WRONG_TARGET=''
+
+# Converts an RFC3339 UTC timestamp to epoch seconds; prints nothing when the
+# platform cannot parse it, so a comparison is skipped rather than guessed.
+utc_epoch() { # <timestamp>
+  local ts="${1:-}"
+  [[ -n "$ts" ]] || return 0
+  date -u -d "$ts" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || true
+  return 0
+}
 
 # --------------------------------------------------------------------------
 # 1. run-id-consistency
@@ -399,6 +418,44 @@ check_injection_signal() {
     active_copy=true
   fi
 
+  # A signal recorded before the observer's own arming instant contradicts the
+  # watch window: a stale log line from an earlier backup on a long-lived pod
+  # would produce exactly this shape. The timing claim is then not decidable.
+  local armed_utc armed_epoch signal_utc signal_epoch
+  armed_utc="$(jq -r '.utc_observer_armed // .since_time // ""' <<<"$ar_json" 2>/dev/null || true)"
+  signal_utc="$(jq -r '.signal_utc // .utc_action_request // ""' <<<"$ar_json" 2>/dev/null || true)"
+  if [[ -n "$armed_utc" && -n "$signal_utc" ]]; then
+    armed_epoch="$(utc_epoch "$armed_utc")"
+    signal_epoch="$(utc_epoch "$signal_utc")"
+    if [[ -n "$armed_epoch" && -n "$signal_epoch" ]] && ((signal_epoch < armed_epoch)); then
+      add_check injection-signal UNKNOWN \
+        'the recorded signal falls inside the observer watch window' \
+        "contradictory timing: signal_utc=$signal_utc predates observer_armed_utc=$armed_utc (stale-signal shape)" \
+        "${evidence[@]}"
+      return 0
+    fi
+  fi
+
+  # The injecting agent cannot be the sole authority for its own injection
+  # (verdict contract): the run must also carry observer evidence that an
+  # independent witness was armed. Without it the timing claim is undecided.
+  local corroboration=''
+  local candidate
+  for candidate in "$OBSERVER_DIR/ARMED" "$OBSERVER_DIR/PRESERVED" "$OBSERVER_DIR/FINAL" \
+                   "$OBSERVER_DIR/finding.md"; do
+    if [[ -s "$candidate" ]]; then corroboration="$candidate"; break; fi
+  done
+  if [[ -z "$corroboration" && -d "$OBSERVER_DIR/watches" ]]; then
+    corroboration="$(find "$OBSERVER_DIR/watches" -maxdepth 1 -type f -print -quit 2>/dev/null || true)"
+  fi
+  if [[ -z "$corroboration" ]]; then
+    add_check injection-signal UNKNOWN \
+      'independent observer evidence corroborates the injection' \
+      "pod=${pod:-<absent>} uid=${uid:-<absent>} signal=\"${signal:-<absent>}\"; no observer handoff marker (ARMED/PRESERVED/FINAL/finding.md) or watch stream exists under $OBSERVER_DIR, so the injector is the sole authority" \
+      "${evidence[@]}" "$OBSERVER_DIR"
+    return 0
+  fi
+
   if [[ -n "$pod" && -n "$uid" && "$active_copy" == true ]]; then
     add_check injection-signal PASS "$expected" \
       "pod=$pod uid=$uid signal=\"$signal\" (source: $signal_source)" "${evidence[@]}"
@@ -463,6 +520,28 @@ check_launcher_replacement() {
   [[ "$new_uid" == "null" ]] && new_uid=''
 
   local actual="old=${old_name:-<unnamed>}(${old_uid:-<no uid>}) gone=$old_gone replacement=${new_name:-<unnamed>}(${new_uid:-<no uid>}) ready=$new_ready"
+
+  # The removed pod must be the pod the injection signal named. Only checked
+  # when both artifacts name one: a scenario whose effect-check does not record a
+  # pod cannot be judged here, and must not be failed for it.
+  local signalled_uid=''
+  if [[ -s "$ACTION_REQUEST" ]]; then
+    signalled_uid="$(jq -rn "$JQ_DEFS"'
+      [($ARGS.named.a.launcher_pod_uid), ($ARGS.named.a.target_pod_uid), ($ARGS.named.a.pod_uid),
+       ($ARGS.named.a.launcher_uid), ($ARGS.named.a.launcher_pod|uidof),
+       ($ARGS.named.a.target_pod|uidof), ($ARGS.named.a.pod|uidof)] | firststr' \
+      --argjson a "$(jq_doc "$ACTION_REQUEST" 2>/dev/null || printf '{}')" 2>/dev/null || true)"
+  fi
+  [[ "$signalled_uid" == "null" ]] && signalled_uid=''
+  if [[ -n "$signalled_uid" && -n "$old_uid" && "$signalled_uid" != "$old_uid" ]]; then
+    WRONG_TARGET="$signalled_uid"
+    add_check launcher-replacement FAIL \
+      'the removed pod is the pod the injection signal named' \
+      "$actual; the signal named UID $signalled_uid, but a different pod was removed" \
+      "${evidence[@]}" "$ACTION_REQUEST"
+    return 0
+  fi
+
   if [[ -n "$old_uid" && -n "$new_uid" && "$old_uid" != "$new_uid" &&
         "$old_gone" == true && "$new_ready" == true ]]; then
     add_check launcher-replacement PASS "$expected" "$actual" "${evidence[@]}"
@@ -900,7 +979,10 @@ else
   done
   c2="$(status_of injection-signal)"
   c3="$(status_of launcher-replacement)"
-  if [[ ( "$c2" == "FAIL" || "$c2" == "UNKNOWN" ) &&
+  if [[ -n "$WRONG_TARGET" ]]; then
+    verdict='INVALID'
+    verdict_reason="the injection targeted the wrong resource: the signal named launcher pod UID $WRONG_TARGET, but a different pod was removed"
+  elif [[ ( "$c2" == "FAIL" || "$c2" == "UNKNOWN" ) &&
         ( "$c3" == "FAIL" || "$c3" == "UNKNOWN" ) &&
         "$FULL_BACKUP_SUCCEEDED" == true ]]; then
     verdict='INVALID'

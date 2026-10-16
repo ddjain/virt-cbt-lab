@@ -63,6 +63,28 @@ the correct command, and can Krkn express it at all?"
   insufficient
 - Explicit limitations or ambiguities the caller must resolve
 
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** design-time and proposal-only — never execute the disruption
+  live, never edit a trigger mid-run, and validate command construction
+  against live `krknctl` metadata and `--dry-run` instead of memory.
+
 ## Never
 - Execute the disruption live, edit trigger scripts, or mutate cluster
   state — you are design-time only; the Trigger Worker executes, the Lead

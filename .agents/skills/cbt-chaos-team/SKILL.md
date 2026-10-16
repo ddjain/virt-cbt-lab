@@ -110,6 +110,13 @@ policy belongs here rather than in each role:
   evaluator computes the outcome, and neither replaces the other. A script
   `PASS` carrying an `UNKNOWN` check is at most PASS WITH FINDINGS; a script
   `FAIL`/`INCONCLUSIVE`/`BLOCKED`/`INVALID` is reported as returned.
+- **Reuse before you build.** Inspect the script, Make target, test, and
+  `docs/agent-workflow-audit.md` row before adding anything: a new script is
+  justified only by an assertion none of them makes. It needs an offline test
+  under `tests/` wired into `make test`, an audit-matrix row, and a skill
+  reference in the same change, and `make test` must pass after any script,
+  Makefile, or skill edit — an edit to what the flow executes is not verified
+  by inspection alone (see `cbt-chaos-run`'s deterministic-tools policy).
 - **Spawn economy.** One Observer per run (below); the three Checkers are the
   only judgement agents; never spawn an agent to perform what a documented
   script or Make target already does, and never spawn a worker per

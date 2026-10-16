@@ -77,6 +77,18 @@ jq -n \
    elif $overall_passed == true and $run_status == "complete" then "PASS"
    elif $overall_passed == false or ($run_status | test("(^|_)failed$")) then "FAIL"
    else "INCOMPLETE" end) as $verdict |
+  # Two scopes must never be confused: the lifecycle verdict is what the whole
+  # run state and its verification support, while a recovery invocation can be a
+  # legitimate PASS for its own action even though the interrupted lifecycle
+  # never completed its chain/restore verification.
+  (if ($invocation_type == "recover" and
+       ($invocation_result == "BLOCKED" or
+        ($invocation_result == "PASS" and any($recovery_attempts[]?; .status == "success"))))
+   then "recovery_invocation" else "lifecycle" end) as $verdict_scope |
+  (if $overall_passed == true and $run_status == "complete" then "PASS"
+   elif $overall_passed == false or ($run_status | test("(^|_)failed$")) then "FAIL"
+   elif any($recovery_attempts[]?; .status == "blocked") then "BLOCKED"
+   else "INCOMPLETE" end) as $lifecycle_verdict |
   (if ($restore_checks | length) == 0 then "PENDING"
    elif all($restore_checks[]; .passed == true) then "PASS"
    else "FAIL" end) as $restore_status |
@@ -99,6 +111,7 @@ jq -n \
                    then ["run.json", "report.json"] else ["run.json"] end),
     scope: "Workflow summary; does not independently inspect qcow2 allocation maps.",
     verdict: $verdict,
+    verdict_scope: $verdict_scope,
     verdict_reason:
       (if $verdict == "BLOCKED" then "Recovery was safely blocked before a successful full backup and baseline restore."
        elif $invocation_type == "recover" and $verdict == "PASS" then "The same-VM recovery full backup and baseline restore passed."
@@ -116,6 +129,7 @@ jq -n \
     },
     lifecycle: {
       state: $run_status,
+      verdict: $lifecycle_verdict,
       passes_completed: ($run.incremental_passes_completed // 0),
       passes_planned: ($run.incremental_passes_total // 0)
     },

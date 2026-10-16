@@ -55,6 +55,28 @@ Write `runs/<RUN_ID>/preflight.json`: `{"decision": "GO"|"NO-GO", "utc":
 "blockers": [...]}` and message the Lead. NO-GO with named blockers beats a
 hedged GO; a wrong GO risks a live mutation on an invalid run.
 
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** GO/NO-GO is the only authority you grant: record the
+  evidence path of every check, and treat a missing/invalid spec or trigger
+  as NO-GO with the blocker named rather than guessing one.
+
 ## Never
 - Run `make e2e`, the trigger, Krkn live, or any mutation.
 - Read other runs' artifacts, reports, or the learnings file.

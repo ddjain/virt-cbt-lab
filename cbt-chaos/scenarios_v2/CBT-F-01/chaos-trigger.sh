@@ -95,9 +95,43 @@ if [[ "$PLAN_MODE" == true ]]; then
     collision=true
   fi
   if [[ -e "$SCENARIO_RUN_DIR" ]]; then
-    printf 'Scenario artifact directory %s already exists for run ID %s; refusing to reuse it.\n' \
-      "$SCENARIO_RUN_DIR" "$RUN_ID" >&2
-    collision=true
+    # The observer arms before the trigger (and the Lead pre-creates contracts/,
+    # observer/, trigger/, recovery/, checkers/, reports/), so an existing
+    # scenario run directory is the normal pre-armed state, not a collision.
+    # This mirrors the live path, which only refuses on real trigger evidence.
+    unexpected=()
+    nonempty=()
+    for entry in "$SCENARIO_RUN_DIR"/*; do
+      [[ -e "$entry" ]] || continue
+      case "${entry##*/}" in
+        contracts|observer|trigger) ;;
+        recovery|checkers|reports)
+          # Lead-owned scaffolding is fine; output inside it is not.
+          if [[ -n "$(ls -A "$entry" 2>/dev/null || true)" ]]; then nonempty+=("${entry##*/}"); fi
+          ;;
+        ledger.jsonl|state.json|evidence-index.json|preflight.json) ;;
+        *) unexpected+=("${entry##*/}") ;;
+      esac
+    done
+    if [[ ! -d "$SCENARIO_RUN_DIR/observer" ]]; then
+      printf 'Scenario run dir exists without the pre-armed observer directory: %s\n' "$SCENARIO_RUN_DIR" >&2
+      collision=true
+    fi
+    if ((${#unexpected[@]} > 0)); then
+      printf 'Scenario artifact directory %s already holds run output (%s) for run ID %s; refusing to reuse it.\n' \
+        "$SCENARIO_RUN_DIR" "${unexpected[*]}" "$RUN_ID" >&2
+      collision=true
+    elif ((${#nonempty[@]} > 0)); then
+      printf 'Scenario artifact directory %s already holds post-trigger output in %s for run ID %s; refusing to reuse it.\n' \
+        "$SCENARIO_RUN_DIR" "${nonempty[*]}" "$RUN_ID" >&2
+      collision=true
+    elif [[ -d "$EVIDENCE_DIR" ]] && [[ -n "$(ls -A "$EVIDENCE_DIR" 2>/dev/null || true)" ]]; then
+      printf 'Trigger evidence for run ID %s already exists in %s; refusing to reuse it.\n' \
+        "$RUN_ID" "$EVIDENCE_DIR" >&2
+      collision=true
+    elif [[ "$collision" != true ]]; then
+      printf 'scenario run dir: pre-armed (only run scaffolding/observer output present, no trigger evidence)\n'
+    fi
   fi
   if [[ "$collision" == true ]]; then
     printf 'local precondition check: COLLISION (pick a fresh RUN_ID)\n'
@@ -306,7 +340,7 @@ verify_launcher_disruption_and_recovery() {
 
 observe_copy_then_disrupt() {
   local deadline=$((SECONDS + 3600)) pod pod_uid baseline_tree existing_tracker
-  local baseline_captured=false signal_line signal_utc
+  local baseline_captured=false baseline_status=0 baseline_lines=0 signal_line signal_utc
   # Arming time: the log follow may only match `Backup started` lines emitted at
   # or after this instant, so a stale line from an earlier backup on a long-lived
   # pod cannot fire a false injection.
@@ -318,17 +352,27 @@ observe_copy_then_disrupt() {
       -l "vm.kubevirt.io/name=${VM_NAME}" \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
     if [[ -n "$pod" ]]; then
-      if [[ "$baseline_captured" == false ]] &&
-         baseline_tree="$(oc exec -n "$NAMESPACE" "$pod" -c compute -- \
-           virsh checkpoint-list "${NAMESPACE}_${VM_NAME}" --tree 2>/dev/null)"; then
-        existing_tracker="$(oc get vmbackuptracker "vm-tracker-${RUN_ID}" \
-          -n "$NAMESPACE" --ignore-not-found -o name)"
-        if [[ -n "$existing_tracker" ]]; then
-          log 'Tracker already exists before this run; refusing to inject.'
-          return 1
+      if [[ "$baseline_captured" == false ]]; then
+        baseline_status=0
+        baseline_tree="$(oc exec -n "$NAMESPACE" "$pod" -c compute -- \
+          virsh checkpoint-list "${NAMESPACE}_${VM_NAME}" --tree 2>/dev/null)" || baseline_status=$?
+        baseline_lines="$(printf '%s\n' "$baseline_tree" | awk 'NF { count++ } END { print count + 0 }')"
+        if ((baseline_status != 0)); then
+          # A failed capture must not look like a fresh VM's empty tree: record
+          # the exit status and retry on the next poll instead of logging a
+          # blank block that reads as "no checkpoints yet".
+          log "Checkpoint tree capture failed (exit=$baseline_status, lines=$baseline_lines); retrying on the next poll."
+        else
+          existing_tracker="$(oc get vmbackuptracker "vm-tracker-${RUN_ID}" \
+            -n "$NAMESPACE" --ignore-not-found -o name)"
+          if [[ -n "$existing_tracker" ]]; then
+            log 'Tracker already exists before this run; refusing to inject.'
+            return 1
+          fi
+          log "$(printf 'Pre-backup tracker: absent\nPre-backup checkpoint tree (exit=0, lines=%s; empty is expected on a fresh lifecycle):\n%s' \
+            "$baseline_lines" "$baseline_tree")"
+          baseline_captured=true
         fi
-        log "$(printf 'Pre-backup tracker: absent\nPre-backup checkpoint tree:\n%s' "$baseline_tree")"
-        baseline_captured=true
       fi
       if [[ "$baseline_captured" == true ]]; then
         signal_line=""

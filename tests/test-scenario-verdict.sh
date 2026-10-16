@@ -120,6 +120,12 @@ write_trigger() { # run_id
   local rid="$1"
   local dir="$SCENARIO_DIR/runs/$rid/trigger"
   mkdir -p "$dir"
+  # An independent observer must be armed: the injector is never the sole
+  # authority for its own injection, so a fixture without this marker must be
+  # judged INCONCLUSIVE rather than PASS.
+  mkdir -p "$SCENARIO_DIR/runs/$rid/observer/watches"
+  printf '{"utc":"2026-10-16T10:00:01Z","watch_pids":[4242],"target":"vm-%s"}\n' "$rid" \
+    > "$SCENARIO_DIR/runs/$rid/observer/ARMED"
   local pod="virt-launcher-vm-$rid-abcde"
   local uid="aaaaaaaa-1111-2222-3333-444444444444"
   local new_pod="virt-launcher-vm-$rid-fghij"
@@ -301,6 +307,106 @@ stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
 [[ "$verdict_status" -eq 1 ]] || fail "blocked evidence must exit 1, got $verdict_status"
 [[ "$(jq -r '.verdict' <<<"$stdout_out")" == "BLOCKED" ]] ||
   fail "observer blocked evidence must yield BLOCKED, got $(jq -r '.verdict' <<<"$stdout_out")"
+
+# --- (d3) an injection that removed a different pod is INVALID --------------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+jq '.old_pod.uid = "99999999-9999-9999-9999-999999999999"' \
+  "$SCENARIO_DIR/runs/$RUN_ID/trigger/effect-check.json" > "$TEST_TMP/wrong-target.json"
+mv "$TEST_TMP/wrong-target.json" "$SCENARIO_DIR/runs/$RUN_ID/trigger/effect-check.json"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "a wrong-target injection must exit 1, got $verdict_status"
+[[ "$(jq -r '.verdict' <<<"$stdout_out")" == "INVALID" ]] ||
+  fail "a wrong-target injection must be INVALID, got $(jq -r '.verdict' <<<"$stdout_out")"
+[[ "$(jq -r '.checks[] | select(.id == "launcher-replacement") | .status' <<<"$stdout_out")" == "FAIL" ]] ||
+  fail "launcher-replacement must FAIL when a different pod was removed"
+
+# --- (d4) an observer-less run is INCONCLUSIVE, never PASS -------------------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+rm -rf "$SCENARIO_DIR/runs/$RUN_ID/observer"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "a run without observer evidence must not exit 0"
+[[ "$(jq -r '.verdict' <<<"$stdout_out")" == "INCONCLUSIVE" ]] ||
+  fail "a run without observer evidence must be INCONCLUSIVE, got $(jq -r '.verdict' <<<"$stdout_out")"
+[[ "$(jq -r '.checks[] | select(.id == "injection-signal") | .status' <<<"$stdout_out")" == "UNKNOWN" ]] ||
+  fail "injection-signal must be UNKNOWN when the injector is the sole authority"
+
+# --- (d5) a signal recorded before the observer armed is contradictory -------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+jq '.utc_observer_armed = "2026-10-16T10:00:30Z" | .signal_utc = "2026-10-16T10:00:05Z"' \
+  "$SCENARIO_DIR/runs/$RUN_ID/trigger/action-request.json" > "$TEST_TMP/stale-signal.json"
+mv "$TEST_TMP/stale-signal.json" "$SCENARIO_DIR/runs/$RUN_ID/trigger/action-request.json"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "a stale-signal timing contradiction must not exit 0"
+jq -e '
+  .verdict == "INCONCLUSIVE" and
+  (.checks[] | select(.id == "injection-signal") | .status) == "UNKNOWN" and
+  (.checks[] | select(.id == "injection-signal") | .actual | contains("contradictory timing"))
+' <<<"$stdout_out" >/dev/null ||
+  fail "a signal predating the observer arming window must be UNKNOWN/contradictory, got $stdout_out"
+
+# --- (d6) a tracker that advanced during the failure FAILs --------------------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+jq '.backups.full_failure.tracker_checkpoint_at_failure = "vm-backup-advanced-cp"' \
+  "$ROOT/runs/$RUN_ID/run.json" > "$TEST_TMP/advanced.json"
+mv "$TEST_TMP/advanced.json" "$ROOT/runs/$RUN_ID/run.json"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "an advanced tracker must exit 1, got $verdict_status"
+jq -e '
+  .verdict == "FAIL" and
+  (.checks[] | select(.id == "tracker-not-advanced") | .status) == "FAIL" and
+  (.checks[] | select(.id == "tracker-not-advanced") | .actual | contains("had already advanced"))
+' <<<"$stdout_out" >/dev/null ||
+  fail "a tracker checkpoint at failure must FAIL tracker-not-advanced, got $stdout_out"
+
+# --- (d7) a checkpoint attributed to the interrupted copy FAILs ---------------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+interrupted_cp="$(jq -r '.backups.full_failure.checkpoint_name' "$ROOT/runs/$RUN_ID/run.json")"
+jq --arg cp "$interrupted_cp" '.tracker.latest_checkpoint = $cp' \
+  "$ROOT/runs/$RUN_ID/report.json" > "$TEST_TMP/attributed.json"
+mv "$TEST_TMP/attributed.json" "$ROOT/runs/$RUN_ID/report.json"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "an attributed interrupted checkpoint must exit 1, got $verdict_status"
+jq -e '
+  .verdict == "FAIL" and
+  (.checks[] | select(.id == "tracker-not-advanced") | .status) == "FAIL" and
+  (.checks[] | select(.id == "tracker-not-advanced") | .actual | contains("usable checkpoint is attributed"))
+' <<<"$stdout_out" >/dev/null ||
+  fail "a usable checkpoint attributed to the interrupted copy must FAIL, got $stdout_out"
 
 # --- (e) --list-checks exits 0 without reading artifacts ---------------------
 list_output=""

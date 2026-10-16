@@ -43,7 +43,9 @@ this iteration), **AMBIGUOUS**.
 ## F5 — The 10-20 case evaluation suite does not exist and is not one iteration (SCOPED-OUT)
 
 - **Plan:** §11 "Start with 10-20 realistic tasks …", §10 Phase 2 "Cover at least: [11 negative cases]", "Use fixtures/mocks for evaluator and dispatch tests".
-- **Evidence:** `make test` runs 15 hermetic tests (`Makefile:216-232`); of the plan's 11 negative cases, most map to no test: `clean-all` refusal, preflight-success≠backup-success, missing-injection-evidence ⇒ INVALID, RUN_ID mismatch, checkpoint mismatch, injection wrong-target, cleanup failure, budget stop (see `docs/agent-workflow-audit.md` §5 G10).
+- **Evidence:** `make test` runs 19 hermetic tests (`Makefile:216-235`); of the plan's 11 negative cases, most mapped to no test: `clean-all` refusal, preflight-success≠backup-success, missing-injection-evidence ⇒ INVALID, RUN_ID mismatch, checkpoint mismatch, injection wrong-target, cleanup failure, budget stop (see `docs/agent-workflow-audit.md` §5 G10).
+- **Covered since (this iteration):** missing/withheld injection evidence ⇒ never PASS, RUN_ID mismatch ⇒ FAIL, successful backup under an interruption scenario ⇒ INVALID, **injection wrong-target ⇒ INVALID**, **mismatched/attributed checkpoint evidence ⇒ FAIL**, **observer absent ⇒ INCONCLUSIVE (the injector is not the sole authority)**, **signal predating the observer's arming instant ⇒ INCONCLUSIVE**, all in `tests/test-scenario-verdict.sh`.
+- **Still uncovered:** `make clean-all` refusal and unhealthy-preflight ⇒ BLOCKED (both need a fake-cluster/preflight harness), cleanup failure, and the experiment-budget stop. These are filesystem-/cluster-shape cases, not evaluator logic, so they remain part of the not-executed record rather than claimed as done.
 - **Instead (this iteration):** added the negative cases that a new deterministic evaluator can own (missing injection evidence ⇒ not PASS, run-id mismatch ⇒ FAIL, succeeded backup under an interruption scenario ⇒ INVALID). The rest need a live-cluster or fake-cluster fixture harness; listed for the next iteration rather than claimed as done.
 
 ## F6 — Windows CBT-F-01 cannot meet the <15 min target (CONTRADICTS-REPO)
@@ -65,31 +67,35 @@ this iteration), **AMBIGUOUS**.
 - **Evidence:** both rules are in force simultaneously; `cbt-chaos/scenarios_v2/CBT-F-04/runs/…/ledger.jsonl:18` already records that stray reads caused confusion.
 - **Instead:** the ban applies to the *runner* of a scenario; the *improver* may read prior artifacts for timing/Baseline metrics only, must not feed them into a scenario verdict, and must record that use. Stated in `docs/agent-workflow-audit.md` §3.
 
-## F9 — `monitor.sh` is unbounded (CONTRADICTS-REPO, flagged not fixed)
+## F9 — `monitor.sh` is unbounded (CONTRADICTS-REPO, fixed)
 
 - **Plan:** §6 "No indefinite waits", §11 "Zero unbounded retries/planning loops".
 - **Evidence:** `scripts/monitor.sh:66,211` polls every 2 s until every planned backup is Done or one fails; a planned-but-never-run backup blocks forever. `e2e-stage.sh:545-561` avoids this only by skipping the monitor when passes are incomplete.
 - **Instead (proposed):** add `MONITOR_TIMEOUT_SECONDS` (default e.g. 1800) and exit non-zero with the outstanding backup names. Needs its own small change + test; recorded here for the next iteration because it is shared-harness behaviour outside the agentic flow.
+- **Fixed:** `scripts/monitor.sh` now honours `MONITOR_TIMEOUT_SECONDS` (default 1800; `0` = explicit unbounded opt-in), prints the outstanding backup labels/names, and exits **2** so a caller can tell a timeout from a failed backup (`monitor.sh:68-78,223-242`). Covered by `tests/test-monitor-timeout.sh`, documented in `.env.example` and in the matrix row.
 
-## F11 — Stale `watch-resource.sh` watchers survive on the execution host (CONTRADICTS-REPO, flagged not fixed)
+## F11 — Stale `watch-resource.sh` watchers survive on the execution host (CONTRADICTS-REPO, fixed)
 
 - **Plan:** §6 "no indefinite waits", §11 "Every run reaches an explicit terminal state".
 - **Evidence:** the iteration-2 witness found 10 unrelated `watch-resource.sh` processes still running on the execution host from earlier runs; its own four were removed on teardown. `watch-resource.sh` has no timeout and only revokes readiness on exit (`cbt-chaos/watch-resource.sh:104-110`).
 - **Risk:** accumulated watchers keep hitting the API server and can make "is a watch armed?" checks noisy for later runs.
 - **Instead (proposed):** give the helper an optional `WATCH_MAX_SECONDS` self-termination and have the run flow record the PIDs it owns so a later run can report (not kill) foreign watchers. Recorded here rather than changed in this iteration because it alters a shared helper's contract.
+- **Fixed:** `cbt-chaos/watch-resource.sh` honours `WATCH_MAX_SECONDS` (default `0` = no self-termination, so existing callers keep their contract). On expiry the armed watch is terminated, readiness is revoked, the log names the bound, and the helper exits **3** — distinguishable from a watch that ended on its own (1) or a usage/environment error (2). `WATCH_MAX_SECONDS=3` covers it in `tests/test-chaos-watch-resource.sh`. The "record the PIDs it owns" half is satisfied by the existing `watch_pid=` line in the readiness marker, which the observer's handoff payload carries.
 
-## F12 — Trigger's pre-injection libvirt checkpoint tree is not actually captured (CONTRADICTS-REPO)
+## F12 — Trigger's pre-injection libvirt checkpoint tree is not actually captured (CONTRADICTS-REPO, fixed)
 
 - **Plan / scenario:** the CBT-F-01 spec asks for the launcher's checkpoint tree before and after the disruption.
 - **Evidence:** iteration 2's `trigger/trigger.log` shows `Pre-backup checkpoint tree:` with no content, while the tracker watch and the failed backup's `status.checkpoint` were both captured. The trigger's `oc exec … virsh checkpoint-list` returns empty on a fresh VM (no checkpoints yet) and the empty result is indistinguishable from a failed capture.
 - **Instead:** record the command's exit status alongside its output, and state in the spec that an empty tree on a fresh lifecycle is expected. The tracker watch plus `tracker_checkpoint_at_failure: ""` already carry the criterion.
+- **Fixed (trigger side only):** the capture now distinguishes the two cases explicitly: it records the exit status and the output line count, logs `Pre-backup checkpoint tree (exit=0, lines=N; empty is expected on a fresh lifecycle)`, and on a non-zero exit logs `Checkpoint tree capture failed (exit=N, lines=M); retrying on the next poll` instead of marking the baseline captured (`chaos-trigger.sh:321-342`). `tests/test-cbt-f-01-injection-evidence.sh` asserts the log shape so the two states cannot be conflated again. **Still open (spec side):** the "Instead" also asks the *spec* to say that an empty tree is expected on a fresh lifecycle; `scenario-spec.md` criterion 3 asks for the tree but does not state that, and the sentence is written as diff S1 in `cbt-chaos/scenarios_v2/CBT-F-01/analysis/20261016-cbt-f-01-r04-improvements.md`. It was not applied here because spec edits are human-gated (they change what the team accepts as truth).
 
-## F13 — The interrupted lifecycle's `summary.json` mixes per-invocation verdicts (AMBIGUOUS, flagged not fixed)
+## F13 — The interrupted lifecycle's `summary.json` mixes per-invocation verdicts (AMBIGUOUS, fixed additively)
 
 - **Plan:** §7 "Use a deterministic evaluator over structured evidence"; §11 "Keep environment outcomes and the agent's process quality separate".
 - **Evidence:** for `20261016-cbt-f-01-r03` the lifecycle `summary.json` reports `verdict: PASS` because the same file is rewritten by each invocation and the last one was the recovery stage, while its own `.cbt.status` and `.restore_hashes.status` remain `PENDING` — the interrupted lifecycle never ran chain/restore verification. The independent witness read this as a contradiction.
 - **Risk:** a reader (or a future evaluator) can mistake an invocation verdict for a lifecycle verdict.
 - **Instead (proposed):** keep `verdict` as the last invocation's result only if the key is named for it (e.g. `last_invocation_result`), and make the lifecycle-level verdict explicit (`complete`/`incomplete`/`blocked`) so the two can never be confused. `scenario-verdict.sh` already reads the recovery attempt and clean-lifecycle summary explicitly rather than trusting this field.
+- **Fixed (additively, so no consumer breaks):** `summary.json` now carries `verdict_scope` (`lifecycle` or `recovery_invocation`) beside the top-level `verdict`, plus a lifecycle-scoped `lifecycle.verdict` computed only from run state and verification (`write-run-summary.sh:79-91,113-114,130-135`). The interrupted-lifecycle case is now readable as `verdict: PASS, verdict_scope: recovery_invocation, lifecycle.verdict: FAIL` instead of a bare PASS. Asserted by the new `summary-recover-scope` fixture in `tests/test-run-summary.sh`.
 
 ## F10 — Trigger exit code is ambiguous by construction (partially fixed)
 

@@ -121,4 +121,53 @@ if kill -0 "$child_pid" 2>/dev/null; then
   printf 'Stopped watcher left an oc child running.\n' >&2
   exit 1
 fi
+# A malformed bound is refused before any cluster access.
+if KUBECONFIG_PATH="$TEST_TMP/kubeconfig" WATCH_MAX_SECONDS=soon \
+  bash "$helper" test-namespace vmbackup name backup-bound \
+  "$TEST_TMP/bound.jsonl" "$TEST_TMP/bound.ready" > "$TEST_TMP/bound.log" 2>&1; then
+  printf 'Watcher accepted a malformed WATCH_MAX_SECONDS.\n' >&2
+  exit 1
+fi
+grep -q 'Invalid WATCH_MAX_SECONDS' "$TEST_TMP/bound.log" || {
+  printf 'Watcher did not explain the malformed WATCH_MAX_SECONDS.\n' >&2
+  exit 1
+}
+
+# WATCH_MAX_SECONDS self-terminates an armed watch and revokes readiness.
+KUBECONFIG_PATH="$TEST_TMP/kubeconfig" WATCH_STOP_FILE="$TEST_TMP/never-stop-bound" \
+  WATCH_MAX_SECONDS=2 \
+  bash "$helper" test-namespace vmbackup name backup-bounded \
+  "$TEST_TMP/bounded.jsonl" "$TEST_TMP/bounded.ready" > "$TEST_TMP/bounded.log" 2>&1 &
+watcher_pid=$!
+bounded_armed=false
+for ((attempt = 0; attempt < 50; attempt++)); do
+  if [[ -s "$TEST_TMP/bounded.ready" ]]; then bounded_armed=true; break; fi
+  if ! kill -0 "$watcher_pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+[[ "$bounded_armed" == true ]] || { printf 'Bounded watch never armed.\n' >&2; exit 1; }
+bounded_child=''
+while IFS='=' read -r key value; do
+  if [[ "$key" == watch_pid ]]; then bounded_child="$value"; fi
+done < "$TEST_TMP/bounded.ready"
+[[ "$bounded_child" =~ ^[1-9][0-9]*$ ]]
+set +e
+wait "$watcher_pid"
+bounded_status=$?
+set -e
+watcher_pid=''
+if ((bounded_status != 3)); then
+  printf 'Bounded watch exited %s, expected 3 (WATCH_MAX_SECONDS reached).\n' "$bounded_status" >&2
+  exit 1
+fi
+grep -q 'WATCH_MAX_SECONDS=2; self-terminating' "$TEST_TMP/bounded.log" || {
+  printf 'Bounded watch did not report its self-termination.\n' >&2
+  exit 1
+}
+[[ ! -e "$TEST_TMP/bounded.ready" ]] || { printf 'Bounded watch left a stale armed marker.\n' >&2; exit 1; }
+if kill -0 "$bounded_child" 2>/dev/null; then
+  printf 'Bounded watch left an oc child running.\n' >&2
+  exit 1
+fi
+
 printf 'Authenticated watch readiness and loss behavior passed.\n'

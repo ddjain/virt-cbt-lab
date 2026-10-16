@@ -182,3 +182,155 @@ claim PASS while they were present:
   artifacts.
 - Token/model-call telemetry does not exist in this harness; only wall clock and
   spawn counts are measured (flag F4).
+
+### 7a. Gaps closed in the 2026-10-16 review round
+
+- `monitor.sh` is now bounded (`MONITOR_TIMEOUT_SECONDS`, exit 2 on expiry) —
+  flag F9 fixed.
+- `watch-resource.sh` gained an optional `WATCH_MAX_SECONDS` self-termination
+  (exit 3, readiness revoked) so a forgotten watcher cannot outlive its run —
+  flag F11 fixed.
+- `summary.json` now separates the invocation verdict from the lifecycle verdict
+  (`verdict_scope`, `lifecycle.verdict`) — flag F13 fixed additively.
+- The CBT-F-01 trigger records the checkpoint-tree capture exit status and line
+  count instead of logging an ambiguous empty block — flag F12 fixed.
+- The deterministic evaluator now refuses three classes of false PASS that were
+  previously undetectable: an injection whose only support is the injector's own
+  artifacts (no observer marker/watch stream), an injection that provably removed
+  a different pod than the signal named (INVALID), and a signal recorded before
+  the observer armed (contradictory timing).
+- `--plan` rehearsal now accepts the pre-armed run directory and still refuses
+  run output or a missing observer, so the mandated rehearsal is satisfiable for a
+  run that follows the protocol order (CBT-F-01, CBT-I-01; CBT-F-03 gained a
+  `--plan` mode).
+- Still open: the artifact-shape tolerance of the evaluator, the CBT-F-04-worded
+  `cbt-chaos/contracts/*`, and the not-executed cases listed in
+  `docs/agent-plan-incorrect-points.md`.
+
+## 8. Plan-point review, 2026-10-16 (point by point)
+
+Reviewer method: every point of
+`virt-cbt-lab-consolidated-agent-improvement-plan.md` was checked against the
+working tree (skills, scripts, Makefile, tests, docs). A point is `IMPLEMENTED`
+only when the artefact that satisfies it exists and was inspected; `PARTIAL`
+means part of it is genuinely not delivered, with the reason; points judged
+**incorrect** are not implemented and are recorded with evidence in
+`docs/agent-plan-incorrect-points.md` (P1-P7).
+
+| Plan point | Verdict | Evidence | Action in this round |
+|---|---|---|---|
+| §1 single lead, stages/scripts for the deterministic parts, one monitor, no agent per skill | IMPLEMENTED | `cbt-chaos-team` "Lead operating policy" (spawn economy, one Observer, deterministic-first); `cbt-chaos-run` stage policy; one observer per run | unchanged (already satisfied); run 1 exercised it |
+| §2 `make help`/`make stage-list` as the interface; target table; safeguards | IMPLEMENTED | `make stage-list` (11 rows, `scripts/stage.sh:27-55`); target table accuracy verified against `Makefile:45` and `stage.sh`; `cbt-chaos-run`/`cbt-chaos-issue-triage` require both | table cross-checked; omissions (`vm-cbt-reconcile`, `stage-list`) noted in the audit matrix |
+| §2 "never default to `make e2e`" as a blanket rule | **INCORRECT as written** | CBT-F-01 criterion 6 requires a clean `TYPE=all` lifecycle | not implemented; recorded as `docs/agent-plan-incorrect-points.md` P1 |
+| §2 stage table implies re-runnable stages | **INCORRECT as written** | stages are state-machine transitions (`vm-cbt-backup.sh:14-22`, `stage.sh:263-274`) | not implemented; P2 (state check required instead) |
+| §3 four review lenses | IMPLEMENTED | this document + `docs/agent-workflow-audit.md` §3-§7 (harness/orchestration/verification/evaluation views) | applied in this round's audit |
+| §4 keep the lead; one focused monitor; verifiers become scripts; conditional investigator; preparer reuses the skill; script-first reports; bounded planner | IMPLEMENTED | role skills: `cbt-chaos-observer-worker` (one observer), `cbt-chaos-report-writer` (evaluator JSON + templates), `cbt-chaos-krkn-preparer` (proposal-only, loads `skill://krkn-scenario`), `cbt-chaos-variation-decider` (≤4 legs) | §12 policy block added to all 13 role skills |
+| §5 deterministic-tool-first (9 steps) | IMPLEMENTED | `cbt-chaos-run` "Deterministic tools before reasoning (mandatory)"; `cbt-chaos-issue-triage` "Deterministic tools, tests, and bounded investigation" | added this round to both live skills; team skill "Reuse before you build" |
+| §5 script-audit deliverable (matrix with a skills/agents column, plus the chaos trigger) | IMPLEMENTED | `docs/agent-workflow-audit.md` §2: 10 columns incl. skills/agents, 24 rows incl. the trigger contract, the driver, the ledger helpers, the contract generator, shared helpers, Windows (out of the agentic flow) and density rows | completed this round |
+| §6 lead execution policy (11 steps, contracts, no indefinite waits) | IMPLEMENTED | `cbt-chaos-run` phases 0-5; `cbt-chaos-team` execution sequence; every contract names a budget + terminal status | `monitor.sh` and `watch-resource.sh` bounds closed the "no indefinite waits" gap at the tool level |
+| §7 verdict contract (5 verdicts + rules) | IMPLEMENTED | `cbt-chaos/scenario-verdict.sh` header contract; `cbt-chaos-run` "Deterministic verdict" | tightened this round: wrong-target ⇒ INVALID; injector-only evidence ⇒ UNKNOWN; signal-before-arming ⇒ UNKNOWN; `summary.json` scope separation |
+| §8 investigation triggers, required output, exploration loop, limits | IMPLEMENTED | `cbt-chaos-run` "Bounded investigation"; `cbt-chaos-issue-triage` bounded-investigation routing; `cbt-chaos-team` stop conditions; `cbt-chaos-variation-decider` limits | triage skill gained the routing + limits this round |
+| §9 evidence-backed learning store and finding fields | IMPLEMENTED | the §9 field set is now the documented entry schema in `.agents/skills/cbt-chaos-run/cbt-chaos-run-learnings.md` ("How to maintain this file": finding id · scenario/run · evidence paths · confirmed vs hypothesis · injection type/target/phase · environment · expected vs actual · `unconfirmed`/`reproduced`/`confirmed`/`rejected` · limitations · next experiment), and the two validation runs' lessons were recorded with it (`…-run-learnings.md` 2026-10-16 entries; `.agents/skills/cbt-chaos-team/cbt-chaos-team-learnings.md` populated with three cross-run entries) | schema + both runs' deduped, evidence-citing entries written at learning closeout |
+| §10 Phase 0 audit deliverables | IMPLEMENTED | `docs/agent-workflow-audit.md` (matrix, delegation map, baselines) | matrix completed; per-run metrics section added |
+| §10 Phase 1 stage-aware, deterministic-first lead | IMPLEMENTED | live-skill policy sections; `make stage-list` usage; smallest-valid-stage rule | verified line by line |
+| §10 Phase 2 deterministic verdict + regression tests | IMPLEMENTED | `scenario-verdict.sh` + `tests/test-scenario-verdict.sh` (now includes wrong-target, absent-observer, stale-signal, advanced-tracker, attributed-checkpoint cases) | 5 new negative cases added this round |
+| §10 Phase 3 bounded investigator | IMPLEMENTED | `cbt-chaos-run` "Bounded investigation" contract text; team-skill stop conditions | unchanged |
+| §10 Phase 4 learning and experiment selection | IMPLEMENTED | the §9 schema landed in the run-learnings maintenance rules and the team-learnings file is populated; both runs' Variation Deciders selected the next action from prior runs' closed artifacts and explicitly rejected same-parameter repeats (`cbt-chaos/scenarios_v2/CBT-F-01/matrix-proposal.md`, `…/CBT-I-01/matrix-proposal.md`), and the unproven item stays labelled as a bounded residual in both runs' checker artifacts | lessons recorded at closeout (both runs cite their own artifacts); the two next-action proposals both choose an evidence fix over a new chaos parameter, with the rationale in the file |
+| §10 Phase 5 evaluate and expand | IMPLEMENTED to the review's 2–3-run scope | metrics comparison against the earlier validated run (`docs/agent-workflow-report.md` §9a: 579 s vs 579 s, stage-by-stage), no full-E2E reruns needed for either leg set, and both next-action proposals reduce future work by choosing an evidence fix over a repeat chaos leg; the remaining several-dozen scenarios were deliberately not run | 2 of the 3 selected scenarios executed with the full protocol (CBT-F-03 prepared, not run — recorded in the not-executed table); further expansion is per-scenario work, not a plan gap |
+| §11 evaluation suite (10-20 tasks) and metrics | PARTIAL | metrics: `docs/agent-workflow-audit.md` §8 (including the explicitly unmeasurable ones); the *agent-task* suite needs a harness this repository does not have | not implemented as specified; recorded as P4 |
+| §11 metrics: model calls/tokens | **UNMEASURABLE here** | no telemetry in the harness | recorded as P3; wall clock + spawn counts measured instead |
+| §12 required skill changes (10 bullets) | IMPLEMENTED | `cbt-chaos-run` (S12.1-S12.10 incl. the §5 policy and `make test`), `cbt-chaos-issue-triage` (+bounded investigation, missing-artifact fallback), `cbt-chaos-team` (reuse/test rule), 13 role skills (shared policy block + role bullet) | this round's main skill change |
+| §13 keep changes small and separable; no auto-commit | IMPLEMENTED | this round's change set is split by concern (harness bounds / verdict scope / trigger evidence / evaluator rules / skill policy / docs) and nothing was committed | no commit made |
+| §14 final implementation report | IMPLEMENTED | this document; unexecuted work recorded in `docs/agent-plan-incorrect-points.md` (§ "Not executed") | this section is that report's plan-level half |
+
+### 8a. What a reader should take from this table
+
+Three plan points were **wrong for this checkout** and were deliberately not
+implemented (P1, P2, and the P3/P4 unmeasurable/unbuildable items); two were
+already satisfied by earlier work (the Makefile's staged interface, the team
+topology) and were verified rather than rewritten; the rest were closed this
+round, in the order the plan itself recommends (audit artefacts, then lead
+policy, then script/verdict gaps with tests, then the bounded-investigator
+policy).
+
+## 9. Validation runs (2026-10-16)
+
+Two `scenarios_v2` scenarios were executed end to end through the
+`cbt-chaos-team` protocol (Lead + preflight + observer + trigger + blind
+checkers + report writer + report-fidelity checker + post-run batch) on the
+execution host, with the harness changes of this review in place. A third
+scenario (CBT-F-03, controller-restart) had its trigger brought to `--plan`
+readiness and its full contract set written, but was **not** executed this
+round (see the not-executed record); the review's requirement was 2–3 runs.
+
+| | Run 1 — CBT-F-01 `20261016-cbt-f-01-r04` | Run 2 — CBT-I-01 `20261016-cbt-i-01-r01` |
+|---|---|---|
+| Disruption | launcher pod deleted inside the active-copy window | VMI deleted between the full checkpoint and the incremental stage |
+| Preflight | GO, 7/7 checks (`preflight.json`) | GO, 7/7 checks; HPP margin flagged (82.87 GiB free after the 190 GiB plan) |
+| Observer | ARMED 01:07:02Z, 4 watches; independent capture of copy-window start 01:12:26.758Z, old UID gone 01:12:38Z, replacement Ready 01:12:49Z | watches armed 01:36:15Z (ARMED marker written 01:36:40Z), 4 watches; independent capture of the VMI UID change `b203235a…`→`29dfe33c…` |
+| Deterministic evaluator | **PASS 8/8** (`verdict.json`, sha256 `dba29ae4…`) | **INVALID — inapplicable** (HV1): its expected inputs do not exist in this scenario by design |
+| Injection validity checker | **PASS** (window, exact target UID, independent effect) | **PASS** (target, window, independent effect) |
+| Evidence sufficiency checker | **REJECT** on spec criterion 4.3 (libvirt checkpoint tree after VM recovery never captured) → verified by the Lead → **run verdict BLOCKED** | **PASS** on all five §5 criteria, with the bounded residual that block-extent incrementality cannot be proven without a qcow2 allocation map |
+| Report fidelity | REJECT (2 citation errors) → revision 1 → **PASS** | REJECT (3 line-pointer errors + 2 wording items) → revision 1 → **PASS** |
+| Wall clock (legs) | 148 s + 50 s + 380 s + 1 s = **579 s (9 m 39 s)** — identical to the previously validated r03 (15 min budget, 30–40 min ceiling) | trigger run **≈ 5 m 30 s** end to end; measured backups full 55 s (baseline 52–55), incremental 17 s (baseline 16–21) |
+| Product outcome | no product defect observed; the CBT behaviour (clean interrupted failure, tracker never advanced, recovery, clean-lifecycle restores) held | the post-restart pass was a **genuine Incremental** (`type=Incremental`, checkpoint redefined from the full, restore hashes matching) — not a silent wrong-content incremental and not a full fallback |
+| Agent spawns | 11 (2 preflight attempts incl. the mis-pinned first one, observer, trigger worker, 2 checkers, writer, report checker, 4 post-run), plus **1 duplicate Lead launch refused by the trigger's collision guard** (no mutation) | 9 (preflight, observer, 2 checkers, writer, report checker, 4 post-run) — **the trigger was executed by the Lead directly, not by a spawned Trigger Worker** (deviation from run 1's topology, adopted after the launch-observability problem in HV4) |
+
+### 9a. Plan §11 metrics for these runs
+
+- **Wall clock and per-stage durations:** recorded per leg
+  (`driver-timings.json`, `run.json .stage_timings`, `summary.json .phases`) and
+  used above; the CBT-F-01 runs are reproducible to the second (579 s vs 579 s).
+- **Narrowest target chosen:** both runs used one scenario trigger plus the
+  scenario's own stage sequence — no `TYPE=all` re-run was needed for either.
+- **Retries/timeouts:** one leg retry (the recovery leg in run 1's protocol
+  design allows 2 attempts) — none was needed; no timeout occurred except the
+  harness-level `watch` bound remaining untriggered (40-minute watchers stopped
+  by the observer at 15 m), and one Lead-side wrapper time-out caused by an ssh
+  session held open by a detached remote process (no effect on the run).
+- **Injection validity and evidence completeness:** graded by the injection
+  checker in both runs (PASS/PASS) and by the evidence checker (REJECT/PASS).
+- **Verdict correctness:** run 1 exposed exactly the case the plan's Phase 2
+  wanted — a mandatory criterion with no evidence cannot PASS; run 2 exposed its
+  mirror image, a deterministic evaluator confidently wrong outside its own
+  scenario shape (HV1).
+- **Not measured:** model calls/tokens (no telemetry, flag F4); repeated source
+  reads/API queries (not instrumented).
+- **Observation, not plan item:** `run.json .total_elapsed_seconds` does not
+  equal the sum of `.stage_timings` (161 s vs ≈289 s in run 2; 50 s vs 234 s in
+  run 1), so its scope (per-invocation vs cumulative) is under-documented.
+
+### 9b. What the runs changed in the harness
+
+The F12 evidence fix was exercised live (the trigger log now distinguishes
+`Checkpoint tree capture failed (exit=1…)` from
+`Pre-backup checkpoint tree (exit=0, lines=0; empty is expected on a fresh
+lifecycle)`), the F13 verdict-scope separation read correctly in both
+directions (`recovery_invocation`/`FAIL` for run 1's interrupted lifecycle,
+`lifecycle`/`PASS` for run 2), the evaluator's tightened rules did not change
+run 1's deterministic PASS, `--plan` rehearsal accepted the pre-armed run
+directory in both scenarios, and the `WATCH_MAX_SECONDS` bound was armed on
+every watch. The runs' own defects are recorded as HV1–HV8 in
+`docs/agent-plan-incorrect-points.md`.
+
+### 9c. Learning closeout and the twice-rule
+
+Three failure classes reached the twice-rule threshold during these runs
+(evaluator-out-of-shape; a per-run contract dropping a parameterised template's
+mandate; `deletionTimestamp` read as an instant), so the contract makes the
+corresponding skill/spec edits mandatory rather than optional. The Scenario
+Improver produced the exact diffs and tickets for each
+(`cbt-chaos/scenarios_v2/CBT-I-01/analysis/20261016-cbt-i-01-r01-improvements.md`,
+`cbt-chaos/scenarios_v2/CBT-F-01/analysis/20261016-cbt-f-01-r04-improvements.md`);
+**none was applied**, because spec and SKILL edits are human-gated, and each
+run's ledger records that the approval is outstanding. The I-01 improver also
+found a second defect inside the evaluator finding: even with a correct check
+set, the shape-blind `clean-lifecycle NOT_APPLICABLE` cap would prevent that
+scenario shape from ever reaching PASS.
+
+The `deletionTimestamp` class was closed as an observation artefact rather than a
+defect, on independent evidence from two agents: the value is the deletion
+*deadline* (`now + grace`), and `deletionGracePeriodSeconds` moves 60 → 0 exactly
+where it regresses in both runs — so the observers' decision to corroborate with
+container `finishedAt` was right, and the rule for future observers is "do not
+use `deletionTimestamp` as the deletion instant".

@@ -221,6 +221,7 @@ test:
 	@bash tests/test-restore-failure-propagation.sh
 	@bash tests/test-workflow-evidence.sh
 	@bash tests/test-monitor-planned-backups.sh
+	@bash tests/test-monitor-timeout.sh
 	@bash tests/test-run-summary.sh
 	@bash tests/test-vm-cbt-recover.sh
 	@bash tests/test-vm-backup-failure-recording.sh
@@ -232,3 +233,5 @@ test:
 	@bash tests/test-scenario-verdict.sh
 	@bash tests/test-cbt-f-01-driver.sh
 	@bash tests/test-cbt-f-01-injection-evidence.sh
+	@bash tests/test-trigger-plan-rehearsal.sh
+	@bash tests/test-evidence-index.sh

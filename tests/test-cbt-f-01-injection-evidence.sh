@@ -25,6 +25,13 @@ cp "$ROOT_DIR/cbt-chaos/scenario-verdict.sh" "$WORK/cbt-chaos/scenario-verdict.s
 
 RUN_ID="20260101-cbt-f-01-000000"
 VM_NAME="vm-$RUN_ID"
+# A real run always has an armed independent observer; the evaluator refuses to
+# treat the injector as the sole authority for its own injection.
+mkdir -p "$SCEN_DIR/runs/$RUN_ID/observer/watches"
+printf '{"utc":"2026-01-01T00:00:01Z","watch_pids":[4242]}\n' \
+  > "$SCEN_DIR/runs/$RUN_ID/observer/ARMED"
+printf '{"type":"BOOKMARK","object":{"metadata":{"name":"%s"}}}\n' "$VM_NAME" \
+  > "$SCEN_DIR/runs/$RUN_ID/observer/watches/vmbackup.jsonl"
 OLD_UID="11111111-1111-1111-1111-111111111111"
 NEW_UID="22222222-2222-2222-2222-222222222222"
 OLD_POD="virt-launcher-$VM_NAME-aaaaa"
@@ -87,6 +94,28 @@ export RUN_ID KUBECONFIG_PATH="$WORK/kubeconfig.conf"
 
 mkdir -p "$SCEN_DIR/runs/$RUN_ID/trigger"
 
+# --plan must accept the pre-armed run directory (observer armed, Lead state and
+# scaffolding present) and still refuse a directory that holds run output — the
+# pre-arm ordering otherwise makes the mandated rehearsal unsatisfiable.
+PLAN_RUN_ID="20260101-cbt-f-01-plan"
+PLAN_DIR="$SCEN_DIR/runs/$PLAN_RUN_ID"
+mkdir -p "$PLAN_DIR"/{contracts,observer,trigger,recovery,checkers,reports}
+printf '{"phase":"resolved"}\n' > "$PLAN_DIR/state.json"
+if ! RUN_ID="$PLAN_RUN_ID" bash "$SCEN_DIR/chaos-trigger.sh" --plan >"$WORK/plan.out" 2>&1; then
+  fail "the rehearsal must accept a pre-armed run directory (see $WORK/plan.out)"
+fi
+grep -q 'pre-armed' "$WORK/plan.out" ||
+  fail "--plan did not report the pre-armed run directory it accepted"
+grep -q 'local precondition check: clear' "$WORK/plan.out" ||
+  fail "--plan did not report a clear precondition for a pre-armed run directory"
+printf '{}\n' > "$PLAN_DIR/driver-timings.json"
+if RUN_ID="$PLAN_RUN_ID" bash "$SCEN_DIR/chaos-trigger.sh" --plan >"$WORK/plan-collision.out" 2>&1; then
+  fail "the rehearsal must still refuse a run directory that holds run output"
+fi
+grep -q 'already holds run output' "$WORK/plan-collision.out" ||
+  fail "the rehearsal refusal did not name the run output it found"
+rm -rf "$PLAN_DIR"
+
 set +e
 bash "$SCEN_DIR/chaos-trigger.sh" >"$WORK/trigger.out" 2>&1
 trigger_status=$?
@@ -104,6 +133,13 @@ jq -e '.replacement_pod.name != "" and .replacement_pod.uid != "" and .replaceme
   "$EVIDENCE/effect-check.json" >/dev/null ||
   fail "effect-check.json must record the replacement pod identity, not only readiness: $(jq -c . "$EVIDENCE/effect-check.json")"
 jq -e 'type == "object"' "$EVIDENCE/exit-statuses.json" >/dev/null || fail "exit-statuses.json is not a JSON object"
+
+# The capture of the pre-injection checkpoint tree must record its own exit
+# status: an empty tree on a fresh lifecycle and a failed capture both print no
+# checkpoints, and the log must not conflate them.
+grep -Eq 'Pre-backup checkpoint tree \(exit=0, lines=[0-9]+; empty is expected on a fresh lifecycle\):' \
+  "$EVIDENCE/trigger.log" ||
+  fail "trigger.log does not record the checkpoint-tree capture exit status: $(grep -n 'checkpoint tree' "$EVIDENCE/trigger.log" || printf '<no match>')"
 
 if grep -q "$WORK/kubeconfig.conf" "$EVIDENCE"/*.json "$EVIDENCE"/command.txt "$EVIDENCE"/trigger.log; then
   fail "trigger evidence leaked the kubeconfig path"

@@ -82,6 +82,28 @@ raw streams, `observer/finding.md` (final compact analysis: timeline,
 criterion statuses with exact artifact/field citations, contradictions,
 missing observations, confidence limits).
 
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** read-only. If a watch dies or a handoff cannot be
+  confirmed from disk, record the raw evidence and hand off BLOCKED; never
+  mutate, restart, or "fix" the run yourself.
+
 ## Never
 - Inject chaos, modify resources, run E2E, edit the trigger, write reports.
 - Read other runs' artifacts or the learnings file.

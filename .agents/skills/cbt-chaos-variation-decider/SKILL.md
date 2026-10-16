@@ -79,6 +79,26 @@ another run, and is it worth cluster time?"
 - Do not propose running anything during a live run or reading other runs
   beyond the matrix-state list the Lead provides.
 
+## Shared harness policy
+
+- **Interface:** read `make help`, `make stage-list`, and the capability matrix
+  `docs/agent-workflow-audit.md` when the interface is unknown or has changed;
+  never rely on a remembered target, argument, or exit code.
+- **Smallest valid stage:** the Lead selects the stage; never turn a
+  single-stage check into a full `make e2e`/`TYPE=all` rerun, and treat a stage
+  rejection as a lifecycle-state error, not a product failure.
+- **Guards:** never run `make clean-all`; never set
+  `STAGE_SKIP_PREFLIGHT=true` — preflight is the fail-closed gate for every
+  mutating stage.
+- **Bounds and terminal status:** stay inside the wall-clock budget and attempt
+  cap of the contract you were spawned with, and end in exactly one of
+  `COMPLETED`, `FAILED`, `TIMED_OUT`, `BLOCKED`; never wait indefinitely.
+- **Scripts before agents:** use the existing script or Make target for every
+  repeated check. A new script must have an offline test under `tests/` wired
+  into `make test`, a row in `docs/agent-workflow-audit.md`, and a skill
+  reference before any skill calls it.
+- **This role:** bounded by the plan's limits (at most 4 sequential legs, max 5 experiments per batch, max 2 attempts for a suspected transient failure, explicit stop conditions) and it proposes the next leg; the Lead and the human approve it.
+
 ## Never
 - Mutate anything, edit skills, or execute legs yourself. Your file:
   `scenario/analysis/<RUN_ID>-matrix-proposal.md`.
