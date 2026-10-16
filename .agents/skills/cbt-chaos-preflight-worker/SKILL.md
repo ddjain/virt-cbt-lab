@@ -41,11 +41,19 @@ One job: decide GO or NO-GO for the run. You execute nothing live.
    describe <tag>` and `--dry-run` with the exact arguments from the script.
 6. **Cluster readiness**: VM/VMI Running, CBT Enabled, tracker/PVC states,
    no other VMB Progressing, controllers at ready replicas, storage healthy.
-7. **Capacity headroom (mandatory)**: destination PVC must fit the planned
-   full AND its follow-up incremental. Prior starvation: an 8 GiB backup PVC
-   was exhausted by the Full, so the required Incremental failed with
-   `No space left on device`. Inspect requested vs used capacity and expected
-   incremental size; NO-GO on insufficient headroom.
+7. **Capacity headroom (mandatory, fail-closed, correct filesystem)**: measure
+   the filesystem that backs the destination StorageClass, never its parent
+   hostPath. For the HPP pool that is the nested `/cbt-demo-pool-data-dir/csi`
+   (on `/dev/sdb`), NOT `/var/hpvolumes` (on `/dev/sda4`) — the parent
+   overstated free space by ~170 GiB in run 20261016-exp06-r02. Record the exact
+   command in the check's `command` field:
+   `oc exec -n openshift-cnv "$(oc get pods -n openshift-cnv -o name | grep hostpath-provisioner-csi | head -1 | cut -d/ -f2)" -c hostpath-provisioner -- df -B1 /cbt-demo-pool-data-dir/csi`.
+   The destination PVC must fit the planned full AND its follow-up incremental,
+   counting a fully materialising clone DataVolume and a fully allocated backup
+   qcow2 (r02 wrote ~2.5× its estimate). Prior starvation: an 8 GiB backup PVC
+   was exhausted by the Full, so the incremental failed with `No space left on
+   device`. Report device + mount in `filesystem`; NO-GO on insufficient
+   headroom.
 8. **Mode support**: the active Makefile actually implements the `TYPE` the
    spec needs (an older Makefile may ignore it and run the full demo).
 

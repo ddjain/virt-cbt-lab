@@ -24,6 +24,29 @@ mkdir -p "$ROOT/cbt-chaos/scenarios_v2/$SCENARIO" "$ROOT/runs"
 ln -s "$VERDICT_SRC" "$ROOT/cbt-chaos/scenario-verdict.sh"
 VERDICT="$ROOT/cbt-chaos/scenario-verdict.sh"
 SCENARIO_DIR="$ROOT/cbt-chaos/scenarios_v2/$SCENARIO"
+# The check-set registry is repository text resolved next to the evaluator's own
+# bytes (never from the run's pack), so the throwaway root exposes it the same
+# way the real root does.
+REGISTRY_SRC="$ROOT_DIR/cbt-chaos/scenario-check-sets.tsv"
+ln -s "$REGISTRY_SRC" "$ROOT/cbt-chaos/scenario-check-sets.tsv"
+
+# The frozen CBT-EXP-06 pack is the regression fixture for the check-set
+# registry (`evaluator-out-of-shape`, third occurrence). Both the pack and the
+# lifecycle records are git-ignored (cbt-chaos/scenarios_v2/*/runs/**, /runs/),
+# so a checkout that never ran it has no fixture: the regression is skipped
+# there rather than failed.
+EXP06_SCENARIO="CBT-EXP-06"
+EXP06_RUN="20261016-exp06-r02"
+PACK_DIR="$ROOT_DIR/cbt-chaos/scenarios_v2/$EXP06_SCENARIO/runs/$EXP06_RUN"
+LIFECYCLE_PACK_DIR="$ROOT_DIR/runs/$EXP06_RUN"
+EXP06_SCENARIO_DIR="$ROOT/cbt-chaos/scenarios_v2/$EXP06_SCENARIO"
+EXP06_RUN_DIR="$EXP06_SCENARIO_DIR/runs/$EXP06_RUN"
+EXP06_PACK_AVAILABLE=false
+if [[ -s "$PACK_DIR/trigger/exit-statuses.json" && -s "$PACK_DIR/observer/effect/qmp-nodes-post.json" &&
+      -s "$LIFECYCLE_PACK_DIR/run.json" && -s "$LIFECYCLE_PACK_DIR/report.json" &&
+      -s "$LIFECYCLE_PACK_DIR/summary.json" ]]; then
+  EXP06_PACK_AVAILABLE=true
+fi
 
 write_lifecycle() { # run_name kind run_id_override
   local name="$1" kind="$2" rid="${3:-$1}"
@@ -157,6 +180,35 @@ write_clean_summary() { # run_name
 reset_fixture() {
   rm -rf "$SCENARIO_DIR/runs" "$ROOT/runs"
   mkdir -p "$SCENARIO_DIR/runs" "$ROOT/runs"
+}
+
+write_exp06_fixture() { # copies the frozen r02 artifacts the evaluator reads
+  rm -rf "$EXP06_RUN_DIR" "$ROOT/runs/$EXP06_RUN"
+  mkdir -p "$EXP06_RUN_DIR/trigger" "$EXP06_RUN_DIR/observer/effect" "$ROOT/runs/$EXP06_RUN"
+  local rel
+  for rel in action-request.json bitmaps-before.json bitmaps-after.json \
+             query-named-block-nodes-after.json exit-statuses.json legB-incremental-backup.yaml; do
+    cp "$PACK_DIR/trigger/$rel" "$EXP06_RUN_DIR/trigger/$rel"
+  done
+  for rel in qmp-nodes-post.json qmp-nodes-post-late.json pre-bitmap-history.jsonl; do
+    cp "$PACK_DIR/observer/effect/$rel" "$EXP06_RUN_DIR/observer/effect/$rel"
+  done
+  # The legacy family needs the observer's own handoff marker: without it
+  # injection-signal degrades to UNKNOWN ("the injector is the sole authority")
+  # instead of the FAIL the frozen pack produced.
+  cp "$PACK_DIR/observer/ARMED" "$EXP06_RUN_DIR/observer/ARMED"
+  for rel in run.json report.json summary.json; do
+    cp "$LIFECYCLE_PACK_DIR/$rel" "$ROOT/runs/$EXP06_RUN/$rel"
+  done
+}
+
+# Runs the evaluator over the CBT-F-01 fixture under an explicitly named set and
+# prints one check's status; used by the check-set cases that need no pack.
+check_status_under_set() { # <check-set> <check-id>
+  local set="$1" id="$2" out
+  out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+    --check-set "$set" 2>/dev/null)" || true
+  jq -r --arg id "$id" '.checks[] | select(.id == $id) | .status' <<<"$out"
 }
 
 # --- (a) fully populated happy path yields PASS and exit 0 -------------------
@@ -414,11 +466,11 @@ list_status=0
 list_output="$(cd "$TEST_TMP" && "$VERDICT" --list-checks \
   --scenario-dir "$TEST_TMP/does-not-exist" --run-id missing-run 2>/dev/null)" || list_status=$?
 [[ "$list_status" -eq 0 ]] || fail "--list-checks must exit 0, got $list_status"
-[[ "$(printf '%s\n' "$list_output" | wc -l | tr -d ' ')" == "8" ]] ||
-  fail "--list-checks must print 8 TSV rows"
+[[ "$(printf '%s\n' "$list_output" | wc -l | tr -d ' ')" == "11" ]] ||
+  fail "--list-checks must print 11 TSV rows (the 8 legacy ids plus the 3 new ones)"
 [[ "$(printf '%s\n' "$list_output" | cut -f1 | tr '\n' ' ')" == \
-  "run-id-consistency injection-signal launcher-replacement backup-interrupted tracker-not-advanced cbt-recovered same-vm-recovery clean-lifecycle " ]] ||
-  fail "--list-checks must print the fixed check ids in order"
+  "run-id-consistency injection-signal launcher-replacement backup-interrupted tracker-not-advanced injection-pre-state injection-effect affected-pass-outcome cbt-recovered same-vm-recovery clean-lifecycle " ]] ||
+  fail "--list-checks must print the implemented check ids in fixed order"
 
 # --- (f) usage errors exit 2 -------------------------------------------------
 usage_status=0
@@ -441,4 +493,146 @@ usage_status=0
 "$VERDICT" --help >/dev/null 2>&1 || usage_status=$?
 [[ "$usage_status" -eq 0 ]] || fail "--help must exit 0, got $usage_status"
 
-printf 'PASS: scenario-verdict evaluates the fixed check list deterministically (PASS/INVALID/INCONCLUSIVE/FAIL), caps clean-lifecycle-less verdicts, and reports the frozen JSON contract with exit codes 0/1/2.\n'
+# --- (g) --list-check-sets exposes the registry, read-only -------------------
+list_output=""
+list_status=0
+list_output="$(cd "$TEST_TMP" && "$VERDICT" --list-check-sets \
+  --scenario-dir "$TEST_TMP/does-not-exist" --run-id missing-run 2>/dev/null)" || list_status=$?
+[[ "$list_status" -eq 0 ]] || fail "--list-check-sets must exit 0, got $list_status"
+[[ "$(printf '%s\n' "$list_output" | wc -l | tr -d ' ')" == "2" ]] ||
+  fail "--list-check-sets must print exactly the two registry rows, got: $list_output"
+[[ "$(printf '%s\n' "$list_output" | cut -f1 | tr '\n' ' ')" == "default CBT-EXP-06 " ]] ||
+  fail "--list-check-sets must print the registry keys in file order, got: $list_output"
+[[ "$(printf '%s\n' "$list_output" | awk -F'\t' '$1 == "default" {print $2}')" == \
+  "run-id-consistency,injection-signal,launcher-replacement,backup-interrupted,tracker-not-advanced,cbt-recovered,same-vm-recovery,clean-lifecycle" ]] ||
+  fail "the default row must stay byte-identical to the legacy fixed table"
+[[ "$(printf '%s\n' "$list_output" | awk -F'\t' '$1 == "CBT-EXP-06" {print $2}')" == \
+  "run-id-consistency,injection-pre-state,injection-effect,affected-pass-outcome,cbt-recovered,same-vm-recovery,clean-lifecycle" ]] ||
+  fail "the CBT-EXP-06 row must name the surgery-family checks"
+
+# --- (h) the CBT-EXP-06 set regrades the frozen r02 pack ---------------------
+# Pins the `evaluator-out-of-shape` class (third occurrence): checks written for
+# the interrupted-full/launcher-kill family must stop failing a surgery scenario
+# whose pack has no launcher-pod signal and whose affected pass is an
+# incremental, while --check-set default must grade that same pack as before.
+if [[ "$EXP06_PACK_AVAILABLE" != true ]]; then
+  printf 'SKIP: the CBT-EXP-06 check-set regression needs the frozen pack (%s) and its lifecycle records (%s), which are git-ignored and absent here.\n' \
+    "$PACK_DIR" "$LIFECYCLE_PACK_DIR"
+else
+  write_exp06_fixture
+  verdict_status=0
+  stdout_out="$("$VERDICT" --scenario-dir "$EXP06_SCENARIO_DIR" --run-id "$EXP06_RUN" 2>/dev/null)" || verdict_status=$?
+  [[ "$verdict_status" -eq 1 ]] ||
+    fail "the CBT-EXP-06 set must not exit 0 on the frozen pack, got $verdict_status"
+  jq -e '
+    (.checks | length) == 7 and
+    ([.checks[].id] == ["run-id-consistency","injection-pre-state","injection-effect",
+                        "affected-pass-outcome","cbt-recovered","same-vm-recovery","clean-lifecycle"]) and
+    (.checks[] | select(.id == "injection-effect") | .status) == "PASS" and
+    (.checks[] | select(.id == "injection-pre-state") | .status) == "UNKNOWN" and
+    (.checks[] | select(.id == "affected-pass-outcome") | .status) == "UNKNOWN" and
+    .verdict == "INCONCLUSIVE"
+  ' <<<"$stdout_out" >/dev/null ||
+    fail "the CBT-EXP-06 set must grade the frozen r02 pack INCONCLUSIVE with injection-effect PASS, got $stdout_out"
+
+  verdict_status=0
+  stdout_out="$("$VERDICT" --scenario-dir "$EXP06_SCENARIO_DIR" --run-id "$EXP06_RUN" \
+    --check-set default 2>/dev/null)" || verdict_status=$?
+  [[ "$verdict_status" -eq 1 ]] || fail "--check-set default must exit 1 on the frozen pack, got $verdict_status"
+  jq -e '
+    (.checks | length) == 8 and
+    .verdict == "FAIL" and
+    (.checks[] | select(.id == "injection-signal") | .status) == "FAIL" and
+    (.verdict_reason | contains("injection-signal"))
+  ' <<<"$stdout_out" >/dev/null ||
+    fail "--check-set default must still grade the frozen pack FAIL on injection-signal, got $stdout_out"
+fi
+
+# --- (i) a check id named by a set but not implemented is UNKNOWN ------------
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID"
+write_lifecycle "$RUN_ID" failed
+write_lifecycle_records "$RUN_ID"
+write_clean_summary "$CLEAN_RUN"
+write_trigger "$RUN_ID"
+printf 'default\trun-id-consistency,no-such-check-id\n' > "$TEST_TMP/registry-unknown.tsv"
+verdict_status=0
+stdout_out="$("$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --check-set-file "$TEST_TMP/registry-unknown.tsv" \
+  --clean-lifecycle-run "$CLEAN_RUN" 2>/dev/null)" || verdict_status=$?
+[[ "$verdict_status" -eq 1 ]] || fail "a registry naming an unimplemented check must not exit 0, got $verdict_status"
+jq -e --arg reg "$TEST_TMP/registry-unknown.tsv" '
+  .verdict == "INCONCLUSIVE" and
+  ([.checks[].id] == ["run-id-consistency","no-such-check-id"]) and
+  (.checks[] | select(.id == "no-such-check-id") | .status) == "UNKNOWN" and
+  (.checks[] | select(.id == "no-such-check-id") | .actual | contains($reg))
+' <<<"$stdout_out" >/dev/null ||
+  fail "an unimplemented check id must be UNKNOWN (fail-closed) and name the registry, got $stdout_out"
+
+# --- (j) an undefined check-set name, and a registry without a fallback ------
+reset_fixture
+usage_status=0
+"$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" --check-set bogus >/dev/null 2>&1 || usage_status=$?
+[[ "$usage_status" -eq 2 ]] || fail "--check-set for an undefined name must exit 2, got $usage_status"
+printf 'other-set\trun-id-consistency\n' > "$TEST_TMP/registry-nodefault.tsv"
+usage_status=0
+"$VERDICT" --scenario-dir "$SCENARIO_DIR" --run-id "$RUN_ID" \
+  --check-set-file "$TEST_TMP/registry-nodefault.tsv" >/dev/null 2>&1 || usage_status=$?
+[[ "$usage_status" -eq 2 ]] ||
+  fail "a registry with no default row and no scenario row must exit 2, got $usage_status"
+
+# --- (k) affected-pass-outcome models every recorded outcome shape -----------
+# exit-statuses.json alone, graded through the CBT-EXP-06 set.
+outcome_status() { # <exit-statuses.json body>
+  reset_fixture
+  mkdir -p "$SCENARIO_DIR/runs/$RUN_ID/trigger"
+  printf '%s\n' "$1" > "$SCENARIO_DIR/runs/$RUN_ID/trigger/exit-statuses.json"
+  check_status_under_set CBT-EXP-06 affected-pass-outcome
+}
+status="$(outcome_status '{"pass_wait_bound_seconds":1200,"surgery_incremental":{"name":"vm-incremental-demo-p01","type":"Incremental","done":"True","reason":"Successfully completed VirtualMachineBackup","included_volumes":"rootdisk datadisk","terminal":true,"waited_seconds":300}}')"
+[[ "$status" == "PASS" ]] || fail "a terminal Done=True pass must be PASS, got $status"
+status="$(outcome_status '{"pass_wait_bound_seconds":1200,"surgery_incremental":{"name":"vm-incremental-demo-p01","type":"Incremental","done":"False","reason":"Backup has failed: VMI backup status was lost","terminal":true,"waited_seconds":600}}')"
+[[ "$status" == "PASS" ]] || fail "a terminal done=False pass must be PASS, got $status"
+status="$(outcome_status '{"pass_wait_bound_seconds":1200,"surgery_incremental":{"name":"vm-incremental-demo-p01","done":"","terminal":false,"waited_seconds":1235}}')"
+[[ "$status" == "PASS" ]] || fail "a non-terminal stall past the wait bound must be PASS, got $status"
+status="$(outcome_status '{"surgery_incremental":{"name":"vm-incremental-demo-p01","done":"","terminal":false,"waited_seconds":1235}}')"
+[[ "$status" == "UNKNOWN" ]] || fail "a non-terminal record with no wait bound must be UNKNOWN, got $status"
+
+# --- (l) injection-effect is per-disk, not merely "the bitmap is gone" -------
+effect_status() { # <query-named-block-nodes-after.json body>
+  reset_fixture
+  mkdir -p "$SCENARIO_DIR/runs/$RUN_ID/trigger"
+  printf '%s\n' '{"utc":"2026-10-16T04:28:20Z","checkpoint":"vm-backup-demo-ckpt","disk":"datadisk","qemu_node":"libvirt-2-format"}' \
+    > "$SCENARIO_DIR/runs/$RUN_ID/trigger/surgery-target.json"
+  printf '%s\n' "$1" > "$SCENARIO_DIR/runs/$RUN_ID/trigger/query-named-block-nodes-after.json"
+  check_status_under_set CBT-EXP-06 injection-effect
+}
+target_kept='{"node-name":"libvirt-2-format","file":"/cbt/datadisk.qcow2","dirty-bitmaps":[{"name":"vm-backup-demo-ckpt","recording":true}]}'
+target_gone='{"node-name":"libvirt-2-format","file":"/cbt/datadisk.qcow2","dirty-bitmaps":[]}'
+sibling_keeps='{"node-name":"libvirt-4-format","file":"/cbt/rootdisk.qcow2","dirty-bitmaps":[{"name":"vm-backup-demo-ckpt","recording":true}]}'
+sibling_empty='{"node-name":"libvirt-4-format","file":"/cbt/rootdisk.qcow2","dirty-bitmaps":[]}'
+status="$(effect_status "{\"return\":[$target_kept,$sibling_empty]}")"
+[[ "$status" == "FAIL" ]] || fail "a surviving target bitmap must FAIL injection-effect, got $status"
+status="$(effect_status "{\"return\":[$target_gone,$sibling_keeps]}")"
+[[ "$status" == "PASS" ]] || fail "a per-disk removal must PASS injection-effect, got $status"
+status="$(effect_status "{\"return\":[$target_gone,$sibling_empty]}")"
+[[ "$status" == "UNKNOWN" ]] || fail "a removal no sibling bitmap can contrast must be UNKNOWN, got $status"
+
+# --- (m) cbt-recovered falls back to the observer's own live VMI read --------
+# Pins the observer-corroboration branch where the lifecycle resolves neither
+# half (no verify checks, no attempt state, no summary cbt block).
+reset_fixture
+mkdir -p "$SCENARIO_DIR/runs/$RUN_ID/observer/effect" "$ROOT/runs/$RUN_ID"
+jq -n --arg rid "$RUN_ID" '{run_id:$rid, vm_name:("vm-"+$rid), status:"incomplete"}' \
+  > "$ROOT/runs/$RUN_ID/run.json"
+printf '{"run_id":"%s","verification":{"checks":[]}}\n' "$RUN_ID" > "$ROOT/runs/$RUN_ID/report.json"
+printf '{"run_id":"%s"}\n' "$RUN_ID" > "$ROOT/runs/$RUN_ID/summary.json"
+printf '{"changedBlockTracking":{"state":"Enabled"}}\n' \
+  > "$SCENARIO_DIR/runs/$RUN_ID/observer/effect/post-vmi-cbt.json"
+printf '{"status":{"phase":"Running"}}\n' \
+  > "$SCENARIO_DIR/runs/$RUN_ID/observer/effect/post-vmi-now.json"
+status="$(check_status_under_set default cbt-recovered)"
+[[ "$status" == "PASS" ]] ||
+  fail "cbt-recovered must fall back to the observer's post-window VMI read, got $status"
+
+printf 'PASS: scenario-verdict evaluates the selected check list deterministically (PASS/INVALID/INCONCLUSIVE/FAIL), resolves check sets from the registry fail-closed, caps clean-lifecycle-less verdicts, and reports the frozen JSON contract with exit codes 0/1/2.\n'

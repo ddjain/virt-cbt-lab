@@ -33,7 +33,11 @@
 #   <root>/runs/<clean-lifecycle-run>/summary.json
 # Nothing is written except the optional --json PATH.
 #
-# Checks (fixed ids, fixed order):
+# Checks: implementations with fixed ids and fixed behaviour. Which ids are
+# evaluated for a run comes from a check set (cbt-chaos/scenario-check-sets.tsv:
+# the row for the scenario directory name, else `default`), overridable with
+# --check-set NAME / --check-set-file PATH. An id named by a set with no
+# implementation is UNKNOWN (fail-closed) and can never yield PASS.
 #   run-id-consistency   lifecycle run.json run_id/vm_name match --run-id and
 #                        no trigger/observer artifact path references another run
 #   injection-signal     trigger evidence records an active-copy signal naming the
@@ -51,6 +55,14 @@
 #                        attributed to the interrupted copy
 #   cbt-recovered        CBT returned to Enabled and the VM/VMI is Running after
 #                        recovery
+#   injection-pre-state  a non-injector witness shows the named checkpoint bitmap
+#                        present on the target disk before the removal
+#   injection-effect     the target disk lost exactly the named bitmap while a
+#                        sibling disk of the same guest kept its bitmap
+#   affected-pass-outcome
+#                        the affected pass has a modelled outcome: a terminal
+#                        condition with its volumes, or a recorded non-terminal
+#                        stall past the wait bound
 #   same-vm-recovery     the same-VM recovery attempt succeeded and its restore
 #                        comparison matched the baseline (count/bytes/hash)
 #   clean-lifecycle      the clean lifecycle summary is PASS with verified restore
@@ -124,6 +136,9 @@ usage() {
     '  --clean-lifecycle-run NAME   separate clean lifecycle to compare against' \
     '  --json PATH                  also write the JSON verdict to PATH' \
     '  --list-checks                print check ids + descriptions as TSV' \
+    '  --list-check-sets            print the check-set registry as TSV' \
+    '  --check-set NAME             check set from cbt-chaos/scenario-check-sets.tsv (default: the scenario id, else `default`)' \
+    '  --check-set-file PATH        alternate check-set registry (same TSV shape)' \
     '  --help                       print this usage' \
     '' \
     'Exit: 0 verdict PASS; 1 any other verdict; 2 usage/argument error.'
@@ -144,10 +159,13 @@ lifecycle_run=''
 clean_lifecycle_run=''
 json_path=''
 list_checks=false
+check_set=''
+check_set_file=''
+list_check_sets=false
 
 while (($# > 0)); do
   case "$1" in
-    --scenario-dir|--run-id|--lifecycle-run|--clean-lifecycle-run|--json)
+    --scenario-dir|--run-id|--lifecycle-run|--clean-lifecycle-run|--json|--check-set|--check-set-file)
       (($# >= 2)) || usage_err "$1 requires a value"
       case "$1" in
         --scenario-dir) scenario_dir="$2" ;;
@@ -155,10 +173,13 @@ while (($# > 0)); do
         --lifecycle-run) lifecycle_run="$2" ;;
         --clean-lifecycle-run) clean_lifecycle_run="$2" ;;
         --json) json_path="$2" ;;
+        --check-set) check_set="$2" ;;
+        --check-set-file) check_set_file="$2" ;;
       esac
       shift 2
       ;;
     --list-checks) list_checks=true; shift ;;
+    --list-check-sets) list_check_sets=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) usage_err "unknown argument: $1" ;;
   esac
@@ -171,6 +192,9 @@ list_check_table() {
     'launcher-replacement' 'trigger effect-check.json proves the old pod UID disappeared and a replacement launcher became Ready' \
     'backup-interrupted' 'the interrupted full backup is terminal and failed (type=Full, Done=True, failure reason, PVC retained)' \
     'tracker-not-advanced' 'the tracker held no checkpoint at failure and none is attributed to the interrupted copy' \
+    'injection-pre-state' 'a non-injector witness shows the named checkpoint bitmap present on the target disk before the removal' \
+    'injection-effect' 'the target disk lost exactly the named bitmap while a sibling disk of the same guest kept its bitmap' \
+    'affected-pass-outcome' 'the affected pass has a modelled outcome: a terminal condition with its volumes, or a recorded non-terminal stall past the wait bound' \
     'cbt-recovered' 'VM CBT state is Enabled and the VM/VMI is Running after recovery' \
     'same-vm-recovery' 'the same-VM recovery attempt succeeded and its restore comparison matched the baseline' \
     'clean-lifecycle' 'the separate clean lifecycle summary is PASS with verified restore hashes'
@@ -178,6 +202,21 @@ list_check_table() {
 
 if [[ "$list_checks" == true ]]; then
   list_check_table
+  exit 0
+fi
+
+# The registry is repository text, not run evidence: a run cannot widen its own
+# evaluation from the pack it is graded on.
+CHECK_SET_FILE_DEFAULT="$SCRIPT_DIR/scenario-check-sets.tsv"
+
+list_check_sets() {
+  local file="${check_set_file:-$CHECK_SET_FILE_DEFAULT}"
+  [[ -r "$file" ]] || usage_err "check-set registry is not readable: $file"
+  awk -F'\t' '!/^#/ && NF >= 2 { printf "%s\t%s\n", $1, $2 }' "$file"
+}
+
+if [[ "$list_check_sets" == true ]]; then
+  list_check_sets
   exit 0
 fi
 
@@ -204,9 +243,30 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+has_check_set() { # <key>
+  awk -F'\t' -v k="$1" '!/^#/ && NF >= 2 && $1 == k { found = 1 } END { exit !found }' "$CHECK_SET_FILE"
+}
+
+CHECK_SET_FILE="${check_set_file:-$CHECK_SET_FILE_DEFAULT}"
+CHECK_SET_KEY="${check_set:-$(basename "${scenario_dir%/}")}"
+if ! has_check_set "$CHECK_SET_KEY"; then
+  [[ -z "$check_set" ]] || usage_err "--check-set $check_set is not defined in $CHECK_SET_FILE"
+  CHECK_SET_KEY='default'
+  has_check_set "$CHECK_SET_KEY" || usage_err "check-set registry $CHECK_SET_FILE has no 'default' row"
+fi
+mapfile -t CHECK_SET_IDS < <(
+  awk -F'\t' -v k="$CHECK_SET_KEY" '!/^#/ && NF >= 2 && $1 == k {
+    n = split($2, ids, ",")
+    for (i = 1; i <= n; i++) { gsub(/^[ \t]+|[ \t]+$/, "", ids[i]); if (ids[i] != "") print ids[i] }
+  }' "$CHECK_SET_FILE")
+((${#CHECK_SET_IDS[@]} > 0)) || usage_err "check set '$CHECK_SET_KEY' resolved to no checks"
+printf 'check set %s: %d checks from %s\n' "$CHECK_SET_KEY" "${#CHECK_SET_IDS[@]}" "$CHECK_SET_FILE" >&2
+
 RUN_DIR="$scenario_dir/runs/$run_id"
 TRIGGER_DIR="$RUN_DIR/trigger"
 OBSERVER_DIR="$RUN_DIR/observer"
+OBSERVER_VMI_CBT="$OBSERVER_DIR/effect/post-vmi-cbt.json"
+OBSERVER_VMI_NOW="$OBSERVER_DIR/effect/post-vmi-now.json"
 LC_DIR="$ROOT_DIR/runs/$lifecycle_run"
 LC_RUN="$LC_DIR/run.json"
 LC_REPORT="$LC_DIR/report.json"
@@ -652,6 +712,182 @@ check_backup_interrupted() {
 }
 
 # --------------------------------------------------------------------------
+# 4b. injection-pre-state — the target-state precondition, witnessed by someone
+#     other than the injector.
+# --------------------------------------------------------------------------
+# A missing witness is UNKNOWN, never PASS and never FAIL: with no observation
+# there is nothing to contradict, and the evaluator must not reach a negative
+# conclusion by absence alone. Which witness counts is a contract question
+# (contracts/check-injection.md item 4), not an evaluator question.
+check_injection_pre_state() {
+  local expected='a non-injector witness shows the named checkpoint bitmap present on the target disk before the removal'
+  local target_file="$TRIGGER_DIR/surgery-target.json"
+  local pre_bitmaps="$OBSERVER_DIR/effect/qmp-bitmaps-pre.json"
+  local pre_nodes="$OBSERVER_DIR/effect/qmp-nodes-pre.json"
+  local history="$OBSERVER_DIR/effect/pre-bitmap-history.jsonl"
+  local evidence=("$ACTION_REQUEST" "$target_file" "$pre_bitmaps" "$pre_nodes" "$history")
+
+  local checkpoint node
+  checkpoint="$(jq -r '.checkpoint // ""' <<<"$(jq_doc "$target_file")")"
+  node="$(jq -r '.qemu_node // ""' <<<"$(jq_doc "$target_file")")"
+  if [[ -z "$checkpoint" ]]; then
+    checkpoint="$(jq -r '.surgery_target.checkpoint // .checkpoint // ""' <<<"$(jq_doc "$ACTION_REQUEST")")"
+  fi
+  if [[ -z "$checkpoint" && -s "$TRIGGER_DIR/bitmaps-before.json" ]]; then
+    checkpoint="$(jq -r '.[0].name // ""' <<<"$(jq_doc "$TRIGGER_DIR/bitmaps-before.json")")"
+  fi
+
+  if [[ -s "$pre_bitmaps" ]] &&
+     jq -e --arg name "$checkpoint" '.[]? | select(.name == $name)' "$pre_bitmaps" >/dev/null 2>&1; then
+    add_check injection-pre-state PASS "$expected" \
+      "observer read names the checkpoint bitmap ${checkpoint} on node ${node:-<unnamed>}" "${evidence[@]}"
+    return 0
+  fi
+
+  if [[ -s "$history" ]]; then
+    local rows present
+    rows="$(wc -l < "$history" | tr -d ' ')"
+    present="$(jq -rs '[.[]? | select(.target_present == true)] | length' "$history" 2>/dev/null || printf 0)"
+    if ((present > 0)); then
+      add_check injection-pre-state PASS "$expected" \
+        "observer pre-capture history has ${present} row(s) with target_present=true (${rows} rows total)" "${evidence[@]}"
+      return 0
+    fi
+    add_check injection-pre-state UNKNOWN "$expected" \
+      "no observer row observed the target bitmap before the removal (${rows} rows: $(jq -rs '[.[]? | .result] | group_by(.) | map("\(length)x\(.[0])") | join(", ")' "$history" 2>/dev/null || printf 'unreadable'))" \
+      "${evidence[@]}"
+    return 0
+  fi
+
+  if [[ -s "$TRIGGER_DIR/bitmaps-before.json" ]]; then
+    add_check injection-pre-state UNKNOWN "$expected" \
+      'the only pre-removal read is injector-authored (trigger/bitmaps-before.json); the injector may not be the sole authority for its own injection' \
+      "${evidence[@]}" "$TRIGGER_DIR/bitmaps-before.json"
+  else
+    add_check injection-pre-state UNKNOWN "$expected" \
+      'no pre-removal bitmap read exists in trigger/ or observer/' "${evidence[@]}"
+  fi
+}
+
+# --------------------------------------------------------------------------
+# 4c. injection-effect — per-disk specificity of the removal.
+# --------------------------------------------------------------------------
+check_injection_effect() {
+  local expected='the target disk lost exactly the named bitmap while a sibling disk of the same guest kept its bitmap'
+  local obs_nodes="$OBSERVER_DIR/effect/qmp-nodes-post.json"
+  local trig_nodes="$TRIGGER_DIR/query-named-block-nodes-after.json"
+  local nodes_json=''
+  if [[ -s "$obs_nodes" ]]; then nodes_json="$obs_nodes"
+  elif [[ -s "$trig_nodes" ]]; then nodes_json="$trig_nodes"
+  else
+    add_check injection-effect UNKNOWN "$expected" \
+      'no post-removal QEMU node inventory exists' "$obs_nodes" "$trig_nodes"
+    return 0
+  fi
+
+  local target_file="$TRIGGER_DIR/surgery-target.json"
+  local checkpoint disk
+  checkpoint="$(jq -r '.checkpoint // .surgery_target.checkpoint // ""' <<<"$(jq_doc "$target_file")")"
+  [[ -n "$checkpoint" ]] ||
+    checkpoint="$(jq -r '.checkpoint // .surgery_target.checkpoint // ""' <<<"$(jq_doc "$ACTION_REQUEST")")"
+  disk="$(jq -r '.disk // .surgery_target.disk // ""' <<<"$(jq_doc "$target_file")")"
+  [[ -n "$disk" ]] ||
+    disk="$(jq -r '.surgery_target.disk // .disk // ""' <<<"$(jq_doc "$ACTION_REQUEST")")"
+
+  # Per-disk specificity: the target disk's `-format` node must have lost the
+  # checkpoint while ANOTHER disk's node still carries it (the same checkpoint
+  # name is registered once per disk). Keys are quoted: `.dirty-bitmaps` parses
+  # as a subtraction, not as a key lookup.
+  local info
+  info="$(jq -c --arg name "$checkpoint" --arg disk "$disk" '
+    ((.return // .) | if type == "array" then . else [] end) as $nodes |
+    ($nodes | map(select((.file // "") | test("/cbt/[^/]+\\.qcow2$")))
+           | map({ node: (."node-name" // ""), file: (.file // ""),
+                   names: ((."dirty-bitmaps" // []) | map(.name)) })) as $disks |
+    ($disks | map(select((.node | test("-format$"))))) as $format_disks |
+    (if ($format_disks | length) > 0 then $format_disks else $disks end) as $candidates |
+    ($candidates | map(select((.file // "") | test("/cbt/" + (if $disk == "" then "[^/]+" else $disk end) + "\\.qcow2$")))) as $target |
+    ($candidates | map(select((.file // "") | test("/cbt/" + (if $disk == "" then "[^/]+" else $disk end) + "\\.qcow2$") | not))) as $siblings |
+    { target_present: ([$target[] | select(.names | index($name))] | length > 0),
+      target_nodes: [$target[].node],
+      sibling_nodes: [$siblings[].node],
+      siblings_with_checkpoint: ([$siblings[] | select(.names | index($name))] | length) }' \
+    <<<"$(jq_doc "$nodes_json")")"
+
+  local target_present siblings_with_checkpoint target_nodes sibling_nodes
+  target_present="$(jq -r '.target_present' <<<"$info")"
+  siblings_with_checkpoint="$(jq -r '.siblings_with_checkpoint' <<<"$info")"
+  target_nodes="$(jq -r '.target_nodes | join(",")' <<<"$info")"
+  sibling_nodes="$(jq -r '.sibling_nodes | join(",")' <<<"$info")"
+
+  if [[ "$target_present" == "true" ]]; then
+    add_check injection-effect FAIL "$expected" \
+      "the named bitmap is still present on the target disk's node(s) [${target_nodes:-<none matched>}] in $nodes_json" "$nodes_json"
+  elif ((siblings_with_checkpoint > 0)); then
+    add_check injection-effect PASS "$expected" \
+      "target node(s) [${target_nodes:-<none matched>}] lost ${checkpoint} while sibling node(s) [${sibling_nodes:-<none>}] kept it (source: $nodes_json)" "$nodes_json"
+  else
+    add_check injection-effect UNKNOWN "$expected" \
+      "the target bitmap is gone, but no sibling node in $nodes_json still carries the checkpoint, so the removal's per-disk specificity is unproven" "$nodes_json"
+  fi
+}
+
+# --------------------------------------------------------------------------
+# 4d. affected-pass-outcome — the affected pass must have a modelled outcome.
+# --------------------------------------------------------------------------
+# Modelled outcomes: terminal Done=True (with its included volumes), terminal
+# done=False (the detected-and-failed path), or a non-terminal object recorded
+# past its wait bound. The status expresses *shape*, not product quality: which
+# of those is good news is the scenario spec's and the checkers' call.
+check_affected_pass_outcome() {
+  local expected='the affected pass has a modelled outcome: a terminal condition with its volumes, or a recorded non-terminal stall past the wait bound'
+  local es="$TRIGGER_DIR/exit-statuses.json"
+  local evidence=("$es" "$TRIGGER_DIR/legB-incremental-backup.yaml" "$TRIGGER_DIR/run-notes.md" "$TRIGGER_DIR/trigger.log")
+  if [[ ! -s "$es" ]]; then
+    add_check affected-pass-outcome UNKNOWN "$expected" \
+      'no trigger/exit-statuses.json: the affected pass recorded no outcome' "${evidence[@]}"
+    return 0
+  fi
+
+  # `terminal` is a boolean the trigger writes from the pass's own status, so it
+  # must survive as `false` — `// null` would collapse it and turn the recorded
+  # non-terminal stall into "not modelled" (the gap this check exists to close).
+  # shellcheck disable=SC1010  # `done` here is a backup status word, not a loop terminator
+  local info terminal done type reason volumes waited bound name
+  info="$(jq -c '{
+      name: (.surgery_incremental.name // ""),
+      terminal: (.surgery_incremental.terminal | if type == "boolean" then . else null end),
+      type: (.surgery_incremental.type // ""),
+      done: (.surgery_incremental.done // ""),
+      reason: (.surgery_incremental.reason // ""),
+      volumes: (.surgery_incremental.included_volumes // ""),
+      waited: (.surgery_incremental.waited_seconds // null),
+      bound: (.pass_wait_bound_seconds // null) }' <<<"$(jq_doc "$es")")"
+  terminal="$(jq -r '.terminal' <<<"$info")"
+  type="$(jq -r '.type' <<<"$info")"
+  done="$(jq -r '.done' <<<"$info")"
+  reason="$(jq -r '.reason' <<<"$info")"
+  volumes="$(jq -r '.volumes' <<<"$info")"
+  waited="$(jq -r '.waited' <<<"$info")"
+  bound="$(jq -r '.bound' <<<"$info")"
+  name="$(jq -r '.name' <<<"$info")"
+
+  if [[ "$terminal" == "true" && "$done" == "True" ]]; then
+    add_check affected-pass-outcome PASS "$expected" \
+      "terminal ${type:-<no type>} Done=True volumes=\"${volumes:-<none>}\" (${name:-<unnamed>})" "${evidence[@]}"
+  elif [[ "$terminal" == "true" ]]; then
+    add_check affected-pass-outcome PASS "$expected" \
+      "terminal done=${done:-<absent>} type=${type:-<absent>} reason=\"${reason:-<none>}\" (detected-and-failed path, ${name:-<unnamed>})" "${evidence[@]}"
+  elif [[ "$terminal" == "false" && "$waited" =~ ^[0-9]+$ && "$bound" =~ ^[0-9]+$ && "$waited" -ge "$bound" ]]; then
+    add_check affected-pass-outcome PASS "$expected" \
+      "stalled non-terminal after ${waited}s of a ${bound}s bound: modelled outcome = non-terminal stall (no type, no Done, no includedVolumes)" "${evidence[@]}"
+  else
+    add_check affected-pass-outcome UNKNOWN "$expected" \
+      "the affected pass's outcome is not modelled: terminal=${terminal} waited=${waited} bound=${bound} (the trigger must record surgery_incremental.terminal/_waited_seconds and pass_wait_bound_seconds)" "${evidence[@]}"
+  fi
+}
+
+# --------------------------------------------------------------------------
 # 5. tracker-not-advanced
 # --------------------------------------------------------------------------
 check_tracker_not_advanced() {
@@ -786,6 +1022,27 @@ check_cbt_recovered() {
     sources+=('summary.json lifecycle.state=complete')
   else
     running=null
+  fi
+
+  # The observer's own live read of this run's VMI is admissible corroboration
+  # when the lifecycle verify stage never ran (or never wrote the check). Both
+  # artifacts are observer-authored summaries of raw reads taken inside the
+  # window; without them an unverified state stays UNKNOWN.
+  if [[ "$cbt" == "true" || "$running" == "true" ]]; then
+    :
+  else
+    local observer_cbt observer_phase
+    observer_cbt="$(jq -r '.changedBlockTracking.state // .status.changedBlockTracking.state // ""' \
+      <<<"$(jq_doc "$OBSERVER_VMI_CBT")")"
+    observer_phase="$(jq -r '.status.phase // ""' <<<"$(jq_doc "$OBSERVER_VMI_NOW")")"
+    if [[ "$observer_cbt" == "Enabled" ]]; then
+      cbt=true
+      sources+=('observer/effect/post-vmi-cbt.json#changedBlockTracking.state=Enabled')
+    fi
+    if [[ "$observer_phase" == "Running" ]]; then
+      running=true
+      sources+=('observer/effect/post-vmi-now.json#status.phase=Running')
+    fi
   fi
 
   local actual="cbt=${cbt} vmi_running=${running} (sources: ${sources[*]:-none})"
@@ -953,14 +1210,34 @@ detect_blocked() {
 # Evaluation
 # --------------------------------------------------------------------------
 printf '%-22s %-14s %s\n' 'check' 'status' 'detail' >&2
-check_run_id_consistency
-check_injection_signal
-check_launcher_replacement
-check_backup_interrupted
-check_tracker_not_advanced
-check_cbt_recovered
-check_same_vm_recovery
-check_clean_lifecycle
+
+# Implementation table. An id named by the resolved set but absent here is
+# UNKNOWN (fail-closed): a typo or an unimplemented id caps the verdict at
+# INCONCLUSIVE instead of silently disappearing from the evaluation.
+run_check() {
+  case "$1" in
+    run-id-consistency) check_run_id_consistency ;;
+    injection-signal) check_injection_signal ;;
+    launcher-replacement) check_launcher_replacement ;;
+    backup-interrupted) check_backup_interrupted ;;
+    tracker-not-advanced) check_tracker_not_advanced ;;
+    injection-pre-state) check_injection_pre_state ;;
+    injection-effect) check_injection_effect ;;
+    affected-pass-outcome) check_affected_pass_outcome ;;
+    cbt-recovered) check_cbt_recovered ;;
+    same-vm-recovery) check_same_vm_recovery ;;
+    clean-lifecycle) check_clean_lifecycle ;;
+    *)
+      add_check "$1" UNKNOWN 'the check id has an implementation in this evaluator' \
+        "check id '$1' is named by check set '$CHECK_SET_KEY' ($CHECK_SET_FILE) but scenario-verdict.sh does not implement it" \
+        "$CHECK_SET_FILE"
+      ;;
+  esac
+}
+
+for check_id in "${CHECK_SET_IDS[@]}"; do
+  run_check "$check_id"
+done
 
 blocked_evidence="$(detect_blocked)"
 verdict=''

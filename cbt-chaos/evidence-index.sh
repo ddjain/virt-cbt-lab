@@ -2,9 +2,11 @@
 # evidence-index.sh — regenerate one chaos run's Lead-owned evidence index.
 #
 # The index is the manifest checkers grade against: every evidence file under the
-# run root with its sha256 and size. It must be the LAST write of the run (see
-# cbt-chaos/pack-validate.sh rules 3-4), so run this only after every agent has
-# finished writing, and append all ledger lines before it.
+# run root with its sha256 and size. It must be the LAST evidence write of the
+# PHASE (see cbt-chaos/pack-validate.sh rules 3-4 and --freeze), so run this only
+# after every agent has finished writing and after the phase's last ledger
+# append. checkers/pack-freeze.json is a gate record, not evidence, and is
+# deliberately excluded.
 #
 # Usage: evidence-index.sh <run-root>
 #   <run-root>  directory holding ledger.jsonl / state.json, e.g.
@@ -66,7 +68,9 @@ count=0
 empty_count=0
 while IFS= read -r -d '' file; do
   rel="${file#"$root"/}"
-  [[ "$rel" == "evidence-index.json" ]] && continue
+  case "$rel" in
+    evidence-index.json|checkers/pack-freeze.json) continue ;;  # index + phase-gate record, not evidence
+  esac
   if [[ ! -s "$file" ]]; then
     empty_count=$((empty_count + 1))
     printf 'warning: indexing empty evidence file (0 bytes): %s\n' "$rel" >&2
@@ -76,7 +80,8 @@ while IFS= read -r -d '' file; do
   bytes="$(wc -c < "$file" | tr -d ' ')"
   printf '%s\t%s\t%s\n' "$rel" "$digest" "$bytes" >> "$records"
   count=$((count + 1))
-done < <(find "$root" -type f -not -path '*/.git/*' -not -name 'evidence-index.json*' -print0 | LC_ALL=C sort -z)
+done < <(find "$root" -type f -not -path '*/.git/*' -not -name 'evidence-index.json*' \
+              -not -path "$root/checkers/pack-freeze.json" -print0 | LC_ALL=C sort -z)
 
 if ((count == 0)); then
   printf 'No evidence files found under %s; refusing to write an empty index.\n' "$root" >&2

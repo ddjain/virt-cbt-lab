@@ -1,5 +1,7 @@
 # CBT product-flow analysis — CBT-F-04 — run 20261015-cbtf04-r03
 
+> **Ticket drafts moved to `bugs/`.** §4 Draft 1 → `bugs/cbt-incremental-copy-size-is-peak-dirty-volume.md` (its r04 successor supersedes it: same defect, both run labels, so no duplicate file); §4 Draft 2 → `bugs/failed-backup-terminates-done-true-with-failure-reason.md`; §4 Draft 3 → `bugs/libvirt-checkpoint-tree-retains-deleted-failed-backup-checkpoint.md`. Titles, issue types, claims, quotes and UTCs are preserved.
+>
 > Scope: product-flow behavior of the CBT backup/checkpoint/tracker/recovery
 > machinery under the controller-kill disruption, from run r03's closed
 > evidence pack only (plus the r02 analysis for reproduction counting, as

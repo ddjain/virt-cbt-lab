@@ -1,5 +1,8 @@
 # CBT product-flow analysis — CBT-F-04 — run 20261015-cbtf04-r02
 
+> **Ticket drafts moved.** The engineering-ticket draft that lived in §3 of this file now lives at
+> `bugs/hotplugfailed-lstat-on-successful-detach.md` (same title, issue type, claims, quotes and UTCs; re-rendered onto `template/engineering-jira-issue-template.md`), and the repetition recorded in the r03 analysis §5 is carried there too. Everything else in this analysis is unchanged.
+
 > Scope: product-flow behavior of the CBT backup/checkpoint/tracker/recovery
 > machinery under the controller-kill disruption, from the closed run's
 > evidence pack only. Harness findings (trigger env-leak abort, run.json

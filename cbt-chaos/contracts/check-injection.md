@@ -23,6 +23,16 @@ validity. You receive no verdict, no worker narratives, no analyst conclusions.
 ## File you own (sole writer)
 `checkers/injection-validity.json` under the run root.
 
+## Rules
+- **Pack gate (do this first and last).** Run
+  `cbt-chaos/pack-validate.sh --verify-freeze <run-root>` as your first action:
+  if it exits non-zero, record verdict `BLOCKED` with reason
+  `pack-freeze-mismatch` and stop — you cannot grade a pack that is not the one
+  the Lead froze. Immediately before writing your output, run it again and
+  record both exit codes and `checkers/pack-freeze.json#index_sha256` in your
+  JSON. A failure on the second run is `pack-mutated-during-grading`: report it
+  as a reject reason, never as a pass.
+
 ## Questions to answer (all must hold for PASS)
 1. Did the disruption hit the exact Lease-holder `virt-controller` pod in
    `__CTRL_NAMESPACE__` (exact name, UID), and only that one pod?

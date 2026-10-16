@@ -251,14 +251,34 @@ Checkers must not share blind spots with the workers they grade:
    before commit) — hand-written `printf` lines produced invalid JSON in run
    20261015-cbtf04-r03 (line 8) and cost a checker flag.
 2a. **Index ordering (mechanical, checker-enforced).** The evidence index is
-   valid only if it is the LAST write: append every ledger line (including
-   `run_closed` and any post-close approval records) FIRST, then regenerate
-   `evidence-index.json`, then write nothing further to any indexed file.
-   Run `cbt-chaos/pack-validate.sh <run-root>` before spawning checkers —
-   it checks ledger JSON validity, state/ledger phase agreement, indexed
-   sha256s, and index-vs-file mtimes, so ordering violations surface in
-   seconds instead of costing checker revision loops (two rejects in run
-   20261015-cbtf04-r03 came solely from post-index ledger appends).
+   valid only if it is the LAST evidence write OF THE PHASE: append every ledger
+   line for that phase FIRST, then regenerate `evidence-index.json`, then freeze
+   it, then write nothing further to any indexed file until every checker of
+   that phase has returned. Exactly this sequence, immediately before the
+   checker spawn (`<run-root>` = the run directory):
+   `cbt-chaos/evidence-index.sh <run-root> && cbt-chaos/pack-validate.sh --freeze <run-root>`.
+   `--freeze` validates (ledger JSON validity, state/ledger phase agreement,
+   indexed sha256s, index-vs-file mtimes) and records the index/ledger sha256 in
+   `checkers/pack-freeze.json`, so a ledger append after the index becomes
+   detectable instead of merely discouraged.
+   Each checker runs `cbt-chaos/pack-validate.sh --verify-freeze <run-root>` as
+   its FIRST action and again immediately before writing its verdict, and
+   records both exit codes plus `pack-freeze.json#index_sha256` in its output.
+   A closing failure means the pack moved under the grade: re-freeze, re-spawn
+   that checker, and record the re-run as a harness finding.
+   Rationale: post-index ledger appends cost a reject in 20261015-cbtf04-r03
+   and reappeared as a measured 23171-vs-27415-byte index drift in
+   20261016-exp06-r02, where the run carried no gate that could have caught it.
+2b. **Run-root sync (mechanical).** A run root is never PUSHED from the
+   workstation: `sync.sh` already excludes `cbt-chaos/scenarios_v2/*/runs/`, so
+   any bare `rsync` of a run root is a defect — the r02 in-run push truncated
+   `ledger.jsonl` and six events had to be re-appended (recorded as
+   `ledger_recovered` in `ledger.jsonl`), and the post-close mirror is stale
+   again (workstation 37 ledger lines + the 151-file pre-checker index vs the
+   remote's 42 lines + the 157-file index). After `closed`: `make pull-reports`
+   (remote → local, one direction only), then run
+   `cbt-chaos/pack-validate.sh <pulled run-root>` and require exit 0. If it
+   fails, the mirror is not evidence — re-pull it; never re-push over it.
 3. **Phase machine in `state.json`.** Allowed transitions, nothing else:
    `resolved → preflight_go → armed → executing → preserved → recovering →
    final → checked → verdict → reported → closed`. `closed` is the firewall
@@ -304,6 +324,11 @@ Checkers must not share blind spots with the workers they grade:
 5. Issue recovery contract; spawn Recovery Worker (lead-authorized actions);
    transition `recovering`. Wait for FINAL; transition `final`.
 6. Spawn the three Checkers in parallel (blind contracts). On all verdicts,
+   Before spawning: `cbt-chaos/evidence-index.sh <run-root>` then
+   `cbt-chaos/pack-validate.sh --freeze <run-root>`; no ledger append until all
+   three have returned. A checker whose closing `--verify-freeze` fails has
+   graded a moved pack — re-freeze and re-spawn it (harness finding, not a
+   product finding).
    apply reject verification to any REJECT (see Reject verification), then
    reconcile against lifecycle records and API evidence per `cbt-chaos-run`
    Phase 4; assign PASS / PASS WITH FINDINGS / FAIL / BLOCKED; transition

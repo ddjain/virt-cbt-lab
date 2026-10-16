@@ -62,6 +62,37 @@ the run's injection witness; the checkers grade from your artifacts.
   lean on a single writer (run 20261015-cbtf04-r02 had recovery-side
   tree evidence only). Record the command and its raw output in
   `watches/` or `evidence-terminal/`.
+- **The contract's mandated pre-read is a rendezvous, not a cadence** (the
+  reference loop for an injection that destroys state which must be proven
+  present beforehand, e.g. a per-disk checkpoint bitmap removal, run
+  20261016-exp06-r02). Resolve the checkpoint from the destroyer's handshake
+  `trigger/surgery-target.json` the moment it exists — never from a projection
+  that lags the real object (the tracker advertised r02's checkpoint 55 s after
+  libvirt created it, which cost the whole pre-state window). Then:
+  ```bash
+  # stage 1 (ARMED): record selectors only (domain, disk alias, the rule that
+  # selects the target node: node-name ending `-format`, file ending
+  # /cbt/<disk>.qcow2). Claim nothing about a state that cannot exist yet.
+  # stage 2 (window): read as soon as the handshake exists, with no sleep
+  # between attempts, and stop when the destroyer's action is observed.
+  if [[ -r "$RUNROOT/trigger/surgery-target.json" ]]; then
+    ck="$(jq -r '.checkpoint // ""' "$RUNROOT/trigger/surgery-target.json" 2>/dev/null || true)"
+  fi
+  ... read the target node's dirty-bitmaps into observer/effect/qmp-bitmaps-pre.json ...
+  if [[ -s "$EFF/qmp-bitmaps-pre.json" && ! -e "$EFF/PRE-READY" ]]; then
+    printf '%s\n' "$utc" > "$EFF/PRE-READY"   # rendezvous marker: capture UTC
+  fi
+  ...
+  # stop once the removal is observed, so the post-state comes from this loop
+  if [[ $present_seen -eq 1 && "$res" == *'"bitmap_names": []'* ]]; then
+    printf 'stop=target_bitmap_removed utc=%s\n' "$utc" >> "$STATUS"; break
+  fi
+  if [[ -s "$RUNROOT/trigger/surgery-target.json" ]]; then sleep 0.2; else sleep 1; fi
+  ```
+  The destroyer blocks on `observer/effect/PRE-READY` and refuses a witness
+  older than 60 s, so a missed pre-read aborts the injection instead of
+  degrading the grade. Never back-fill a pre-state from the destroyer's own
+  files: a missed pre-read is a witness gap to report, not a value to copy.
 - Trigger/Krkn output is evidence of a *request*, not proof of effect.
   Confirm the effect via a separate read-only observation (target UID/state
   transition, Kubernetes event) that does not merely repeat the same source.

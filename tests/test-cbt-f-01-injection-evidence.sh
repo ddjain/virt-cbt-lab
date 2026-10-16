@@ -22,6 +22,10 @@ SCEN_DIR="$WORK/$SCEN_REL"
 mkdir -p "$SCEN_DIR" "$WORK/bin" "$WORK/state"
 cp "$ROOT_DIR/$SCEN_REL/chaos-trigger.sh" "$SCEN_DIR/chaos-trigger.sh"
 cp "$ROOT_DIR/cbt-chaos/scenario-verdict.sh" "$WORK/cbt-chaos/scenario-verdict.sh"
+# The evaluator resolves its check-set registry next to its own bytes; a fixture
+# that copies the script must copy the registry with it (otherwise every
+# invocation exits 2 with a usage error).
+cp "$ROOT_DIR/cbt-chaos/scenario-check-sets.tsv" "$WORK/cbt-chaos/scenario-check-sets.tsv"
 
 RUN_ID="20260101-cbt-f-01-000000"
 VM_NAME="vm-$RUN_ID"

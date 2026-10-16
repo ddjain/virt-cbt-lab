@@ -159,9 +159,15 @@ jq -n \
     ],
     cbt: {
       status: $cbt_status,
+      # A CBT state is only known when the verify stage actually read the live
+      # VM. "PENDING" reads as a state and was consumed as one downstream
+      # (cbt-chaos/scenario-verdict.sh#cbt-recovered); say what is true instead.
       vm_state: (if check($checks; "vm_cbt_is_enabled") == true then "Enabled"
                  elif check($checks; "vm_cbt_is_enabled") == false then "NotEnabled"
-                 else "PENDING" end),
+                 else "UNVERIFIED" end),
+      vm_state_source: (if check($checks; "vm_cbt_is_enabled") == null
+                        then "report.verification.checks[vm_cbt_is_enabled]:absent"
+                        else "report.verification.checks[vm_cbt_is_enabled]" end),
       full_checkpoint: ($backups.full.checkpoint_name // null),
       incremental_checkpoints: [$incrementals[]? | .checkpoint_name],
       tracker_latest_checkpoint: ($report.tracker.latest_checkpoint // $run.tracker.latest_checkpoint // null),
