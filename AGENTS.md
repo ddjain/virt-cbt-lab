@@ -18,6 +18,7 @@ This repository is a shell-driven KubeVirt CBT demonstration. `make e2e` runs se
 - `scripts/density-setup.sh`: creates a pool of bare VMs with kube-burner (`make density-setup`); pools VM, root DataVolume, and (RHEL) SSH Service named `vm-<pool>-NNNN` etc. (`POOL` defaults to an OS-prefixed timestamp, e.g. `rhel-<MMDDhhmmss>`), then polls VM readiness itself. No local pool metadata is written — pool state lives in the VMs' `virt-cbt-lab/*` labels and annotations.
 - `scripts/density-status.sh` (+ `scripts/density-lib.sh`): read-only fleet view — every managed VM in the namespace grouped by pool, each group with a total/creating/created/full/incremental-pass funnel from cluster VM and `vmbackup` objects (`POOL=<id>` restricts to one pool).
 - `scripts/windows-oobe-secret.sh`: sourced library that builds a labeled Windows OOBE Secret; shared by `windows-vm-setup.sh` (run-scoped) and `density-setup.sh` (pool-scoped).
+- `scripts/archive-run.sh <run-id>`: one-way archive of a closed run's local evidence into the gitignored `artifacts/` tree (scenario-keyed; refuses in-flight runs; `--index` regenerates `artifacts/INDEX.md`). All AI-generated reports, matrices, bug reports, analyses, plans, and archived run evidence live in `artifacts/`; active runs keep writing to `runs/` and scenario directories unchanged.
 
 ## Setup and validation
 

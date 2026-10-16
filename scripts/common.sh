@@ -123,7 +123,7 @@ set_vm_os_profile
 # For Debian, "odf" is the small 6Gi/6Gi/4Gi ODF profile, "default" is the
 # 5Gi/5Gi/3Gi HPP profile, "large" is 40Gi/40Gi/25Gi HPP, and "large-odf"
 # is 48Gi/48Gi/30Gi ODF. See docs/odf-setup-plan.md and
-# cbt-chaos/chaos-plan.md for backend and sustained-copy profile details.
+# artifacts/_campaign/chaos-plan.md for backend and sustained-copy profile details.
 # shellcheck disable=SC2034
 MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
 set_manifest_variant_settings() {
@@ -1077,7 +1077,7 @@ get_backup_done_status() {
 # `Done=True` is set by KubeVirt on both a genuinely completed backup and a
 # terminal failure (e.g. "Backup has failed: VMI backup status was lost") —
 # the `status` field alone cannot distinguish them, only `reason` can. See
-# cbt-chaos/scenarios/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
+# artifacts/_archive/scenarios-v1/01-virt-launcher-pod-kill-during-copy/scenario-spec.md
 # §5 for the run that surfaced this.
 get_backup_done_reason() {
   local backup_name="$1"
