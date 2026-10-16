@@ -152,7 +152,8 @@ runs/<RUN_ID>/
     watches/                        raw watch streams, never into model context
     finding.md                      compact final analysis
   trigger/
-    command.txt  trigger.log  action-request.json    Trigger-owned
+    command.txt  trigger.log  action-request.json
+    effect-check.json  exit-statuses.json      Trigger-owned
   recovery/                Recovery-owned logs and backup/restore evidence
   checkers/                one JSON verdict per checker (each checker-owned)
     injection-validity.json  evidence-sufficiency.json  report-fidelity.json

@@ -11,6 +11,12 @@ and line. Where a claim comes from a run artifact it cites the run id and log.
 This document is the shared contract the skills link to instead of restating
 the Makefile. Keep it current when stages, exit codes, or artifacts change.
 
+**Authority:** the skills under `.agents/skills/` are normative — they carry the
+rules an agent must follow (stage selection, deterministic-first policy,
+verdict rules, guards, budgets). This document is descriptive reference: the
+current capability matrix, delegation map and measured baselines those skills
+point at. When the two disagree, the skill is right and this file is stale.
+
 ## 1. How a run is driven
 
 ```sh

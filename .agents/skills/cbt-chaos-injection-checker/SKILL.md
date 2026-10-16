@@ -19,7 +19,8 @@ right time? If not, nothing else in the run matters — it cannot PASS.
 - `runs/<RUN_ID>/contracts/check-injection.md` — your task contract
 - The scenario's spec/jira-issue (expected target, action, signal, window)
 - `observer/` (handoff payloads, watches, finding.md), `trigger/`
-  (command.txt, trigger.log, action-request.json), `evidence-index.json`
+  (command.txt, trigger.log, action-request.json, effect-check.json,
+  exit-statuses.json), `evidence-index.json`
 
 Verify every file against `evidence-index.json` sha256 first; REJECT on any
 missing or mismatched evidence file.
@@ -39,7 +40,12 @@ missing or mismatched evidence file.
    the trigger/Krkn output (target UID/state transition, Kubernetes event,
    or target-specific telemetry). Trigger exit codes and Krkn logs are
    requests, not effects. Corroborating records must not merely repeat the
-   same source data.
+   same source data. `trigger/effect-check.json` records the trigger's *own*
+   observation of the boundary — old pod UID gone, replacement launcher name
+   **and** UID, readiness and elapsed time — so it corroborates but never
+   replaces your independent observation, and an effect-check that claims
+   readiness without recording the replacement's identity is a harness
+   finding, not an effect.
 4. **Watch health at boundary**: observer evidence shows the required
    watches were alive at the action boundary. A lost watch, a gap covering
    the window, or a claimed-but-unauthenticated watch ⇒ REJECT.
