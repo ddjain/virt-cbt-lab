@@ -62,6 +62,10 @@ ambiguous target means ABORT, not improvisation.
 6. Record `trigger/action-request.json`: UTC action-request time, run/backup
    identity, target kind/name/UID, observed signal. A tool exit code or
    second-resolution Killing event cannot establish subsecond order.
+   Confirm the trigger also wrote `trigger/effect-check.json` with the
+   replacement launcher's name and UID before you report PRESERVED: readiness
+   without a recorded identity is a harness finding, not an effect, and the
+   Injection Validity Checker will REJECT an unverifiable boundary.
 
 ## Trigger failure classification
 
@@ -75,8 +79,13 @@ next run — never an in-run patch or retry.
 
 ## Output
 `trigger/command.txt` (exact argv), `trigger/trigger.log` (raw output),
-`trigger/action-request.json`, and the two preserved exit codes reported to
-the Lead. If the trigger script itself fails, preserve its logs and report
+`trigger/action-request.json` (signal time, target kind/name/UID),
+`trigger/effect-check.json` (old pod UID gone, replacement launcher name **and**
+UID, readiness, elapsed time) and `trigger/exit-statuses.json` (the separately
+preserved workflow and observer exit codes) — the last two are what the
+Injection Validity Checker reads, so neither may be left stale or missing;
+report the exit codes to the Lead too, not only to the file.
+If the trigger script itself fails, preserve its logs and report
 the failure — never retry the action without a new Lead authorization.
 If the trigger writes incremental per-stage outcome records (e.g.
 `trigger/stage-outcomes.jsonl`), preserve that file and reference it in your
