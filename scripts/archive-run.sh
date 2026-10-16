@@ -9,10 +9,11 @@ set -euo pipefail
 # Chaos runs (cbt-chaos/scenarios_v2/<SCENARIO>/runs/<run-id>) land in
 # artifacts/<SCENARIO>/runs/<run-id>; e2e runs (runs/<run-id>) have no
 # scenario and land in artifacts/_misc/runs/<run-id>. Only runs whose
-# state.json reports phase "closed" (chaos) or whose summary.json exists
-# (e2e) are archived; in-flight runs are refused so TYPE=incremental
-# adoption (which needs runs/<run-id>/run.json in this checkout) keeps
-# working. Moves are one-way; nothing is ever copied back.
+# state.json reports phase "closed" (chaos) or whose summary.json reports
+# a terminal lifecycle verdict of PASS or FAIL (e2e) are archived;
+# in-flight runs are refused so TYPE=incremental adoption (which needs
+# runs/<run-id>/run.json in this checkout) keeps working. Moves are
+# one-way; nothing is ever copied back.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS_DIR="$ROOT_DIR/artifacts"
 SCENARIOS_V2_DIR="$ROOT_DIR/cbt-chaos/scenarios_v2"
@@ -81,10 +82,21 @@ archive_one() {
       printf 'No such run: %s (checked chaos scenario runs/ and runs/).\n' "$run_id" >&2
       return 1
     fi
-    if [[ ! -f "$src/summary.json" ]]; then
-      printf 'Refusing %s: e2e run has no summary.json (may still be in flight).\n' "$run_id" >&2
+    # summary.json is written after EVERY stage (including mid-lifecycle
+    # TYPE=full/incremental invocations whose verdict is INCOMPLETE), so its
+    # existence proves nothing. Require a terminal lifecycle verdict so an
+    # unfinished run's run.json stays in runs/ for TYPE=incremental adoption.
+    local verdict
+    verdict="$(python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+v = d.get("lifecycle", {}).get("verdict") or d.get("verdict") or ""
+print(v)' "$src/summary.json" 2>/dev/null || true)"
+    if [[ "$verdict" != "PASS" && "$verdict" != "FAIL" ]]; then
+      printf 'Refusing %s: e2e run lifecycle verdict is %s (not PASS/FAIL; still adoptable by TYPE=incremental).\n' \
+        "$run_id" "${verdict:-missing}" >&2
       return 1
     fi
+    phase_check="e2e:${verdict}"
     scenario="_misc"
   fi
 
@@ -95,7 +107,7 @@ archive_one() {
   fi
   mkdir -p "$(dirname "$dest")"
   mv "$src" "$dest"
-  printf 'Archived %s -> %s (%s)\n' "$run_id" "$dest" "$phase_check${phase_check:+; }e2e"
+  printf 'Archived %s -> %s (%s)\n' "$run_id" "$dest" "$phase_check"
 }
 
 [[ $# -ge 1 ]] || usage
