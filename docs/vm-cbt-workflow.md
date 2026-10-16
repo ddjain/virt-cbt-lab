@@ -324,6 +324,82 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 
 `summary.json` is regenerated after each staged E2E invocation and standalone final verification. It is a compact projection of `run.json` and, when available, `report.json`, not an independent source of evidence. `verdict` describes lifecycle or recovery completion; `last_invocation.result` describes the most recent command. A Full-only stage is `INCOMPLETE` while its Full backup can still be `PASS`. A successful `TYPE=recover` passes only after the new Full backup and baseline restore are verified; a recovery attempt does not claim the original failed checkpoint as valid. `payload_bytes` is guest workload payload, not qcow2 bytes copied or physical storage usage; PVC capacity is reported separately. Use `docs/cbt/13-independent-cbt-verification.md` for the separate raw-artifact audit.
 
+### CBT chaos v2 runtime and verdicts
+
+Chaos orchestration does not change these lifecycle script semantics. A Lead
+drives the existing stages and monitoring, supported by a prepare-only Chaos
+Engineer and an independent CBT Analyst. Read the executing checkout's Make
+recipes, selected stage scripts, scenario entrypoint and applicable evaluator
+before choosing commands; do not assume the default full-interruption evaluator
+covers an arbitrary scenario or stable-system fault. Start a stage exactly once,
+with condition monitoring ready before the stage opens its injection window.
+
+The scenario-local canonical root is `cbt-chaos/scenarios_v2/<ID>/`: the
+specification and Jira conditions, reusable `run.sh`, optional injection,
+condition/effect helpers (names unrestricted), and local `approval.json`.
+Approval binds the entrypoint, all invoked local scripts/configurations,
+specification/Jira conditions, effective blast radius/window and run parameters.
+Record explicit approval plus hashes and verify them immediately before
+execution. An unchanged approved bundle may rerun; no mid-run edits are allowed.
+After INVALID from an injection defect, only one prepare-only repair is allowed,
+followed by fresh approval and a fresh attempt, never a silent retry.
+
+Each attempt writes `runs/<attempt-id>/` **inside that scenario**, with one
+canonical `run.json` holding phase, verdict, identities, attempt/retry relation,
+timestamps, paths and execution/report statuses; `injection-confirmation.json`;
+independent `analysis.json`; the Lead's `run-report.md`; and raw captures/logs.
+No additional verdict file, ledger or index is required. Reference repository
+`runs/<lifecycle-id>/{run.json,report.json,summary.json,...}` in place rather than
+copying it or confusing the two `run.json` records.
+
+Generate every new chaos attempt ID with
+`cbt-chaos/run-id.sh <exact-vm-name> <note-slug> <iteration>`:
+`<dd-mm-yyyy-hh-mm-ss>-<vm_name>-<note>-iteration-<number>`, using current UTC.
+The Lead resolves the existing VM or preselects a new lifecycle ID and resolves
+its planned VM name before generation. Iteration is the next positive number
+after the highest recorded scenario `iteration`, including repaired attempts;
+`attempt` (1 or 2) still tracks the request's one-repair policy. Record iteration,
+VM and note in scenario `run.json`. Keep short lifecycle IDs unchanged and
+separate from the chaos ID; never forward the latter to Make as `RUN_ID`.
+Historical evidence keeps its original IDs.
+
+Capture the observed condition before action, exact target UID before/after,
+timestamps, effect and exclusions. Scenario-specific machine effect checks must
+fail closed; sleeps or the injection tool's exit status alone are not proof.
+The independent Analyst reads raw evidence rather than accepting the author's
+self-certification. Scope logs by run/object UID and time; CR type alone does
+not establish physical full/incremental behavior.
+
+| Chaos verdict | Required meaning |
+|---|---|
+| BLOCKED | Prerequisites prevented injection. |
+| INVALID | Injection is unproven, or target, window or blast radius was wrong. |
+| FAIL | Injection is confirmed valid and a required product violation was observed; root cause may be unknown. |
+| INCONCLUSIVE | Injection is confirmed valid but mandatory product evidence is missing. |
+| PASS | Every mandatory scenario requirement is proven. |
+
+The lifecycle `summary.json` verdict is not the chaos verdict. For example,
+an intentionally interrupted backup may return nonzero or leave a lifecycle
+incomplete while meeting the scenario's expected disruption behavior. Preserve
+deterministic failed/unknown results and map them to the actual mandatory
+criteria; never replace unknown evidence with narrative PASS.
+
+The Lead closes and reports **every** terminal attempt, including INVALID and
+BLOCKED, before any optional repaired retry, and updates scenario-root
+`consolidated-report.md` with all attempts and separate verdict counts. The
+Analyst writes one `bugs/<defect-slug>.md` per confirmed product defect across
+attempts, not bugs for unknown outcomes, injection or harness issues. Reports
+cover injection validity, criteria/unknowns, scoped investigation, recovery and
+limits, approved bundle references, and bug/proposal links.
+
+A follow-up is a new `scenarios_v2/<new-ID>/jira-issue.md` draft marked
+proposed/unexecuted, linked from the report without unsafe executable fault
+commands; new scope requires approval. Generic evidence-backed lessons remain
+Lead-owned in its skill's `improvement.md` (1–3 lines per deduplicated lesson).
+V2 reports, bugs and drafts stay with scenarios, not `artifacts/`; raw captures
+and approval are local/gitignored. Archiving is optional and explicit, never an
+automatic v2 closure step. Do not move or regrade historical/legacy evidence.
+
 ## Resources and names
 
 All workflow objects live in the shared, globally configured `$NAMESPACE` (default `vm-cbt-demo`, set in `.env`). `TYPE=all` or `TYPE=full` starts a lifecycle with a random run ID by default, or the fixed ID from `NAME`/`VM`; `TYPE=incremental`, `TYPE=recover`, and `TYPE=verify` load that existing lifecycle by `VM=vm-<run-id>`. `make e2e-incremental VM=vm-<run-id>` is the semantic alias for `TYPE=incremental`. Resource names derive from the run ID, so different runs coexist without collisions:
