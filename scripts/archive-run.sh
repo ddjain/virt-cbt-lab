@@ -9,10 +9,11 @@ set -euo pipefail
 # Chaos runs (cbt-chaos/scenarios_v2/<SCENARIO>/runs/<run-id>) land in
 # artifacts/<SCENARIO>/runs/<run-id>; e2e runs (runs/<run-id>) have no
 # scenario and land in artifacts/_misc/runs/<run-id>. Only runs whose
-# state.json reports phase "closed" (chaos) or whose summary.json exists
-# (e2e) are archived; in-flight runs are refused so TYPE=incremental
-# adoption (which needs runs/<run-id>/run.json in this checkout) keeps
-# working. Moves are one-way; nothing is ever copied back.
+# state.json reports phase "closed" (chaos) or whose summary.json reports
+# a terminal lifecycle verdict of PASS or FAIL (e2e) are archived;
+# in-flight runs are refused so TYPE=incremental adoption (which needs
+# runs/<run-id>/run.json in this checkout) keeps working. Moves are
+# one-way; nothing is ever copied back.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACTS_DIR="$ROOT_DIR/artifacts"
 SCENARIOS_V2_DIR="$ROOT_DIR/cbt-chaos/scenarios_v2"
