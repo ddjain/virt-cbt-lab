@@ -46,7 +46,13 @@ tmp-*/
 
 /cbt-chaos/scenarios/*/runs/
 
+# Canonical v2 attempt state, raw captures and logs remain local. Only the
+# sanitized per-attempt narrative is eligible for version control; scenario-root
+# consolidated-report.md, bugs/*.md and proposed scenario drafts remain visible.
 /cbt-chaos/scenarios_v2/*/runs/**
+!/cbt-chaos/scenarios_v2/*/runs/*/
+!/cbt-chaos/scenarios_v2/*/runs/*/run-report.md
+/cbt-chaos/scenarios_v2/*/approval.json
 
 # Tool and OS metadata
 .DS_Store
@@ -90,6 +96,12 @@ tmp-*/
 !.agents/skills/cbt-chaos-scenario-improver/**
 !.agents/skills/cbt-chaos-krkn-preparer/
 !.agents/skills/cbt-chaos-krkn-preparer/**
+!.agents/skills/cbt-chaos-team-v2/
+!.agents/skills/cbt-chaos-team-v2/**
+!.agents/skills/cbt-chaos-trigger-preparer-v2/
+!.agents/skills/cbt-chaos-trigger-preparer-v2/**
+!.agents/skills/cbt-chaos-analyst-v2/
+!.agents/skills/cbt-chaos-analyst-v2/**
 .claude/
 .pi/
 skills-lock.json
