@@ -81,10 +81,21 @@ archive_one() {
       printf 'No such run: %s (checked chaos scenario runs/ and runs/).\n' "$run_id" >&2
       return 1
     fi
-    if [[ ! -f "$src/summary.json" ]]; then
-      printf 'Refusing %s: e2e run has no summary.json (may still be in flight).\n' "$run_id" >&2
+    # summary.json is written after EVERY stage (including mid-lifecycle
+    # TYPE=full/incremental invocations whose verdict is INCOMPLETE), so its
+    # existence proves nothing. Require a terminal lifecycle verdict so an
+    # unfinished run's run.json stays in runs/ for TYPE=incremental adoption.
+    local verdict
+    verdict="$(python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+v = d.get("lifecycle", {}).get("verdict") or d.get("verdict") or ""
+print(v)' "$src/summary.json" 2>/dev/null || true)"
+    if [[ "$verdict" != "PASS" && "$verdict" != "FAIL" ]]; then
+      printf 'Refusing %s: e2e run lifecycle verdict is %s (not PASS/FAIL; still adoptable by TYPE=incremental).\n' \
+        "$run_id" "${verdict:-missing}" >&2
       return 1
     fi
+    phase_check="e2e:${verdict}"
     scenario="_misc"
   fi
 
@@ -95,7 +106,7 @@ archive_one() {
   fi
   mkdir -p "$(dirname "$dest")"
   mv "$src" "$dest"
-  printf 'Archived %s -> %s (%s)\n' "$run_id" "$dest" "$phase_check${phase_check:+; }e2e"
+  printf 'Archived %s -> %s (%s)\n' "$run_id" "$dest" "$phase_check"
 }
 
 [[ $# -ge 1 ]] || usage
