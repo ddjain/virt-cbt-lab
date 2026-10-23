@@ -343,8 +343,43 @@ assert_contains "full with run.json present: automatic preflight ran" "$OUT" "FA
 assert_contains "full with run.json present: stage ran" "$OUT" "FAKE FULL BACKUP run_id=$MISSING_RUN_ID"
 assert_contains "full with run.json present: prints the next step" "$ERR" "make vm-cbt-backup RUN_ID=$MISSING_RUN_ID"
 [[ -s "$PREFLIGHT_MARKER" ]] || die "full with run.json present: automatic preflight did not run"
+[[ -e "$TEST_ROOT/state/e2e.lock" ]] &&
+  die "full with run.json present: left the checkout lock behind after a successful run"
 
 rm -f "$PREFLIGHT_MARKER"
+
+# ---------------------------------------------------------------------------
+# 4b. Checkout lock: a standalone mutating stage refuses to run while another
+#     mutating stage (or make e2e) already holds state/e2e.lock, and reclaims a
+#     stale lock left by a dead PID.
+# ---------------------------------------------------------------------------
+mkdir -p "$TEST_ROOT/state/e2e.lock"
+printf '%s\n' "$$" > "$TEST_ROOT/state/e2e.lock/pid"
+run_cmd lock-live-pid env RUN_ID="$MISSING_RUN_ID" "$TEST_STAGE" full
+assert_status "full while the checkout lock is held by a live PID" 1 "$STATUS"
+assert_contains "full while locked: names the holding PID" "$ERR" "PID $$"
+assert_contains "full while locked: tells the caller to run sequentially" "$ERR" "run lifecycle commands sequentially"
+[[ -s "$PREFLIGHT_MARKER" ]] &&
+  die "full while locked: ran the automatic preflight before the lock check"
+[[ -s "$CLUSTER_MARKER" ]] && die "full while locked: contacted the cluster while the lock was held"
+rm -f "$PREFLIGHT_MARKER" "$CLUSTER_MARKER"
+
+# A stale lock (PID that is not running) is reclaimed rather than treated as busy.
+mkdir -p "$TEST_ROOT/state/e2e.lock"
+printf '%s\n' "999999999" > "$TEST_ROOT/state/e2e.lock/pid"
+run_cmd lock-stale-pid env RUN_ID="$MISSING_RUN_ID" "$TEST_STAGE" full
+assert_status "full with a stale checkout lock" 0 "$STATUS"
+assert_contains "full with a stale checkout lock: stage still ran" "$OUT" "FAKE FULL BACKUP run_id=$MISSING_RUN_ID"
+[[ -e "$TEST_ROOT/state/e2e.lock" ]] &&
+  die "full with a stale checkout lock: left the lock behind after reclaiming it"
+rm -f "$PREFLIGHT_MARKER"
+
+# Dry runs never take the lock: they must succeed even while it is held.
+mkdir -p "$TEST_ROOT/state/e2e.lock"
+printf '%s\n' "$$" > "$TEST_ROOT/state/e2e.lock/pid"
+run_cmd lock-dry-run env RUN_ID="$MISSING_RUN_ID" "$TEST_STAGE" --dry-run full
+assert_status "dry run while the checkout lock is held" 0 "$STATUS"
+rm -rf "$TEST_ROOT/state"
 
 # ---------------------------------------------------------------------------
 # 5. Dry runs never contact the cluster.

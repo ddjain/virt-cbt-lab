@@ -201,19 +201,23 @@ check_environment() {
   else
     result FAIL "DEBUG must be true or false"
   fi
+  # EXTEND_TO_PASS is valid two ways: `make e2e TYPE=extend VM=...` and the
+  # standalone `make vm-cbt-extend RUN_ID=...` stage (which never sets TYPE).
+  # Validate the shared range check whenever it is set, and only require
+  # TYPE=extend's own VM= form when TYPE=extend is actually how it is being used.
   if [[ "$TYPE" == extend ]]; then
     if [[ "$VM" =~ ^vm-[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
       result PASS "TYPE=extend uses managed VM name $VM"
     else
       result FAIL "TYPE=extend requires VM=vm-<run-id>"
     fi
+  fi
+  if [[ "$TYPE" == extend || -n "$EXTEND_TO_PASS" ]]; then
     if [[ "$EXTEND_TO_PASS" =~ ^[1-9][0-9]?$ ]] && ((EXTEND_TO_PASS >= 2)); then
       result PASS "EXTEND_TO_PASS is a target total from 2 to 99"
     else
-      result FAIL "TYPE=extend requires EXTEND_TO_PASS from 2 to 99 (the target total)"
+      result FAIL "EXTEND_TO_PASS must be a target total from 2 to 99"
     fi
-  elif [[ -n "$EXTEND_TO_PASS" ]]; then
-    result FAIL "EXTEND_TO_PASS is only valid with TYPE=extend"
   fi
 }
 
