@@ -439,19 +439,26 @@ validates its own injection.
 
 ### omp model routing
 
-Project agent definitions in `.omp/agents/` load the existing role skills:
+Project agent definitions in `.omp/agents/` load the existing role skills.
+Model roles are indirected through `.omp/config.yml`'s `modelRoles` map, not
+hardcoded per agent — check that file for the current physical model behind
+each role alias:
 
-| Agent | Model / thinking | Assignment |
+| Agent | Role alias / thinking | Assignment |
 |---|---|---|
-| `cbt-chaos-lead-sol` | GPT-6.1 Sol / high | Dedicated execution Lead; loads `cbt-chaos-lead-v2`, delegates specialists and requests human approval through main. |
-| `cbt-chaos-engineer-sol` | GPT-6.1 Sol / high | Default Engineer: new bundles and complex injection repairs. |
-| `cbt-chaos-engineer-luna` | GPT-6 Luna / high | Optional Engineer alternative: constrained adaptations of a verified pattern with explicit inputs, command metadata and effect checks. |
-| `cbt-chaos-analyst-sol` | GPT-6.1 Sol / xhigh | One grading owner or an explicitly assigned bounded area specialist; authorized defect/proposed-scenario drafts. |
+| `cbt-chaos-lead-sol` | `@cbt_lead` / high | Dedicated execution Lead; loads `cbt-chaos-lead-v2`, delegates specialists and requests human approval through main. |
+| `cbt-chaos-engineer-sol` | `@cbt_engineer` / high | Default Engineer: new trigger design, ambiguous evidence, complex injection repair. |
+| `cbt-chaos-engineer-luna` | `@cbt_engineer_fast` / high | Engineer alternative: constrained adaptations of a verified pattern with explicit inputs, command metadata and effect checks. |
+| `cbt-chaos-analyst-sol` | `@cbt_grader` / xhigh | Every `grading-owner` assignment, and any `area-specialist` question Lead judges ambiguous or safety-relevant. |
+| `cbt-chaos-analyst-luna` | `@cbt_grader_fast` / medium | A bounded, narrow, low-ambiguity `area-specialist` question only — never `grading-owner`. |
 
-Choose one Engineer per preparation assignment, not both by default. New trigger
-design, ambiguous evidence and complex race repairs go to the Sol Engineer.
-The main session is not the Lead and need not use the Lead model. The dedicated
-Lead definition pins `openai/gpt-6.1-sol` with high thinking and prewalk disabled.
+Lead assigns each Engineer spawn `bundle-preparer` (owns the one approved
+bundle; at most one at a time per scenario attempt) or a bounded
+`task-specialist` question, and each Analyst spawn `grading-owner` (exactly
+one per attempt) or a bounded `area-specialist` question — reusing the same
+two skills (`cbt-chaos-trigger-preparer-v2`, `cbt-chaos-analyst-v2`). Lead may
+spawn as many specialists as the work needs, each with one assignment and a
+bounded scope; there is no fixed count or mandatory committee.
 Asynchronous task dispatch, parent/child messaging and at least two delegation
 levels are required: main → Lead → Engineer/Analyst. If unavailable, block
 rather than silently moving execution back into main.

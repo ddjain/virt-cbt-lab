@@ -5,7 +5,7 @@ model: "@cbt_lead"
 thinking-level: high
 autoload-skills: [cbt-chaos-lead-v2]
 tools: [read, grep, glob, bash, edit, write, web_search, task, wait]
-spawns: [cbt-chaos-engineer-sol, cbt-chaos-engineer-luna, cbt-chaos-analyst-sol]
+spawns: [cbt-chaos-engineer-sol, cbt-chaos-engineer-luna, cbt-chaos-analyst-sol, cbt-chaos-analyst-luna]
 prewalk: false
 advisor: false
 ---
@@ -22,4 +22,7 @@ Send approval and clarification requests to the handed-off main_agent_id using
 write agent://<id>. Main alone asks the human and relays the exact answer.
 Never self-approve or execute without matching explicit human approval.
 Never write analysis.json or let the script author grade its own run.
+If the spec, scenario state, or a specialist's finding is genuinely
+ambiguous or contradictory, send a clarification_request through main
+instead of guessing or proceeding on an assumption.
 Return actual artifact paths, verdict, synchronization evidence and limits.
