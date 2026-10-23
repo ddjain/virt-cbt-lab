@@ -7,9 +7,13 @@ metadata:
     __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
     __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
-  storageClassName: ocs-storagecluster-ceph-rbd
+  # HostPath pool destination: the CBT backup hotplug attachment pod is pinned
+  # to the source VM's node, so a WaitForFirstConsumer cbt-demo-hpp claim binds
+  # on d38-h18-000-r660 — the same node and /dev/sdb the node-io-hog writes to.
+  storageClassName: cbt-demo-hpp
   accessModes:
     - ReadWriteOnce
+  volumeMode: Filesystem
   resources:
     requests:
       storage: 48Gi

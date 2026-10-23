@@ -100,3 +100,39 @@ jq -e '
 ' "$TEST_ROOT/runs/$RUN_ID/report.json" >/dev/null
 jq -e '.status == "verification_failed"' "$TEST_ROOT/runs/$RUN_ID/run.json" >/dev/null
 printf 'PASS: a failed cumulative restore check makes the merged report fail and marks the lifecycle failed.\n'
+
+# Exercise the actual Linux manifest selector without starting a pod or QEMU.
+python3 - "$ROOT_DIR/manifests/restore-verify-pod.yaml" "$TEST_TMP" <<'PY'
+import pathlib
+import subprocess
+import sys
+
+manifest = pathlib.Path(sys.argv[1]).read_text()
+start = manifest.index("          select_rootdisk_image() {")
+end = manifest.index("          full_qcow2=", start)
+selector = "\n".join(line[10:] for line in manifest[start:end].splitlines())
+root = pathlib.Path(sys.argv[2]) / "disk-selection"
+root.mkdir()
+for case, names, expected in [
+    ("single", ["backup-rootdisk.qcow2"], "backup-rootdisk.qcow2"),
+    ("multi", ["aaa-datadisk.qcow2", "backup-rootdisk.qcow2"], "backup-rootdisk.qcow2"),
+    ("missing", ["backup-datadisk.qcow2"], None),
+    ("ambiguous", ["a-rootdisk.qcow2", "b-rootdisk.qcow2"], None),
+]:
+    directory = root / case
+    directory.mkdir()
+    for name in names:
+        (directory / name).touch()
+    result = subprocess.run(
+        ["bash", "-euc", selector + '\nselect_rootdisk_image "$1"', "_", str(directory)],
+        capture_output=True, text=True,
+    )
+    if expected is None:
+        assert result.returncode != 0, (case, result.stdout, result.stderr)
+    else:
+        assert result.returncode == 0, (case, result.stderr)
+        assert result.stdout.strip() == str(directory / expected), (case, result.stdout)
+assert 'pass_qcow2="$(select_rootdisk_image "$incremental_dir")"' in manifest
+assert 'full_qcow2="$(select_rootdisk_image /backups/full)"' in manifest
+print("PASS: Linux restore selects rootdisk and rejects missing or ambiguous images.")
+PY

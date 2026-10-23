@@ -7,12 +7,16 @@ metadata:
     __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
     __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
-  storageClassName: ocs-storagecluster-ceph-rbd
+  # HostPath pool destination (same node/disk as the hog and the root disk).
+  # The size stays the approved INCREMENTAL_PVC_SIZE (30Gi default); on this
+  # pool the claim is a directory on the node filesystem, not a sized volume.
+  storageClassName: cbt-demo-hpp
   accessModes:
     - ReadWriteOnce
+  volumeMode: Filesystem
   resources:
     requests:
-      storage: 30Gi
+      storage: __INCREMENTAL_PVC_SIZE__
 ---
 apiVersion: backup.kubevirt.io/v1alpha1
 kind: VirtualMachineBackup
