@@ -448,6 +448,32 @@ require_extend_to_pass_if_needed() {
   fi
 }
 
+# Shares scripts/e2e-stage.sh's checkout-wide lock so a standalone mutating
+# stage (e.g. a direct `make vm-backup`) cannot race another standalone
+# mutating stage or a concurrent `make e2e` in the same checkout. Not called in
+# E2E_STAGE_WRAPPED mode: the wrapping e2e-stage.sh already holds this lock for
+# the whole pipeline.
+acquire_checkout_lock() {
+  local lock_dir="$ROOT_DIR/state/e2e.lock" lock_pid
+  mkdir -p "$ROOT_DIR/state"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    lock_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+    if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      printf '%s: another E2E/stage operation is active in this checkout (PID %s); run lifecycle commands sequentially.\n' \
+        "$SELF" "$lock_pid" >&2
+      exit 1
+    fi
+    rm -rf "$lock_dir"
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s: could not acquire checkout lock at %s.\n' "$SELF" "$lock_dir" >&2
+      exit 1
+    fi
+  fi
+  printf '%s\n' "$$" > "$lock_dir/pid"
+  printf -v _release_lock_cmd 'rm -rf %q' "$lock_dir"
+  trap "$_release_lock_cmd" EXIT
+}
+
 main() {
   local stage_arg="" dry_run="${STAGE_DRY_RUN:-false}" arg stage status setup_dirs_before=""
 
@@ -530,12 +556,17 @@ main() {
   build_preflight_command
 
   if [[ "$E2E_STAGE_WRAPPED" == true ]]; then
-    # Passthrough: the caller already resolved identity and ran preflight. Keep
-    # this branch free of our own diagnostics so the child's output and exit
-    # status are exactly what a direct invocation produces.
+    # Passthrough: the caller already resolved identity and ran preflight (and,
+    # for mutating stages, already holds the checkout lock below). Keep this
+    # branch free of our own diagnostics so the child's output and exit status
+    # are exactly what a direct invocation produces.
     resolve_identity_lenient
     build_child_command "$stage"
     exec "${CHILD_CMD[@]}"
+  fi
+
+  if stage_is_mutating "$stage"; then
+    acquire_checkout_lock
   fi
 
   if [[ "$stage" == preflight || "$stage" == setup ]]; then

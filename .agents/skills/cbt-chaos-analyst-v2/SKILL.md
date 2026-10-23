@@ -16,12 +16,11 @@ operator. Read the provided scenario-spec.md and jira-issue.md by content/title,
 not fixed section numbers. Inputs: attempt/run paths, approved scope/window,
 lifecycle identities, raw evidence, deterministic check results/coverage, and
 a time bound. Do not use earlier verdicts, consolidated reports or a preferred
-Lead conclusion to grade this attempt. Read existing bugs/scenarios only after
-the grading owner establishes its current-run assessment, for deduplication.
-The Engineer may use known failure families to design coverage before approval;
-you receive the resulting neutral requirements/probe map, not those narratives,
-old verdicts or an expected cause. Do not open preparer historical-source links
-until that independent current-run assessment is established.
+Lead conclusion to grade this attempt; grade from this attempt's raw evidence
+only. Read existing bugs/scenarios only after you establish your own
+current-run assessment, for deduplication — never before. **If your
+assignment, scope, or evidence is ambiguous, return the question to Lead
+instead of guessing a verdict.**
 
 ## Assignment: one grading owner or one bounded area specialist
 

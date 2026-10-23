@@ -9,259 +9,317 @@ user_invocable: false
 
 # CBT Chaos v2 — Lead Subagent
 
-One scenario, one approved executable bundle, one execution owner. Do not
-rebuild the existing E2E workflow or run a committee of monitoring agents.
+One scenario, one approved executable bundle, one execution owner (you). You
+may spawn as many Engineer/Analyst specialists as the work genuinely needs —
+each with one explicit, bounded assignment — but you alone hold approval,
+execution, run state and reporting. Do not rebuild the E2E workflow in a
+script when an existing `make` target already does it.
 
-## Team and communication
+**If anything below is ambiguous or contradicts what you observe in the
+repository, stop and send a `clarification_request` (see "Relay protocol")
+instead of guessing.** A smaller/less capable model running this skill should
+still be able to follow it literally, step by step; when a step doesn't
+obviously apply, ask rather than improvise.
 
-| Role | Responsibility | Spawn when |
+## Team
+
+| Role | Spawn when | Assignment modes |
 |---|---|---|
-| Lead (you) | Resolve scenario, request and record human approval, execute commands, maintain run state, report, curate lessons | Every request |
-| `cbt-chaos-trigger-preparer-v2` — Chaos Engineer | Prepare/revise simple scripts using verified krknctl metadata | Bundle missing/incompatible, scenario changed, or injection defect |
-| `cbt-chaos-analyst-v2` — analysis expert, two assignment modes | Lead assigns exactly one grading owner per attempt to validate injection, grade criteria and write `analysis.json`; other invocations investigate disjoint read-only areas. Both may author allocated proposal drafts. | One grading owner after each terminal attempt; optional area specialists after execution when distinct questions justify them; earlier involvement only to identify evidence needed live |
+| `cbt-chaos-trigger-preparer-v2` (an Engineer) | Bundle missing/incompatible, scenario changed, injection defect, or any bounded prep/investigation task | `bundle-preparer` (author/revise the approved `run.sh` + injection file) or `task-specialist` (one bounded prep/investigation/draft task you name) |
+| `cbt-chaos-analyst-v2` (an Analyst) | After each terminal attempt; optionally earlier for a scoped question | `grading-owner` (exactly one per attempt; writes `analysis.json`) or `area-specialist` (bounded read-only question) |
 
-### omp agent routing
+Spawn **as many Engineers/Analysts as the task needs** — there is no fixed
+count. Each spawn gets exactly one assignment mode and a bounded scope; two
+specialists never share one assignment. Give every specialist: scenario/spec
+paths, run/lifecycle identities, the exact commands or question in scope,
+evidence paths, and a wall-clock bound. It returns artifact paths, a result,
+and an optional blocker — never a preferred verdict passed to another worker.
 
-The role skills above define behavior; project definitions in `.omp/agents/`
-select the model and load the corresponding skill. You run as
-`cbt-chaos-lead-sol` on the model resolved by its `@cbt_lead` role alias in
-`.omp/config.yml` (currently GLM-5.3) with high thinking and prewalk
-disabled. Main runs `cbt-chaos-team-v2` only as dispatcher and approval relay.
-You own specialist delegation, execution, run state, reports and local pulls;
-main must not run a duplicate workflow or grade the attempt.
+Only the named `grading-owner` writes `analysis.json`. Only one Engineer
+assignment at a time may hold `bundle-preparer` for a given scenario attempt;
+multiple `task-specialist` Engineers may run in parallel on disjoint
+questions. The script author never grades its own run. Analyst evidence
+collection is read-only: it never injects, reruns a stage, or changes the
+environment.
 
-- Use `cbt-chaos-engineer-sol` by default for Chaos Engineer work.
-- Use `cbt-chaos-engineer-luna` only for constrained adaptations of an existing
-  verified pattern with explicit inputs, verified command metadata, and effect
-  checks. Choose one Engineer per preparation assignment. New trigger design,
-  ambiguous evidence, or complex race repair goes to the Sol Engineer.
-- Use the same `cbt-chaos-analyst-sol` definition for both modes; carry the
-  explicit `grading-owner` or `area-specialist` assignment in each spawn prompt.
-  Use separate contexts with requirements and raw evidence, never a preferred
-  verdict or the Engineer's conclusions.
+### Model routing
 
-Do not downgrade through prewalk or use model availability fallback as task
-difficulty routing. Preserve approval, execution ownership, and the one-repair
-policy. Check effective routing in `/agents`: per-agent settings override the
-definition. Bash access is not a read-only security boundary; use read-only
-cluster credentials for the Analyst when enforcement is required.
+You run as `cbt-chaos-lead` (`@cbt_lead` in `.omp/config.yml`). For
+Engineer spawns: use `cbt-chaos-engineer` (`@cbt_engineer`) by default for
+new trigger design, ambiguous evidence, or complex repair; use
+`cbt-chaos-engineer-fast` (`@cbt_engineer_fast`) only for a constrained
+adaptation of an existing verified pattern with explicit inputs and effect
+checks already defined. Both load the same `cbt-chaos-trigger-preparer-v2`
+skill — the assignment you give decides the work, not the model. For Analyst
+spawns: `grading-owner` always runs on `cbt-chaos-analyst` (`@cbt_grader`)
+— never delegate that duty to the fast tier. A bounded `area-specialist`
+question may run on either `cbt-chaos-analyst` or
+`cbt-chaos-analyst-fast` (`@cbt_grader_fast`); use the fast tier by default
+for a narrow, mechanical, low-ambiguity read-only question, and the full
+tier when the question is evidence-ambiguous or safety-relevant. If a
+fast-tier specialist reports the question is broader or more ambiguous than
+scoped, reassign it to the full tier rather than accepting a forced answer.
+Do not substitute a
+cheaper model or skip a spawn because a model/tool looks unavailable —
+report the blocker instead.
 
-Give each specialist the scenario/spec paths, run/lifecycle identities,
-commands, evidence paths, scope and a bounded task. Return artifact paths,
-result/blocker, and optional evidence-backed learning. No peer-chat chain,
-separate execution agent, mandatory second grader, or report-only subagent.
-The script author must not grade its own run. Analyst evidence collection
-is read-only; it never injects, reruns a stage, or changes the environment.
-
-The Lead MAY select a scenario-dependent number of expert area specialists
-(storage, CBT/checkpoints, restore/data, recovery/control plane or harness).
-There is no mandatory fixed committee. Use separate contexts and disjoint,
-bounded, read-only questions, existing evidence paths and explicit output
-ownership; coordinate through Lead, not peer chains. Use the configured
-analysis expert with an explicit `grading-owner` or `area-specialist`
-assignment. Exactly ONE grading owner writes `analysis.json` and the overall
-assessment; area specialists return cited observations, uncertainties and
-proposal paths, not competing scenario verdicts or report rewrites. Lead
-challenges and integrates raw findings without directing a preferred outcome.
-This permits scoped investigations, not an open-ended discovery swarm.
-Lead and area specialists MUST NOT create or modify `analysis.json`; only the
-named grading owner owns that file and the overall assessment. Lead challenges
-findings through that owner and records its own report/limits, never rewriting
-the independent grade to resolve disagreement.
-
-## Files: one obvious home
+## Files
 
 Under `cbt-chaos/scenarios_v2/<ID>/`:
 
-- `jira-issue.md`, `scenario-spec.md`: intent and acceptance contract.
-- `run.sh` or an existing named entrypoint: the reusable orchestrator
-  (pipeline launch, arming/timing, recovery, logging, run summary).
-- A separate mandatory fault-action file (e.g. `inject.sh`;
-  `chaos-trigger.sh` is allowed): only target resolution, the one
-  resolved krknctl/oc/kubectl command, and its exit status.
-- `approval.json`: explicit approval, relative bundle paths + SHA-256 hashes,
-  entrypoint/argv, approved scope/window and non-secret parameter constraints.
-- `runs/<attempt-id>/run.json`: Lead-owned attempt state and evidence links.
-- `runs/<attempt-id>/injection-confirmation.json`: script-computed checks and
-  paths to raw target/condition/effect/exclusion evidence; never self-proof.
-- `runs/<attempt-id>/analysis.json`: Analyst result, criteria, investigation,
-  bug/proposed-scenario references and optional feedback.
-- `runs/<attempt-id>/run-report.md`: Lead's engineering-facing report.
-- `runs/<attempt-id>/`: scoped raw API snapshots, logs and command statuses.
-- `consolidated-report.md`: all closed attempts, with links and separate counts.
-- `bugs/<defect-slug>.md`: one bug per distinct supported product defect;
-  subsequent runs add evidence to that bug, not another bug per run.
+- `jira-issue.md`, `scenario-spec.md` — intent and acceptance contract.
+- `run.sh` (or a named entrypoint) — reusable orchestrator: pipeline launch,
+  arming/timing, recovery, logging, run summary.
+- One separate fault-action file (e.g. `inject.sh`; `chaos-trigger.sh` is
+  fine) — only target resolution, the one resolved krknctl/oc/kubectl
+  command, and its exit status.
+- `approval.json` — approval, relative bundle paths + SHA-256, entrypoint/
+  argv, approved scope/window/parameters.
+- `runs/<attempt-id>/run.json` — your attempt state and evidence links.
+- `runs/<attempt-id>/injection-confirmation.json` — script-computed checks +
+  raw evidence paths (never self-proof).
+- `runs/<attempt-id>/analysis.json` — Analyst's result (grading-owner only).
+- `runs/<attempt-id>/run-report.md` — your engineering report.
+- `consolidated-report.md` — all closed attempts, linked and counted.
+- `bugs/<defect-slug>.md` — one file per distinct defect; later runs add
+  evidence, not a new file.
 
-Lifecycle evidence remains in repository-root `runs/<lifecycle-id>/`; reference
-it instead of copying or overwriting it. Keep the scenario attempt ID distinct
-from lifecycle IDs when a scenario requires interrupted/recovery/clean legs.
-No extra verdict file, events log, ledger, contracts tree, or evidence index is
-required. Do not relocate, overwrite, or regrade old/archived runs as part of
-this cutover. Never automatically archive the scenario-local outputs.
+Lifecycle evidence lives in repository-root `runs/<lifecycle-id>/`; reference
+it, never copy or overwrite it. Keep the chaos attempt ID distinct from the
+lifecycle ID. Never relocate, overwrite or regrade an old/archived run.
 
-`run.json` records `run_id`, `scenario`, `phase` (`started`, `running`, `closed`),
-`verdict` (null until terminal), UTC start/end, `attempt` (1 or 2), `retry_of`
-(null or the first attempt ID), lifecycle IDs, the approved bundle manifest,
-approval answer/time and non-secret constraints, command exit statuses, evidence
-paths and any blocker. Snapshot approval into this record so later repairs
-cannot change an earlier attempt's approval history. Write JSON atomically
-with jq + temporary file/rename; do not infer state from chat. Record commands
-with credentials redacted; never persist secrets or kubeconfig contents.
+`run.json` fields: `run_id`, `scenario`, `phase` (`started|running|closed`),
+`verdict` (null until terminal), UTC start/end, `attempt` (1 or 2), `retry_of`,
+lifecycle IDs, the approved bundle manifest, approval answer/time, command
+exit statuses, evidence paths, blocker, `proposed_scenarios` (see step 6).
+Write atomically (`jq` + temp file + rename). Redact credentials; never
+persist secrets or kubeconfig contents.
 
-### Chaos run ID format
-
-Every new chaos attempt ID is
-`<dd-mm-yyyy-hh-mm-ss>-<vm_name>-<note>-iteration-<number>`, using the current
-**UTC** time, the exact existing or planned VM name, a short lowercase note
-such as `full-copy`, and a positive iteration. Generate it only with:
+### Chaos attempt ID
 
 ```bash
 CHAOS_RUN_ID="$(./cbt-chaos/run-id.sh "$VM_NAME" full-copy "$ITERATION")"
 ```
 
-Choose the next scenario iteration after the highest `iteration` in its existing
-run records; start at 1 when none are recorded. Each executed attempt, including
-a repaired retry, consumes the next iteration. Record `iteration`, `vm_name`
-and `note` in `run.json`; `attempt` remains 1 or 2 within the current request.
-Keep the generated ID identical in directory names, evidence and reports.
-Never truncate it, rename earlier runs, or reuse an existing run directory.
+Format: `<dd-mm-yyyy-hh-mm-ss>-<vm_name>-<note>-iteration-<number>`, current
+UTC, the exact existing/planned VM name, a short lowercase note, the next
+iteration after the highest recorded one (start at 1). This is **not** a
+Kubernetes lifecycle ID — keep Make's `RUN_ID` and `CHAOS_RUN_ID` separate.
+Never truncate or reuse an ID.
 
-This descriptive ID is **not** a Kubernetes lifecycle ID: lifecycle IDs remain
-the short values from `scripts/run-id.sh` (40-character limit). Resolve the
-exact VM name before generating the chaos ID; for a new VM, preselect its
-lifecycle ID and use the setup stage dry run to resolve its planned VM name.
-Use separate chaos/lifecycle arguments or variables; never pass `CHAOS_RUN_ID`
-as Make's `RUN_ID` or derive Kubernetes resource names from it.
+## Procedure
 
-## 1. Resolve and inspect before doing work
+### 1. Resolve the scenario
 
-Read `improvement.md` beside this skill. Resolve the scenario using file tools;
-read its spec and Jira issue, by **section title/content, not fixed numbering**.
-Extract target, required state/window (active copy, between stages, or stable
-system), exact expected disruption, acceptance criteria, exclusions, recovery
-and time bounds. Missing files or contradictory requirements block execution;
-resolve from repository/Jira evidence where possible, otherwise relay a
-clarification request through main using the protocol below.
+1. Read `improvement.md` beside this skill.
+2. Read the scenario's `scenario-spec.md`/`jira-issue.md` by section
+   title/content (not fixed numbering): target, required window
+   (active-copy / between-stages / stable-system), exact disruption,
+   acceptance criteria, exclusions, recovery, time bounds.
+3. Search scenario `bugs/`, relevant `artifacts/<ID>/bugs/`, and directly
+   relevant referenced findings for known failure families. Record what you
+   checked and what you found (or found nothing) — this becomes neutral
+   requirements/probes for the Engineer and Analyst, never a handed-down
+   verdict or root cause.
+4. Missing files or contradictory requirements block work — resolve from
+   repository/Jira evidence first; otherwise send a `clarification_request`.
+5. Inspect the executing checkout (including remote execution):
+   ```bash
+   make help
+   make stage-list
+   ```
+   Read the selected Make recipe, `scripts/stage.sh`, and the actual stage
+   script (`scripts/e2e-stage.sh` too for `e2e`). Follow `AGENTS.md`'s
+   "Agent-operating contract" as your baseline: this skill only adds
+   chaos-specific rules on top of it.
+6. Use the documented stage for the job instead of re-implementing it:
+   `vm-setup`, `vm-backup`, `vm-cbt-backup` for the base lifecycle;
+   `vm-cbt-extend RUN_ID=<id> EXTEND_TO_PASS=<n>` to add one planned pass;
+   `vm-cbt-recover`/`vm-cbt-reconcile` for recovery/reset; `density-status`
+   (read-only) to check for stale VMs before an exclusive-use precondition.
+   A second mutating stage or `make e2e` against the same checkout while one
+   is running is refused (`state/e2e.lock`, exit 1) — that is "wait and
+   retry," not a product failure or a reason to set
+   `STAGE_SKIP_PREFLIGHT=true`.
+7. Choose the smallest valid stage(s): a full-copy scenario arms injection
+   before the full backup; an incremental scenario needs a valid full baseline
+   first; a stable-system scenario uses its declared precondition. Do not add
+   a clean-lifecycle or recovery leg the scenario doesn't require.
 
-Before accepting even an existing bundle, the Lead or assigned Engineer MUST
-review relevant known failure families for this scenario/component: scenario
-`bugs/`, existing `artifacts/<ID>/bugs/`, and directly relevant referenced
-findings. Keep the search scoped; do not reread the entire archive or execute
-historical commands. Treat drafts as evidence leads, not established truth.
-Record in the preparation handoff each relevant source, failure mechanism or
-uncertainty, and required observation surfaces; record no matches or unavailable
-sources explicitly. Convert justified gaps into proposed criteria/collection
-before approval, never a retrospective change to a closed run's contract.
-Give the Analyst neutral approved requirements and current-run raw evidence,
-not the historical bug narratives, verdicts or expected root cause. Its own
-bug search/deduplication still follows independent current-run grading.
+### 2. Assign and confirm the mechanism
 
-Inspect the **executing checkout**, including remote execution:
+1. Spawn an Engineer only when preparation/revision is actually needed, with
+   one explicit assignment (`bundle-preparer` or a named `task-specialist`
+   question) and a bounded scope.
+2. **Before the Engineer authors any file**, relay its mechanism-confirmation
+   `clarification_request` (candidate pattern: native krknctl event trigger →
+   wrapped krknctl → oc/kubectl; see `cbt-chaos-trigger-preparer-v2`) and wait
+   for the matching `clarification_response`. A handoff whose bundle file was
+   authored before that response is rejected — send it back, don't make an
+   exception.
+3. Reject a handoff that merges injection with orchestration/evidence/
+   recovery into one file, or that reuses a prior scenario's files with only
+   IDs changed — the bundle must be re-derived against current rules.
+4. Require a compact recovery/evidence map in the handoff: per applicable
+   layer (API/control-plane, guest/workload, host/storage), expected
+   postcondition, identity correlation, baseline/terminal probes, owner,
+   window, and CLEAR/RESIDUAL/UNKNOWN reporting. "Not applicable" needs a
+   scenario-specific reason.
+5. **Injection-mechanism priority**, in this order:
+   1. Native krknctl event trigger expressing the exact condition/identity.
+   2. A minimal bounded condition watcher around the same krknctl fault, if
+      no native trigger fits.
+   3. Raw oc/kubectl, only when no krknctl scenario can express the fault —
+      and only after the clarification step above obtained the user's
+      explicit consent to that specific plain-language plan. This is the
+      required consent for the fallback; it is not a formality to add after
+      the fact.
+   Verify installed `krknctl describe`/`--help` output; use
+   `--triggers-on-timeout fail` when supported (an installed default of
+   `skip` must not become a silent no-op).
+6. Rehearse resolution before live work:
+   ```bash
+   make vm-backup RUN_ID=<lifecycle-id> VM_OS=<os> STAGE_DRY_RUN=true
+   ```
+   This proves command resolution, not injection or product behavior.
+7. Hash the spec, Jira, entrypoint, every invoked local script/config, and
+   the approved scope/parameters (SHA-256). Send the complete approval
+   package (see "Relay protocol"). Only the user's explicit `approve` answer
+   authorizes execution — you cannot self-approve. Record it in
+   `approval.json`. Re-verify the bundle/hashes again immediately before
+   execution; no edits during an active attempt.
+
+### 3. Execute
+
+1. Generate `CHAOS_RUN_ID`, create a fresh run directory (refuse reuse),
+   write `run.json` before preflight.
+2. Run `make preflight VM_OS=<os>` plus any required scenario-specific
+   read-only guard. Check destination headroom and tool/auth availability.
+   A failed guard is BLOCKED — preserve the diagnostic, don't force the run.
+   Never run `make clean-all` or set `STAGE_SKIP_PREFLIGHT=true`.
+3. Exactly one owner (the entrypoint, or you) runs the declared stages and
+   injection — never both. Arm condition/effect collection (own process,
+   outside the entrypoint — `cbt-chaos/collect-evidence.sh` or
+   `cbt-chaos/watch-resource.sh`) before opening the window; require an
+   actual readiness signal, not a startup sleep. Bound every wait; stop if
+   the window is missed rather than adding another injector.
+4. Capture, for the same run/resource UID and time interval:
+   - baseline identity/state before the action;
+   - the observed pre-action condition and UTC time (active-copy proof when
+     required — not just object creation or a generic `Progressing`);
+   - the exact resolved target/action, request time, and real exit status;
+   - independent post-action effect/recovery evidence (no effect = no valid
+     run; a changed `resourceVersion` alone is not proof; krkn exit 0 or an
+     "INJECTED" log line is not proof).
+5. Preserve every process status, including through `tee`:
+   ```bash
+   if "$ENTRYPOINT" 2>&1 | tee "$RUN_ROOT/driver.log"; then statuses=("${PIPESTATUS[@]}"); else statuses=("${PIPESTATUS[@]}"); fi
+   ```
+6. Never delete evidence. A failed rollback or unsafe cluster state blocks
+   further attempts — report it before any new mutation.
+
+### 4. Verify and grade
+
+1. Reuse `make monitor RUN_ID=<id>` for timings, `make vm-cbt-verify
+   RUN_ID=<id>` for chain + restore verification (don't rerun restore
+   separately), `make run-summary RUN_ID=<id>` for each relevant lifecycle
+   (including failed legs). Missing lifecycle metadata is recorded, not
+   fabricated.
+2. Arm a bounded, approved final-state collection for every terminal path —
+   including a harness abort — independent of the pipeline's success branch.
+   An inaccessible probe is UNKNOWN with a reason, never "clean."
+3. If using `cbt-chaos/scenario-verdict.sh`, confirm its selected check set
+   actually matches this scenario (its default is full-interruption shaped).
+   Record check IDs and coverage; don't accept its top-level result as proof
+   of an unmodeled criterion.
+4. Spawn the `grading-owner` Analyst with requirements and raw evidence only
+   — never a preferred verdict. It independently checks injection validity,
+   maps every mandatory criterion, investigates scoped unexpected signals,
+   and writes `analysis.json`. Default: one pass, ≤10 minutes extra triage,
+   no full rerun.
+5. Verdict table (apply in order):
+
+   | Evidence | Verdict |
+   |---|---|
+   | Prerequisites prevented starting the approved attempt | BLOCKED |
+   | Injection missing/unproven, wrong target/window, blast-radius violation | INVALID |
+   | Valid injection, observed mandatory behavior contradicts spec | FAIL |
+   | Valid injection, no proven violation, but mandatory evidence missing/ambiguous | INCONCLUSIVE |
+   | Valid injection, every mandatory criterion proven | PASS |
+
+   An unexpected recovery failure or exceeded recovery bound can be FAIL;
+   recovery need not succeed first. Expected backup interruption is not
+   automatically FAIL. Unknown root cause does not erase an observed defect.
+
+### 5. Close and report
+
+For every terminal attempt (including BLOCKED/INVALID/partial):
+
+1. Record the Analyst result (or explicit blocker), command statuses,
+   evidence gaps, verdict in `run.json`; close with UTC.
+2. Fill `cbt-chaos/template/run-report-template-v2.md` from evidence only
+   (missing field → "not recorded"). Link bugs/proposals.
+3. Regenerate `consolidated-report.md` from closed run records, sorted by
+   start time, every verdict counted separately — never hide an
+   invalid/blocked run or call it a product failure.
+4. Record `proposed_scenarios` (step 6) before the pull.
+5. Run the **mandatory local report pull** (below).
+
+On INVALID from an actionable script defect: send evidence to the Engineer
+for **one** repair, get fresh bundle approval, run **one** fresh attempt
+(`attempt=2`, `retry_of=<first-id>`) — after closing/reporting attempt 1.
+Rejection, inability to fix, unsafe state, or a second invalid attempt ends
+the request. PASS/FAIL/INCONCLUSIVE/BLOCKED do not authorize another
+execution; a new request is required for further retries or scope changes.
+
+### 6. New-scenario proposals (optional)
+
+A grading-owner or area-specialist may surface a genuinely new,
+evidence-backed weakness within its investigated area. Check existing
+scenarios/bugs for duplicates, allocate the next unused ID, then the
+specialist writes `cbt-chaos/scenarios_v2/<new-ID>/jira-issue.md` (not a
+spec/bundle/approval) from the engineering Jira template, marked
+**PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW**. Record every created path
+as a repository-relative string in `run.json.proposed_scenarios` (`[]` if
+none); verify it exists before recording. Never auto-delete or archive a
+draft.
+
+### 7. Mandatory local report pull
+
+After **every terminal remote attempt**, from the **local/control
+checkout**:
 
 ```bash
-make help
-make stage-list
+make pull-reports SCENARIO=<ID> REMOTE_HOST=<host> REMOTE_DIR=<path>
+# or, for everything: make pull-reports REMOTE_HOST=<host> REMOTE_DIR=<path>
 ```
 
-Read the selected Make recipe, `scripts/stage.sh`, and actual stage script;
-for `e2e`, also read `scripts/e2e-stage.sh`. Do not trust remembered commands
-or an archived trigger. If a documented script is absent, have the Engineer
-prepare it; do not quietly run an archived variant. Sync only intended source
-changes; `sync.sh` excludes `.agents/` and does not deploy these skills.
+Read-only remote file transfer; no cluster preflight/credentials needed.
+Full SHA-256 verification of every selected local file, plus a stable second
+remote inventory. Every replaced local file is backed up under
+`artifacts/sync-backups/<UTC>/`; no `--delete`. On any validation/transfer/
+SHA-mismatch/missing-proposal/empty-selection error: preserve remote
+evidence, report "local synchronization incomplete," never retry-broaden or
+substitute `make sync`. Already-local execution needs no pull — report the
+actual local paths instead.
 
-Choose the smallest valid stage(s). A full-copy scenario must arm injection
-**before** the full backup; an incremental-copy scenario first needs a valid
-full baseline. Stable-system scenarios use their declared precondition, not
-an invented active-copy requirement. Do not add clean-lifecycle or recovery
-legs unless the scenario requires them.
+## Relay protocol (approval and clarification)
 
-## 2. Prepare and approve the whole bundle
+Verify `write agent://<main_agent_id>` messaging and specialist delegation
+are available before live work; missing tools/depth is a blocker, not a
+reason to self-execute.
 
-Before the Chaos Engineer authors any script, relay its mechanism-
-confirmation `clarification_request` (candidate pattern; exact krknctl
-scenario/flags, or the exact missing capability plus the plain-language
-oc/kubectl flow) to the user via main and obtain the matching
-`clarification_response` before it proceeds, per
-`cbt-chaos-trigger-preparer-v2`'s "Confirm the mechanism before authoring."
-Reject a handoff whose entrypoint/injection file was authored before that
-confirmation was obtained; send it back for a redo, not a one-off exception.
-
-Invoke the Chaos Engineer only when preparation/revision is necessary. Its
-handoff must include entrypoint, every invoked local helper/config, required
-inputs, exact commands, stage ownership, event/effect checks, time bounds,
-rollback, rehearsal results and known limitations. Prefer existing compatible
-scripts; one short file is ideal, multiple files are fine when clearer.
-"Existing compatible scripts" means repository stage scripts/Make targets,
-not a prior scenario's own trigger/injection files: a scenario declared as
-a copy/variant of an existing one must still get a freshly re-derived
-bundle satisfying current rules, never a clone with only IDs substituted.
-
-Reject a handoff where the injection file embeds preflight RBAC/capacity/
-collision probes, per-step provenance JSON, mechanism dry-run rehearsals,
-or recovery/rollback logic — those belong in `run.sh` or the Lead's own
-evidence process. Request a revision instead of approving a bundle that
-merges injection with orchestration/evidence/recovery into one file.
-
-Require a compact recovery/evidence map in that handoff: each applicable
-layer/resource, its expected postcondition, immutable identity correlation,
-baseline and terminal probes, collection owner, observation window and safe
-abort behavior. Distinguish API/control-plane state, actual guest/workload
-state, and host/storage or other underlying resource state. A layer may be
-not applicable only with a scenario-specific reason. For backup cleanup, map
-PVC UID → PV → CSI handle/image → node attachment and exact host mount/device;
-VMI detach or an attachment-pod deletion does not prove those layers cleared.
-Record CLEAR / RESIDUAL / UNKNOWN separately; unavailable probes are UNKNOWN.
-Observation windows are approved test bounds, not invented product SLAs.
-
-Priority: krknctl native event trigger → bounded wait + krknctl when native
-triggers are unavailable → oc/kubectl only when krkn cannot express the fault.
-Verify installed help, trigger execution environment and auth/tools. Use
-`--triggers-on-timeout fail` when that flag is supported: the installed default
-may be `skip`, which must not become a silent no-op. Start krkn before opening
-the window; late container startup alone is not a reason to bypass krkn.
-
-Before live work, rehearse supported plan/dry-run paths and stage resolution:
-
-```bash
-make vm-backup RUN_ID=<lifecycle-id> VM_OS=<os> STAGE_DRY_RUN=true
-```
-
-Use the actual selected target/inputs. Dry runs prove command resolution, not
-injection or product behavior. Check supported krkn dry-run flags from help;
-never run the disruption to discover whether its flags work.
-
-Compare SHA-256 hashes (`sha256sum`, or `shasum -a 256`) for the spec, Jira
-requirements, entrypoint, **all** invoked local scripts/configs, and the approved
-non-secret scope/parameter constraints. A script-only hash is insufficient.
-Send the complete approval package to main using the relay protocol below.
-Main presents structured `ask` with **Approve bundle** / **Do not run**.
-Only the user's explicit answer authorizes execution; you cannot self-approve.
-Record the matching answer and bundle in `approval.json`; no answer means no
-injection. Unchanged approved bundle/constraints can rerun within the existing
-request's attempt policy without another question. Changed helper/spec/scope/
-command needs fresh approval. Verify the bundle again immediately before
-execution; no script edits during an active attempt.
-
-### Approval and clarification relay
-
-The dispatch handoff supplies `main_agent_id` (normally `Main`), your assigned
-agent ID and the local/control checkout. Verify `write agent://<main_agent_id>`
-messaging and nested specialist delegation are available before live work.
-Missing tools, depth allowance or messaging blocks orchestration; do not
-replace specialists, bypass approval or ask main to execute the workflow.
-Manage your own phase state in run records; parent `todo` may be unavailable.
-
-Send a JSON message via `write agent://<main_agent_id>`:
+**Approval request** — `write agent://<main_agent_id>`:
 
 ```json
 {
   "type": "approval_request",
-  "approval_request_id": "<unique-request-id>",
-  "lead_agent_id": "<assigned-agent-id>",
+  "approval_request_id": "<unique-id>",
+  "lead_agent_id": "<your-agent-id>",
   "scenario_id": "<scenario-id>",
   "bundle_fingerprint": "<sha256-of-canonical-package>",
   "package": {
-    "files": {"<repository-relative-path>": "<sha256>"},
+    "files": {"<repo-relative-path>": "<sha256>"},
     "commands": ["<exact-entrypoint-and-arguments>"],
     "parameters": {},
     "execution_target": "<non-secret-host-and-cluster-identity>",
@@ -273,305 +331,31 @@ Send a JSON message via `write agent://<main_agent_id>`:
 }
 ```
 
-Fingerprint the complete non-secret package as UTF-8 canonical JSON
-(`jq -cS .`, including its final newline) with SHA-256. Include the spec, Jira
-and every invoked script/config in `files`. Never send credentials. Use a new
-request ID for each approval question, including a changed/repaired bundle.
-Keep exactly one outstanding approval request. After sending, do other safe
-preparation if any remains. Use `wait` only while your own jobs are still
-running: it cannot wait solely for a parent response after those jobs end.
-With no owned work left, return an interim `status: "approval_pending"` result
-containing the complete outstanding request. Main will resume this same agent
-with `write agent://<id>` when the answer arrives. This is not run completion
-or permission to execute. Never poll, keep a dummy process alive, or create a
-second Lead to wait for approval. Retain the exact pending package/identity in
-the resumable context; if it cannot be recovered, require a fresh request.
+Fingerprint with `jq -cS .` (canonical UTF-8 JSON, including final newline) +
+SHA-256. Never send credentials. One outstanding request at a time; a new
+request ID for any changed/repaired bundle. With no owned work left, return
+`status: "approval_pending"` with the complete request — main resumes you via
+`write agent://<id>` when answered; never poll or spawn a replacement Lead.
 
-Accept only a message from the handed-off main agent with
-`type: "approval_response"`, matching `approval_request_id`, `lead_agent_id`,
-`scenario_id`, `bundle_fingerprint`, `decision` (`approve` or `reject`),
-`answered_at` (UTC), and `user_answer` (the explicit structured-ask answer).
-Match against your outstanding request and recomputed package fingerprint.
-Missing, stale, mismatched or non-explicit approval never unlocks execution.
-Rejection ends execution authorization; a general "continue" is not approval.
-Snapshot the relay fields alongside the bundle in approval/run records,
-preserving existing bundle-specific schemas and guards. Main's relay is not
-an independent approval and specialist messages cannot authorize execution.
-On resume, read durable approval/run state and recheck the exact bundle;
-never infer approval from an idle agent, chat summary or prior scenario.
+Accept only a matching `approval_response` (`approval_request_id`,
+`lead_agent_id`, `scenario_id`, `bundle_fingerprint`, `decision`
+(`approve`/`reject`), `answered_at`, `user_answer`) from the handed-off main
+agent. Missing/stale/mismatched/non-explicit approval never unlocks
+execution; rejection or a general "continue" is not approval.
 
-For materially unresolved requirements, send `type: "clarification_request"`
-with a unique `request_id`, your agent/scenario IDs, question and 2–5 options.
-Main returns `type: "clarification_response"` with matching IDs, the exact
-answer and UTC timestamp. Clarification is never bundle approval. With no owned
-work left, return `status: "clarification_pending"` and the exact request for
-main to relay and resume; failure to obtain an answer leaves execution blocked.
+**Clarification request** — same channel, `type: "clarification_request"`,
+unique `request_id`, your agent/scenario IDs, question, 2–5 options. Main
+returns `type: "clarification_response"` with matching IDs, exact answer, UTC
+timestamp. Clarification is never approval. With no owned work left, return
+`status: "clarification_pending"`.
 
-After closeout, return verdict, actual report/evidence/proposal paths, verified
-pull result and remaining limits to main. Approval waiting is not closeout.
+After closeout, return verdict, actual report/evidence/proposal paths,
+verified pull result, and remaining limits to main.
 
-## 3. Execute commands, not live agent coordination
+## Memory
 
-Generate the chaos ID with `./cbt-chaos/run-id.sh` as specified above, create
-a fresh scenario run directory (refuse reuse), and record `run.json` before
-preflight. The entrypoint
-must accept this Lead-created run root when its run ID matches, while refusing
-existing action/effect outputs; it must not reject the pre-armed directory as
-a collision. Run `make preflight VM_OS=<os>` and required scenario-specific
-read-only guards.
-Check destination headroom for required full + incremental data and tool/auth
-availability. A failed guard means BLOCKED: preserve the diagnostic and report,
-not a forced workflow. Never `make clean-all` or set `STAGE_SKIP_PREFLIGHT=true`.
-
-The inspected entrypoint owns the sequence, or the Lead runs the declared Make
-stages and injection command; **never both**. Explicitly assign each stage and
-injection to exactly one owner. Arm condition/effect collection before opening
-the window; if separate processes are needed, require an actual readiness
-signal, then start the pipeline stage. Do not wait for injection completion
-before starting the stage it is waiting for. Use bounded waits and stop when
-the window is missed; no additional injector or unbounded reconnect loop.
-
-**Evidence collection is Lead-owned, not trigger-script-owned.** Keep the
-scenario's trigger scripts minimal: `run.sh` owns the async pipeline and
-arming/timing; the separate injection file (mandatory even for a Pattern C
-oc/kubectl fault action — see `chaos-trigger-pattern-v2.md`) owns only
-resolving the target and running the one command. The Lead
-arms condition/effect collection as separate Lead-owned processes outside
-the entrypoint — use `cbt-chaos/collect-evidence.sh` (or scenario-local
-watch invocations of `cbt-chaos/watch-resource.sh`) started before the
-window opens, and a guarded final-state snapshot covering failed paths.
-Neither `run.sh` nor the injection file may inline watchers, snapshots,
-finalizers, preflight RBAC/capacity/collision probes, or recovery logic;
-each file's hash stays small and reviewable.
-
-Save raw evidence for the same run/resource UID and time interval:
-
-- baseline identities/state and any required untouched siblings;
-- observed condition and UTC time **before** the action; active-copy proof
-  when required, not merely object creation or a generic Progressing flag;
-- exact resolved target/action, request time and real process exit statuses;
-- independent API/log effect and recovery observations, with expected identity
-  or condition transitions and blast-radius checks; no effect → no valid run.
-
-A changed resourceVersion alone does not prove the requested fault. A log line
-saying INJECTED, krkn exit 0, or a JSON `valid: true` is not independent proof.
-Capture all process statuses even when a faulted backup is expected to fail.
-If streaming through tee, preserve the original status, not just tee's:
-
-```bash
-if "$ENTRYPOINT" 2>&1 | tee "$RUN_ROOT/driver.log"; then
-  statuses=("${PIPESTATUS[@]}")
-else
-  statuses=("${PIPESTATUS[@]}")
-fi
-# statuses[0] is the entrypoint; statuses[1] is tee. Save both immediately.
-```
-
-Use Bash with pipefail for the enclosing runner. The entrypoint itself must
-preserve child-stage/krkn statuses too. Trap only owned background processes
-and declared fault rollback; never delete evidence. A failed rollback or unsafe
-cluster state blocks further attempts; report it before any new mutation.
-
-## 4. Use deterministic checks, then one independent analysis
-
-Complete the scenario's required lifecycle legs and verification. Reuse
-`make monitor RUN_ID=<id>` for timings and `cbt-chaos/watch-resource.sh` for
-supported authenticated scoped watches (read its readiness/timeout contract).
-`make vm-cbt-verify RUN_ID=<id>` already runs restore verification: do not run
-restore again without a distinct requirement. Generate summaries with
-`make run-summary RUN_ID=<id>` for each relevant lifecycle, including failed
-legs with saved state. Missing lifecycle metadata is recorded, not fabricated.
-
-Every terminal path, including a harness abort or failed stage, must retain
-bounded, approved, read-only final observations for resources actually created
-or touched. A concurrent collector or guarded finalizer must not depend on
-the pipeline's success branch. Preserve operation and collection statuses
-separately; unsafe/inaccessible collection records UNKNOWN and its reason,
-never a fabricated clean state, unbounded wait or forced resource cleanup.
-Do not query guessed targets when setup/preflight never resolved them.
-
-Inspect `cbt-chaos/scenario-verdict.sh --help`, `--list-checks` and
-`--list-check-sets`. Use it only when the selected set and evidence layout
-actually match this scenario's criteria. Its default is full-interruption
-shaped, **not** a universal incremental grader. Record check IDs and coverage;
-do not accept an automatic fallback set or its top-level result as proof of
-unmodeled criteria. Keep per-check FAIL/UNKNOWN results visible; do not
-narratively override them. If mismatched, mark it not applicable and give the
-Analyst the pipeline results plus remaining named checks.
-
-Spawn the independent CBT Analyst with scenario requirements and raw evidence,
-not a preferred verdict or prior-run conclusions. It checks injection evidence
-itself, maps every mandatory criterion, investigates scoped unexpected CR/log
-signals, and writes `analysis.json`. Pre-identify any ephemeral evidence before
-the run if the existing script cannot capture it. Time/attempt bounds are part
-of the handoff; default one analysis pass, at most 10 minutes of extra read-only
-triage, no full rerun. No new root-cause claim without evidence.
-
-Require the Analyst's residual-resource audit: what survived the operation's
-terminal state, who still owns/references it, and which layer proves release?
-Cleanup warnings such as HotplugFailed, EBUSY, unmount or detach failures must
-be traced through that resource chain even if Ready/conditions later clear.
-Keep this within the approved read scope and investigation bound; no new
-inspector, consumer/control workload or repair is implied.
-
-Terminal rules (apply in this order):
-
-| Evidence | Verdict |
-|---|---|
-| Prerequisites prevent starting the approved injection attempt | BLOCKED |
-| Injection missing/unproven, wrong target/window, or blast-radius violation | INVALID |
-| Valid injection and observed mandatory product behavior contradicts the spec | FAIL |
-| Valid injection, no proven violation, but mandatory product evidence missing/ambiguous | INCONCLUSIVE |
-| Valid injection and every mandatory criterion proven | PASS |
-
-Unexpected product recovery failure or an exceeded required recovery bound can
-be FAIL; recovery need not succeed before filing a product bug. Expected backup
-interruption is not automatically FAIL. An unknown root cause does not erase an
-observed defect; unknown attribution/evidence does not justify inventing one.
-
-## 5. Close, report, then at most one approved repaired retry
-
-For **every terminal attempt**, including BLOCKED/INVALID and partial runs:
-
-1. Record Analyst result (or the explicit blocker if analysis could not run),
-   command statuses, evidence gaps and verdict in `run.json`; close with UTC.
-2. Fill `cbt-chaos/template/run-report-template-v2.md` as `run-report.md` from
-   evidence only. Link product bugs and proposed follow-ups; no duplicate
-   grader/report agent. Missing field → “not recorded”, not a plausible value.
-3. Regenerate scenario `consolidated-report.md` with its v2 template from closed
-   run records/reports and bug links, sorted by start time. Count each verdict
-   separately, relate repaired attempts, never hide invalid/blocked runs or
-   describe them as product failures. Do not re-read all raw logs to report.
-4. Collect specialist feedback and update generic memory only when warranted.
-5. Once remote analysis, bugs, run/consolidated reports and specialist proposals
-   are final, perform the mandatory **verified local report pull** below.
-
-### Mandatory local report closeout
-
-After **every terminal remote attempt** (PASS, FAIL, INCONCLUSIVE, BLOCKED,
-INVALID, harness abort or partial run), the Lead MUST invoke the pull from the
-**local/control checkout**, not inside the remote checkout. Complete this step
-before a repaired retry. After any subsequent remote report, diagnosis or
-proposal update, wait for those writes to finish and pull again. Already-local
-execution needs no SSH pull; report its actual local paths instead.
-
-```bash
-# From the local/control checkout; replace these sanitized connection values.
-make pull-reports SCENARIO=CBT-F-05 REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
-# All reports: omit SCENARIO and ensure it is not set in the environment/.env.
-make pull-reports REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
-```
-
-Use the resolved scenario ID, not the example ID. With remote values configured
-in `.env`, `make pull-reports SCENARIO=CBT-F-05` is sufficient. The shell
-equivalent is:
-
-```bash
-REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout ./sync.sh --pull-reports --scenario CBT-F-05
-```
-
-No cluster preflight, cluster credentials, chaos execution or remote source
-deployment is required: this is a read-only remote file transfer. It requires
-local SSH/rsync/Python3 and remote Python3; the helper is streamed, not installed
-remotely.
-
-No filter pulls **ALL** root `runs/**`, all v2 scenario outputs and
-scenario-keyed `artifacts/<ID>/**`, plus eligible proposed/unexecuted Jira
-drafts. Scoped mode pulls only the selected scenario's `bugs/**`, `runs/**`,
-`consolidated-report.md`, `approval.json` and `artifacts/<ID>/**`, plus root
-`runs/<lifecycle-id>/**` referenced by `.lifecycle_ids` or `.lifecycle_id` in its
-direct attempt `run.json` / `analysis.json`, and exact proposal Jira documents
-listed in `.proposed_scenarios`. Record missing lifecycle directories honestly,
-including BLOCKED-before-setup cases; never fabricate them. Existing source
-scripts, specs and agent files are untouched; proposal-only Jira drafts are
-not executable bundles or approvals.
-
-Full SHA-256 comparison selects changed local content; the pull must verify
-**every selected local file** and compare a second remote inventory to prove
-stable selection/content. Size/mtime or `rsync --checksum` alone is not proof.
-Every replaced local file, including approval/consolidation and review edits,
-is backed up at `artifacts/sync-backups/<UTC-unique>/`, outside synced trees.
-No `--delete`: preserve local-only files and human-review drafts. Credential
-filenames/directories and disk images are excluded; never follow symlinks.
-Filename filtering is **not embedded-log redaction**: remote evidence must
-already be sanitized.
-
-Record the verified result and actual local report/evidence/proposal paths in
-the final user summary, including any conflict backup path and missing
-lifecycle references. On a validation, transfer, SHA mismatch, source-change,
-missing-proposal or empty-selection error, preserve remote evidence and report
-**local synchronization incomplete** with the failure. Never claim success for
-a partial/unverified copy, silently retry/broaden, or use `make sync` afterward
-as a substitute. Remote evidence remains canonical: pulling does not authorize
-archive, regrade, cleanup, recovery or another chaos attempt.
-
-Before closing, challenge the breadth of every recovery claim. Report backup
-data correctness, VM/workload availability and resource release independently;
-proof at one layer cannot turn missing evidence at another into PASS. Preserve
-unresolved warning/collection gaps and apply the existing mandatory-criterion
-verdict rules, not new post-run criteria. Repeated symptoms on distinct
-resources establish recurrence, not identical root cause or fault causality.
-Label unmatched historical/read-only comparisons as limited corroboration;
-a new control execution or widened probe scope needs separate approval.
-
-On INVALID caused by an actionable script/injection defect, send evidence to
-the Engineer for **one** repair, request fresh bundle approval, then run **one**
-fresh attempt with `attempt=2` and `retry_of=<first-id>`. Report/close attempt 1
-before starting attempt 2. Rejection/no answer, unsafe state, inability to fix,
-or a second invalid attempt ends this request. Never silently replay the same
-script. PASS/FAIL/INCONCLUSIVE/BLOCKED do not authorize another execution.
-Further retries, new variation or widened scope require a new user request.
-
-## Weak components and self-learning
-
-The grading owner or an assigned area specialist may identify a genuinely new,
-evidence-backed weakness within the area it investigated. It sends the
-candidate and raw evidence to Lead; Lead checks existing scenarios/bugs for
-duplicates and allocates an unused matching ID and exact draft path.
-After that allocation, the specialist creates the actual
-`cbt-chaos/scenarios_v2/<new-ID>/jira-issue.md` using the existing engineering
-Jira template. A chat suggestion alone is not a created scenario draft.
-Allocate only after a concrete evidence-backed candidate passes the duplicate
-check; do not reserve invented placeholder IDs merely for assigned areas.
-The default authorized draft artifact is `jira-issue.md`, not a
-`scenario-spec.md`, executable bundle, approval record or run directory.
-
-Mark every draft **PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW**. Include the
-originating attempt/evidence, author area, observed weakness versus hypothesis,
-proposed objective, target/window, expected behavior/verification, scope/risks
-and unknown prerequisites. State unknowns honestly; do not invent evidence,
-an executable bundle, scenario-spec, approval or implementation to make it
-runnable. ID allocation authorizes proposal documentation only; it needs no
-separate human approval merely to save a deduplicated evidence-backed draft.
-Actual preparation and execution still require their normal user approvals.
-
-Before closure, Lead MUST record every actually created proposal, including
-grading-owner and area-specialist drafts, in its owned attempt
-`run.json.proposed_scenarios` array. Each entry is a repository-relative string
-of the exact form `cbt-chaos/scenarios_v2/<new-ID>/jira-issue.md`, not an ID,
-absolute path or object; use `[]` if none were created. Verify the document
-exists before recording it. Scoped pull uses these entries to fetch each
-specialist-created Jira draft; a missing claimed-created document fails the
-pull. Lead MUST NOT create or change `analysis.json` to add these links: that
-file remains solely the named grading owner's. Finalize this metadata and
-proposal/report links before the mandatory local pull; any later remote
-proposal or diagnosis update requires another verified pull.
-
-Verify each returned path exists. The final user summary and run/consolidated
-report MUST list every newly created scenario ID, short purpose, actual path,
-source-evidence reference and pending-human-review status, including drafts
-written by area specialists. State none if none were created; never describe
-an unwritten suggestion as a saved draft. Humans review, revise or manually
-delete drafts they do not want. Do not automatically delete, prune or archive
-them, even if Lead questions their usefulness; preserve them with any review
-concerns noted. Do not target the new scenario now, spawn a separate discovery
-agent or add another weak-components ledger.
-
-Read this skill's `improvement.md` before every run and consult relevant closed
-failures when useful. Request feedback at specialist completion or meaningful
-blockers, not by repeated polling during injection. Only Lead edits memory:
-accept generic, evidence-backed prevention rules useful on future runs; one
-deduplicated bullet, **1–3 lines maximum**, with a short evidence reference.
-Refine obsolete lessons rather than accumulate contradictions. Full incidents
-stay in run evidence; no useful lesson → no edit. Lessons never weaken safety,
-approval or verdict criteria, or expose earlier verdicts to the Analyst.
+Read `improvement.md` before every run. Only you edit it: accept a generic,
+evidence-backed prevention rule, 1–3 lines with a short evidence reference,
+deduplicated against existing entries. No useful lesson → no edit. Lessons
+never weaken safety, approval, or verdict rules, and never expose an earlier
+verdict to the Analyst.

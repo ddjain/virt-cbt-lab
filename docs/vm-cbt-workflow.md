@@ -328,7 +328,7 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 
 Chaos orchestration does not change these lifecycle script semantics.
 `cbt-chaos-team-v2` runs in main as a dispatcher/approval relay and launches one
-`cbt-chaos-lead-sol`, whose `cbt-chaos-lead-v2` skill owns the full procedure.
+`cbt-chaos-lead`, whose `cbt-chaos-lead-v2` skill owns the full procedure.
 Lead drives the existing stages and monitoring, supported by a prepare-only
 Chaos Engineer and an independent CBT Analyst. Read the executing checkout's Make
 recipes, selected stage scripts, scenario entrypoint and applicable evaluator

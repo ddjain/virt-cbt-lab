@@ -72,6 +72,22 @@ Run `./preflight` or `make preflight` before any individual workflow target. `ma
 **Need a longer live backup-copy window** (e.g. for a chaos scenario that must land mid-copy)? The default demo sizing finishes the copy in a few seconds on `cbt-demo-hpp` because it's page-cache-absorbed at that scale — a bigger PVC alone does not help. Set `MANIFEST_VARIANT=large` plus a correspondingly large `GUEST_DATA_SIZE_MB`/`GUEST_INCREMENTAL_DATA_SIZE_MB` (see `.env.example` for measured values that produce a ~28s full / ~16s incremental backup); this swaps in `manifests/vm-large.yaml`, `manifests/full-backup-large.yaml`, and `manifests/incremental-backup-large.yaml` and does not change default `make e2e` behavior otherwise. Verify the actual window with `scripts/monitor.sh <vm_name>`, not by assumption — see `docs/vm-cbt-workflow.md` for the measured data points.
 
 
+## Agent-operating contract
+
+When an AI agent drives this workflow (interactively or in a chaos/test harness), follow this contract in addition to the human conventions below:
+
+- Prefer the documented `make` targets (`preflight`, `vm-setup`, `vm-backup`, `vm-cbt-backup`, `vm-cbt-extend`, `vm-cbt-recover`, `vm-cbt-reconcile`, `vm-cbt-verify`, `vm-cbt-restore-test`, `run-summary`, `e2e`) over invoking `scripts/*.sh` directly; the stage scripts assume the identity resolution and preflight policy that `scripts/stage.sh` provides.
+- When debugging, execute one lifecycle phase at a time (`make vm-setup`, then `make vm-backup`, …) and use `make e2e` for the final integrated check — not as the first diagnostic step for a narrow failure.
+- Pass the same `RUN_ID`/`VM` and the same `VM_OS`/`MANIFEST_VARIANT`/`GUEST_*` configuration to every phase of a given lifecycle; do not let a later phase infer or guess identity from shell state left over from an earlier invocation.
+- Read each phase's stdout/stderr and the run's `runs/<run-id>/run.json`, `report.json`, and `summary.json` instead of guessing resource names, checkpoint names, or lifecycle state.
+- Use `STAGE_DRY_RUN=true` and `make preflight` before a risky or expensive mutating action, and `make stage-list` / `make -n <target>` to confirm a target's real behavior before relying on it.
+- Never invent `make` targets, environment variables, resource names, API fields, or success criteria. Confirm them from `make help`, `make -n`, `make stage-list`, the actual script source, and `docs/vm-cbt-workflow.md` — not from memory or assumption.
+- Never report success without checking the command's actual exit status and the relevant `report.json`/`summary.json` evidence; a `Done=True` condition or a zero exit status alone is not sufficient for backup/restore claims.
+- On failure, preserve the run's evidence (`runs/<run-id>/`), identify the failing stage and its first meaningful error, and use the documented recovery path (`make vm-cbt-reconcile`, `make vm-cbt-recover`) rather than blindly rerunning the whole workflow or deleting state.
+- Do not run multiple mutating stages concurrently against the same run or checkout; `scripts/stage.sh` and `scripts/e2e-stage.sh` share a single checkout lock (`state/e2e.lock`) and will refuse a second mutating invocation while one is active — treat that refusal as a signal to wait, not to force past it.
+- Distinguish local/offline tests (`tests/*.sh`, no cluster contact), mocked/stubbed tests, and real-cluster tests in every summary; do not claim cluster behavior was verified when only a syntax or unit check ran.
+- Do not change cluster-wide configuration or delete resources outside this workflow's ownership (its labeled VMs/DataVolumes/Services/backups/PVCs); `make clean-all` is an explicit, human-requested action, never a routine recovery step.
+
 ## Coding conventions
 
 - Keep scripts Bash with `#!/usr/bin/env bash` and `set -euo pipefail`.
