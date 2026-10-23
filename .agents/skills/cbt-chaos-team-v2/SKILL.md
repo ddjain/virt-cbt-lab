@@ -39,7 +39,7 @@ for information available from repository/configuration; Lead investigates
 requirements, missing files and contradictions. Never treat a run request as
 bundle approval.
 
-Spawn exactly one `cbt-chaos-lead-sol` via `task`, with a stable unique name.
+Spawn exactly one `cbt-chaos-lead` via `task`, with a stable unique name.
 This is an intentional orchestration handoff, not a parallel research slice.
 Supply the assigned agent ID, `main_agent_id: Main`, scenario ID and paths,
 original request, execution host if supplied, local/control checkout and any

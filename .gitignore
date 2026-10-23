@@ -84,11 +84,11 @@ skills-lock.json
 .omp/*
 !.omp/agents/
 .omp/agents/*
-!.omp/agents/cbt-chaos-engineer-sol.md
-!.omp/agents/cbt-chaos-engineer-luna.md
-!.omp/agents/cbt-chaos-analyst-sol.md
-!.omp/agents/cbt-chaos-analyst-luna.md
-!.omp/agents/cbt-chaos-lead-sol.md
+!.omp/agents/cbt-chaos-engineer.md
+!.omp/agents/cbt-chaos-engineer-fast.md
+!.omp/agents/cbt-chaos-analyst.md
+!.omp/agents/cbt-chaos-analyst-fast.md
+!.omp/agents/cbt-chaos-lead.md
 
 # Local RFC drafts
 /docs/rfcs/

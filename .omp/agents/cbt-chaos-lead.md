@@ -1,11 +1,11 @@
 ---
-name: cbt-chaos-lead-sol
+name: cbt-chaos-lead
 description: Own one CBT chaos scenario end to end; delegate preparation and independent grading, relay human approval through main, execute and report.
 model: "@cbt_lead"
 thinking-level: high
 autoload-skills: [cbt-chaos-lead-v2]
 tools: [read, grep, glob, bash, edit, write, web_search, task, wait]
-spawns: [cbt-chaos-engineer-sol, cbt-chaos-engineer-luna, cbt-chaos-analyst-sol, cbt-chaos-analyst-luna]
+spawns: [cbt-chaos-engineer, cbt-chaos-engineer-fast, cbt-chaos-analyst, cbt-chaos-analyst-fast]
 prewalk: false
 advisor: false
 ---

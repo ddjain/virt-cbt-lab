@@ -18,7 +18,7 @@ current capability matrix, delegation map and measured baselines those skills
 point at. When the two disagree, the skill is right and this file is stale.
 
 **Current simplified v2:** `cbt-chaos-team-v2` dispatches the dedicated
-`cbt-chaos-lead-sol` (`cbt-chaos-lead-v2`) and relays human approval through main.
+`cbt-chaos-lead` (`cbt-chaos-lead-v2`) and relays human approval through main.
 Lead owns specialist delegation, approved execution and verified report closeout,
 using the prepare-only Engineer and independent Analyst. Main never executes
 the workflow; there are no mandatory monitor or reporter agents. Scenario-local

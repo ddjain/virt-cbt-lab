@@ -44,21 +44,22 @@ environment.
 
 ### Model routing
 
-You run as `cbt-chaos-lead-sol` (`@cbt_lead` in `.omp/config.yml`). For
-Engineer spawns: use `cbt-chaos-engineer-sol` (`@cbt_engineer`) by default for
+You run as `cbt-chaos-lead` (`@cbt_lead` in `.omp/config.yml`). For
+Engineer spawns: use `cbt-chaos-engineer` (`@cbt_engineer`) by default for
 new trigger design, ambiguous evidence, or complex repair; use
-`cbt-chaos-engineer-luna` (`@cbt_engineer_fast`) only for a constrained
+`cbt-chaos-engineer-fast` (`@cbt_engineer_fast`) only for a constrained
 adaptation of an existing verified pattern with explicit inputs and effect
 checks already defined. Both load the same `cbt-chaos-trigger-preparer-v2`
 skill — the assignment you give decides the work, not the model. For Analyst
-spawns: `grading-owner` always runs on `cbt-chaos-analyst-sol` (`@cbt_grader`)
+spawns: `grading-owner` always runs on `cbt-chaos-analyst` (`@cbt_grader`)
 — never delegate that duty to the fast tier. A bounded `area-specialist`
-question may run on either `cbt-chaos-analyst-sol` or
-`cbt-chaos-analyst-luna` (`@cbt_grader_fast`); use luna by default for a
-narrow, mechanical, low-ambiguity read-only question, and sol when the
-question is evidence-ambiguous or safety-relevant. If a luna-assigned
-specialist reports the question is broader or more ambiguous than scoped,
-reassign it to sol rather than accepting a forced answer. Do not substitute a
+question may run on either `cbt-chaos-analyst` or
+`cbt-chaos-analyst-fast` (`@cbt_grader_fast`); use the fast tier by default
+for a narrow, mechanical, low-ambiguity read-only question, and the full
+tier when the question is evidence-ambiguous or safety-relevant. If a
+fast-tier specialist reports the question is broader or more ambiguous than
+scoped, reassign it to the full tier rather than accepting a forced answer.
+Do not substitute a
 cheaper model or skip a spawn because a model/tool looks unavailable —
 report the blocker instead.
 

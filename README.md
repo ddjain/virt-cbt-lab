@@ -428,7 +428,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ## CBT chaos v2
 
 Request **“run CBT-F-01 with the chaos team”** via `cbt-chaos-team-v2`.
-Main dispatches one dedicated `cbt-chaos-lead-sol` subagent and relays human
+Main dispatches one dedicated `cbt-chaos-lead` subagent and relays human
 approval/clarification requests. The Lead owns discovery, approval recording,
 execution/monitoring, recovery, verified local report pulls and both reports.
 It uses a prepare-only Chaos Engineer and one independent Analyst as
@@ -446,11 +446,11 @@ each role alias:
 
 | Agent | Role alias / thinking | Assignment |
 |---|---|---|
-| `cbt-chaos-lead-sol` | `@cbt_lead` / high | Dedicated execution Lead; loads `cbt-chaos-lead-v2`, delegates specialists and requests human approval through main. |
-| `cbt-chaos-engineer-sol` | `@cbt_engineer` / high | Default Engineer: new trigger design, ambiguous evidence, complex injection repair. |
-| `cbt-chaos-engineer-luna` | `@cbt_engineer_fast` / high | Engineer alternative: constrained adaptations of a verified pattern with explicit inputs, command metadata and effect checks. |
-| `cbt-chaos-analyst-sol` | `@cbt_grader` / xhigh | Every `grading-owner` assignment, and any `area-specialist` question Lead judges ambiguous or safety-relevant. |
-| `cbt-chaos-analyst-luna` | `@cbt_grader_fast` / medium | A bounded, narrow, low-ambiguity `area-specialist` question only — never `grading-owner`. |
+| `cbt-chaos-lead` | `@cbt_lead` / high | Dedicated execution Lead; loads `cbt-chaos-lead-v2`, delegates specialists and requests human approval through main. |
+| `cbt-chaos-engineer` | `@cbt_engineer` / high | Default Engineer: new trigger design, ambiguous evidence, complex injection repair. |
+| `cbt-chaos-engineer-fast` | `@cbt_engineer_fast` / high | Engineer alternative: constrained adaptations of a verified pattern with explicit inputs, command metadata and effect checks. |
+| `cbt-chaos-analyst` | `@cbt_grader` / xhigh | Every `grading-owner` assignment, and any `area-specialist` question Lead judges ambiguous or safety-relevant. |
+| `cbt-chaos-analyst-fast` | `@cbt_grader_fast` / medium | A bounded, narrow, low-ambiguity `area-specialist` question only — never `grading-owner`. |
 
 Lead assigns each Engineer spawn `bundle-preparer` (owns the one approved
 bundle; at most one at a time per scenario attempt) or a bounded
