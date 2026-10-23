@@ -93,7 +93,10 @@ set_vm_os_profile() {
       GUEST_CLOUD_INIT_PACKAGES='[qemu-guest-agent]'
       ;;
     rhel9)
-      VM_DATA_SOURCE_NAME=rhel9
+      # Honor an explicit VM_DATA_SOURCE_NAME from the environment so the
+      # ODF family can target the rhel9-rbd DataSource (CBT-O-00 §1);
+      # the default remains the HPP-backed golden.
+      VM_DATA_SOURCE_NAME="${VM_DATA_SOURCE_NAME:-rhel9}"
       VM_DATA_SOURCE_NAMESPACE=openshift-virtualization-os-images
       GUEST_LINUX_GROUP=wheel
       GUEST_SSHD_SERVICE=sshd
@@ -138,6 +141,15 @@ set_manifest_variant_settings() {
     rhel9:*) LARGE_MANIFEST_DISK_SIZE=80Gi ;;
     *:odf|*:large-odf) LARGE_MANIFEST_DISK_SIZE=48Gi ;;
     *) LARGE_MANIFEST_DISK_SIZE=40Gi ;;
+  esac
+  # CBT-O-01 evidence (2026-10-21, lifecycle o01211043): CDI expands the
+  # rhel9 root DataVolume request on RBD filesystem volumes (80Gi request ->
+  # 85Gi PVC, csi-clone overhead), so the full-backup destination must be
+  # larger than the root or the copy hits a false ENOSPC (78.36GiB disk.img
+  # into an 80Gi dest; the I-05 precedent fit by only 256MiB).
+  case "$VM_OS:$MANIFEST_VARIANT" in
+    rhel9:odf | rhel9:large-odf) FULL_BACKUP_DISK_SIZE=90Gi ;;
+    *) FULL_BACKUP_DISK_SIZE="$LARGE_MANIFEST_DISK_SIZE" ;;
   esac
 }
 set_manifest_variant_settings

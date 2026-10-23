@@ -1,7 +1,11 @@
 # LARGE-ODF VARIANT — opt-in via MANIFEST_VARIANT=large-odf (see .env.example).
 # Same chaos-testing sizing intent as full-backup-large.yaml, but backed by
 # ocs-storagecluster-ceph-rbd instead of cbt-demo-hpp. `__LARGE_DISK_SIZE__`
-# is resolved by scripts/common.sh to 48Gi for Debian or 80Gi for RHEL 9.
+# is resolved by scripts/vm-backup.sh to FULL_BACKUP_DISK_SIZE (scripts/common.sh):
+# 48Gi for Debian, 80Gi for RHEL 9 HPP, and 90Gi for RHEL 9 ODF variants —
+# CBT-O-01 evidence (2026-10-21, lifecycle o01211043): CDI expands the 80Gi
+# rhel9 root request to an 85Gi PVC on RBD filesystem volumes, so an 80Gi
+# dest hits a false ENOSPC (78.36GiB disk.img; I-05 fit by only 256MiB).
 # Ceph RBD enforces PVC capacity strictly; see docs/odf-setup-plan.md.
 # Requires ODF/Ceph deployed first. Keep structurally identical to
 # full-backup-large.yaml (only storage class and sizes differ) so the
