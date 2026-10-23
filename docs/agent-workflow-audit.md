@@ -17,10 +17,11 @@ verdict rules, guards, budgets). This document is descriptive reference: the
 current capability matrix, delegation map and measured baselines those skills
 point at. When the two disagree, the skill is right and this file is stale.
 
-**Current simplified v2:** `cbt-chaos-team-v2` uses a Lead, an on-demand Chaos
-Engineer (`cbt-chaos-trigger-preparer-v2`), and an independent CBT Analyst
-(`cbt-chaos-analyst-v2`). The Lead executes approved commands and reports;
-there are no mandatory execution, monitor, or reporter agents. Scenario-local
+**Current simplified v2:** `cbt-chaos-team-v2` dispatches the dedicated
+`cbt-chaos-lead-sol` (`cbt-chaos-lead-v2`) and relays human approval through main.
+Lead owns specialist delegation, approved execution and verified report closeout,
+using the prepare-only Engineer and independent Analyst. Main never executes
+the workflow; there are no mandatory monitor or reporter agents. Scenario-local
 entrypoint/helper names are unrestricted, and approval covers the whole bundle.
 Outputs live in `scenarios_v2/<ID>/runs/<attempt-id>/`, with scenario-root
 `consolidated-report.md` and deduplicated `bugs/<defect-slug>.md`.

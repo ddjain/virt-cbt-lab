@@ -54,9 +54,13 @@ approval and a fresh attempt; never erase the first attempt or silently retry.
 
 {{NEW_SCENARIO_JIRA_DRAFT_LINKS_AND_EVIDENCE_RATIONALE_OR_NONE}}
 
-Each follow-up is a new `scenarios_v2/<new-ID>/jira-issue.md`, explicitly marked
-proposed/unexecuted. Link it; do not provide unsafe fault commands or imply that
-a recommendation authorizes execution. New scope requires approval.
+Each follow-up is an actual saved `scenarios_v2/<new-ID>/jira-issue.md`, marked
+**PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW**. List the ID, short purpose,
+author area, actual path and originating evidence for every created draft,
+including area-specialist outputs. An unwritten idea is not a created scenario.
+Humans review/revise or manually delete unwanted drafts; do not auto-delete,
+prune or archive them. Draft creation is not approval of fault commands or
+execution; new execution/collection scope requires separate approval.
 
 ## Coverage, recovery and report notes
 

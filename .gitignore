@@ -98,6 +98,8 @@ tmp-*/
 !.agents/skills/cbt-chaos-krkn-preparer/**
 !.agents/skills/cbt-chaos-team-v2/
 !.agents/skills/cbt-chaos-team-v2/**
+!.agents/skills/cbt-chaos-lead-v2/
+!.agents/skills/cbt-chaos-lead-v2/**
 !.agents/skills/cbt-chaos-trigger-preparer-v2/
 !.agents/skills/cbt-chaos-trigger-preparer-v2/**
 !.agents/skills/cbt-chaos-analyst-v2/
@@ -105,10 +107,23 @@ tmp-*/
 .claude/
 .pi/
 skills-lock.json
-.omp/
+.omp/*
+!.omp/agents/
+.omp/agents/*
+!.omp/agents/cbt-chaos-engineer-sol.md
+!.omp/agents/cbt-chaos-engineer-luna.md
+!.omp/agents/cbt-chaos-analyst-sol.md
+!.omp/agents/cbt-chaos-lead-sol.md
 
 # Local RFC drafts
 /docs/rfcs/
 
 # Local session notes
 /commands.md
+
+# CBT chaos v2 scenarios: only spec/jira tracked, run/bug/report artifacts are local
+cbt-chaos/scenarios_v2/*
+!cbt-chaos/scenarios_v2/*/
+cbt-chaos/scenarios_v2/*/*
+!cbt-chaos/scenarios_v2/*/jira-issue.md
+!cbt-chaos/scenarios_v2/*/scenario-spec.md

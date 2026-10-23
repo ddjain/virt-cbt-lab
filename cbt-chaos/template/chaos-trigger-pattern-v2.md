@@ -10,12 +10,24 @@ installed metadata before authoring; read `skill://krkn-scenario`.
 
 ## Common preparation and stage ownership
 
-Keep the reusable pipeline in `cbt-chaos/scenarios_v2/<ID>/run.sh`.
-It may include injection directly or invoke minimal scenario-local helpers
-such as `inject.sh`, `condition.sh`, or `effect.sh`. Names are unrestricted;
-an existing `chaos-trigger.sh` is fine, not mandatory. There is no line-count
-limit or single-script requirement. Split distinct concerns only; do not
-add a generic framework.
+Source `cbt-chaos/scenario-runtime.sh` for bounded wait/budget, bounded `oc`
+calls, child-process record/capture, UID guards, bounded process-group stop,
+the RBAC/name-collision check loops, and the canonical-`jq` preflight
+assertion. Re-authoring these per scenario is the main source of bundle
+bloat; call the shared functions instead.
+
+Keep the reusable pipeline in `cbt-chaos/scenarios_v2/<ID>/run.sh`. It owns
+orchestration: pipeline launch, arming/timing of condition and evidence
+collection, recovery, logging, and the run summary.
+
+**Default shape is two files.** The fault action lives in its own small
+file (names unrestricted, e.g. `inject.sh`; an existing `chaos-trigger.sh`
+is fine) invoked by `run.sh` at the right moment — mirroring
+`CBT-EXP-01`/`CBT-EXP-06`'s thin-`run.sh`-plus-helper pattern. That file
+contains only target resolution and the one already-resolved
+`krknctl`/`oc`/`kubectl` command plus its exit status; it carries none of
+the condition/evidence/recovery logic below. Do not add a generic
+framework.
 
 Reuse existing stage scripts/Make targets and the applicable scenario
 evaluator. Read `docs/agent-workflow-audit.md` and resolve the current stage
@@ -36,6 +48,37 @@ that can open the window; signal readiness before the stage owner proceeds.
 This avoids losing short copy windows to trigger/container startup.
 For stable-system faults, arm against the approved readiness condition
 instead of inventing an in-flight backup dependency.
+
+### Coverage handoff and final-state collection
+
+Before accepting a reusable bundle, the Lead/Engineer reviews relevant
+scenario/component bug families, including existing scenario-local and
+`artifacts/<ID>/bugs/` drafts. In the existing preparation handoff, record
+source → evidenced risk/uncertainty → required observation surfaces, or an
+explicit no-match/unavailable result. Historical narratives inform proposed
+coverage, not a predetermined verdict. The Analyst receives neutral approved
+requirements and current raw evidence; its historical dedup follows grading.
+
+The same handoff maps each applicable resource/layer to its expected
+postcondition, immutable identity chain, baseline and terminal probes, owner,
+window and abort coverage. Separate API/control-plane, guest/workload and
+underlying host/storage state; record CLEAR / RESIDUAL / UNKNOWN and justified
+not-applicable layers. For backup output, correlate PVC/PV/CSI identity with
+node pins and exact host mount/device rather than inferring detach from VMI
+status. Bounds are approved test windows, not invented product SLAs.
+
+Arm bounded, approved, read-only final collection independently of successful
+stage completion. Failed stages and harness aborts must retain scoped
+observations or an explicit unsafe/unavailable UNKNOWN. Keep primary and
+collector statuses separate; do not query unresolved targets after an early
+blocker or mutate resources to obtain evidence. No new monitoring agent,
+ledger or contract artifact is needed.
+
+The Analyst audits surviving resource ownership and follows cleanup warnings
+through the affected layer even if Ready/conditions clear. The Lead reports
+data correctness, workload availability and resource release separately;
+recurrence is not causal attribution, and new control workloads require approval.
+
 
 ## Pattern A — native krkn event trigger
 
@@ -85,8 +128,29 @@ oc/kubectl fault action.
 Only use this when no available krkn scenario can express the required
 fault. Record the scenario metadata checked and the precise missing
 capability. Use the same exact-condition, bounded-wait, identity, evidence,
-effect, exclusion, rollback, and exit-status rules as Patterns A and B.
-Read-only oc/kubectl queries are allowed in all patterns.
+effect, exclusion, rollback, and exit-status rules as Patterns A and B —
+but owned by `run.sh`/the Lead's evidence process, exactly as in Patterns A
+and B. Missing a krknctl mechanism to delegate to is not a reason to inline
+those rules into the action file: it still just resolves the target and
+runs the one `oc`/`kubectl` command. Read-only oc/kubectl queries are
+allowed in all patterns.
+
+## Minimal example — Pattern C injection file
+
+The entire injection file for a Pattern C fault action: resolve the
+target, run the one command, report its exit status. `run.sh` captures
+condition-before, UID revalidation, and effect-after around this call.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+: "${TARGET_NAME:?set TARGET_NAME}"
+: "${TARGET_UID:?set TARGET_UID}"
+
+oc delete "$RESOURCE_KIND" "$TARGET_NAME" \
+  --namespace "$NAMESPACE" \
+  --preconditions "uid=$TARGET_UID"
+```
 
 ## Simple example — preserve the action and logging exit statuses
 
@@ -140,6 +204,17 @@ radius. Unproven injection is INVALID; unmet prerequisites before injection
 are BLOCKED. Confirmed injection with a required product violation is FAIL,
 even if the root cause is unknown; missing mandatory product evidence is
 INCONCLUSIVE. PASS requires every mandatory criterion proven.
+
+After execution terminates, Lead may use bounded expert area specialists for
+distinct questions. Only one grading owner writes `analysis.json`; others
+return cited findings through Lead without competing overall verdicts.
+Within their investigated area they may author actual proposed-scenario
+`jira-issue.md` drafts after Lead deduplicates and assigns exact unused IDs/
+paths. Mark **PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW**; include evidence,
+test intent, scope/risks and unknowns. Lead's final user summary and run/roll-up
+reports list every created ID, purpose, path, author area and source evidence.
+Leave drafts for human review or manual deletion; never auto-prune/archive or
+execute them. This creates no separate discovery team or extra evidence ledger.
 
 After a closed INVALID injection defect, the Lead may request ONE evidenced
 repair from the Chaos Engineer, followed by fresh complete-bundle approval

@@ -53,6 +53,10 @@ alone is not proof. Record non-execution explicitly for BLOCKED attempts.
 Preserve failed/unknown deterministic results; never narrate them into PASS.
 An expected interrupted-backup nonzero exit is not automatically a product
 failure. CR type alone is not proof of physical full/incremental behavior.
+Report backup/data correctness, VM/workload availability and resource release
+independently. For each applicable recovery layer, cite CLEAR / RESIDUAL /
+UNKNOWN, resource identity, probe status and observation interval; justify
+not-applicable layers. API success/detach alone is not host/storage release.
 
 ## Verdict and limits
 
@@ -74,6 +78,11 @@ failure. CR type alone is not proof of physical full/incremental behavior.
 Scope logs by run/object UID and time range; distinguish measured facts from
 hypotheses. Link relevant checkpoint, restore/hash and physical-artifact proof
 where required. Do not claim recovery or cleanup that was not observed.
+Include the terminal residual-resource audit and disposition of relevant
+cleanup warnings even if API conditions later cleared. On a harness abort,
+state which final probes ran or were unsafe/unavailable; no observation means
+UNKNOWN, not clean. Distinguish approved test bounds from product SLAs,
+sampled persistence from permanence, and recurrence from demonstrated causality.
 
 ## Report notes, bugs and proposed follow-ups
 
@@ -84,10 +93,15 @@ where required. Do not claim recovery or cleanup that was not observed.
 {{PROPOSED_UNEXECUTED_SCENARIO_LINKS_OR_NONE}}
 
 Only confirmed product failures receive Analyst-authored `bugs/<defect-slug>.md`.
-Proposals belong in a new scenario's `jira-issue.md`, marked proposed/unexecuted;
-link them without executable fault commands or implied approval. Any new scope
-needs approval. A repaired retry is optional, limited to one injection-defect
-repair after INVALID, and requires fresh approval and a fresh attempt.
+Proposals are actual saved new-scenario `jira-issue.md` drafts, marked
+**PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW**. For each, list its ID, short
+purpose, author area, actual path and source evidence; include area-specialist
+drafts as well as the grading owner's. If none were written, state none.
+Leave drafts for human review/revision/manual deletion; never auto-prune or
+archive them. Saving a Lead-allocated proposal is not execution approval;
+expanded collection or execution scope needs its own approval. A repaired
+retry is limited to one injection-defect repair after INVALID and requires
+fresh approval and a fresh attempt.
 
 ## Evidence inventory
 

@@ -326,13 +326,41 @@ Any mismatch fails the step (exit 1): missing or extra files, changed contents, 
 
 ### CBT chaos v2 runtime and verdicts
 
-Chaos orchestration does not change these lifecycle script semantics. A Lead
-drives the existing stages and monitoring, supported by a prepare-only Chaos
-Engineer and an independent CBT Analyst. Read the executing checkout's Make
+Chaos orchestration does not change these lifecycle script semantics.
+`cbt-chaos-team-v2` runs in main as a dispatcher/approval relay and launches one
+`cbt-chaos-lead-sol`, whose `cbt-chaos-lead-v2` skill owns the full procedure.
+Lead drives the existing stages and monitoring, supported by a prepare-only
+Chaos Engineer and an independent CBT Analyst. Read the executing checkout's Make
 recipes, selected stage scripts, scenario entrypoint and applicable evaluator
 before choosing commands; do not assume the default full-interruption evaluator
 covers an arbitrary scenario or stable-system fault. Start a stage exactly once,
 with condition monitoring ready before the stage opens its injection window.
+After execution terminates, Lead may assign expert Analysts to distinct
+bounded read-only investigation areas. Exactly one grading owner writes the
+overall `analysis.json`; area specialists return cited findings and allocated
+proposal paths through Lead, without competing grades or report rewrites.
+
+Lead stays in the local/control checkout, including for remote scenarios, and
+owns the final verified local report pull. Main does not execute stages,
+write approval/run records or grade evidence. Nested delegation requires
+asynchronous task dispatch, parent/child messaging and depth of at least two;
+missing runtime capabilities block rather than transfer execution to main.
+
+Lead sends main an `approval_request` with a unique request ID, its agent and
+scenario IDs, exact non-secret package and fingerprint. The package includes
+all file hashes, commands, parameters, execution target, window, scope,
+blast radius and rollback. SHA-256 covers canonical UTF-8 JSON from
+`jq -cS .`, including its final newline. Main verifies the fingerprint, presents
+the unchanged package using structured `ask`, and returns `approval_response`
+with matching IDs/fingerprint, explicit user answer/decision and UTC timestamp.
+Lead records that consent and rechecks the package before execution. Missing,
+stale, mismatched or rejected approval never authorizes execution; changed
+packages require a fresh question. Clarification responses are not approvals.
+The relay is a workflow guard, not a security boundary for Bash-capable agents.
+When its own jobs have finished, Lead returns an interim `approval_pending` or
+`clarification_pending` result containing the outstanding request. Main relays
+the question and resumes the same idle/parked Lead through messaging. Pending
+is not completion; do not poll or keep a dummy process alive to await main.
 
 The scenario-local canonical root is `cbt-chaos/scenarios_v2/<ID>/`: the
 specification and Jira conditions, reusable `run.sh`, optional injection,
@@ -370,6 +398,34 @@ The independent Analyst reads raw evidence rather than accepting the author's
 self-certification. Scope logs by run/object UID and time; CR type alone does
 not establish physical full/incremental behavior.
 
+Before freezing criteria or accepting an existing bundle, the Lead or assigned
+Engineer reviews relevant known scenario/component failure families, including
+scenario-local and existing `artifacts/<ID>/bugs/` drafts. The preparation
+handoff maps sources to evidenced risks/uncertainties and observation surfaces;
+no matches/unavailable sources are explicit. History seeds neutral proposed
+coverage, not an expected verdict or root cause. The Analyst still grades
+current raw evidence before reading historical bugs for deduplication.
+
+The same handoff declares applicable recovery layers, resource identities,
+expected postconditions, baseline/final probes, owner and approved observation
+bounds. API/control-plane state, actual guest/workload state and host/storage
+release have independent CLEAR / RESIDUAL / UNKNOWN observations; not-applicable
+layers require a reason. Backup cleanup correlates PVC UID → PV → CSI handle/
+image → node attachment/pins and exact mount/device identity when applicable.
+`Done=True`, VM readiness or disappearance from VMI status cannot substitute
+for lower-layer release; failed/unavailable probes are UNKNOWN, not absence.
+
+Bounded, approved, read-only final collection must survive harness aborts and
+failed stages, retaining operation/collection statuses separately. Early
+blockers do not authorize guessed-resource queries. The Analyst audits
+surviving ownership and follows relevant EBUSY/hotplug/unmount/attach warnings
+through the affected layer even when API conditions clear. The Lead limits
+recovery claims to observed layers, distinguishes test bounds from documented
+product SLAs, and separates recurrence from causal attribution. These checks
+use the existing handoff, analysis and report, not additional agents/ledgers.
+New control executions, inspectors, repair or expanded probe scope still need
+approval; historical evidence never retroactively changes acceptance criteria.
+
 | Chaos verdict | Required meaning |
 |---|---|
 | BLOCKED | Prerequisites prevented injection. |
@@ -384,6 +440,25 @@ incomplete while meeting the scenario's expected disruption behavior. Preserve
 deterministic failed/unknown results and map them to the actual mandatory
 criteria; never replace unknown evidence with narrative PASS.
 
+For [CBT-F-05](../cbt-chaos/scenarios_v2/CBT-F-05/scenario-spec.md), the
+launcher supplies the active-copy signal; the fault target is the exact
+node-local handler, not that launcher. The bundle owns separate setup/full
+stages and arms native krkn and a read-only cleanup observer before full. The
+observer follows only the original PVC UID → PV → CSI handle/image, VMI/pod
+references, matching VolumeAttachment/node pin, actual guest disks/QMP and the
+exact original-launcher hotplug mount in the existing node-local handler.
+It samples at terminal through a fixed 300-second test observation window
+(not a historic product SLA). API detach alone is insufficient; unreadable
+probes are UNKNOWN, not detached. Residual/UNKNOWN state stops before restore
+or destination reuse, preserving every old and new resource. With safe cleanup
+and consistent terminal/checkpoint/volume operands, a successful original full
+selects one incremental plus chain/restore verification; a clear failed original
+selects one distinct same-VM recovery full plus baseline restore. No duplicate
+restore, generic evaluator fallback, separate clean lifecycle or forced cleanup
+is used. The terminal failure classifier is the shared workflow predicate,
+not a literal success prefix. Guest-key approval supports existing-pair and
+setup-managed modes; preflight never creates keys.
+
 The Lead closes and reports **every** terminal attempt, including INVALID and
 BLOCKED, before any optional repaired retry, and updates scenario-root
 `consolidated-report.md` with all attempts and separate verdict counts. The
@@ -392,10 +467,76 @@ attempts, not bugs for unknown outcomes, injection or harness issues. Reports
 cover injection validity, criteria/unknowns, scoped investigation, recovery and
 limits, approved bundle references, and bug/proposal links.
 
-A follow-up is a new `scenarios_v2/<new-ID>/jira-issue.md` draft marked
-proposed/unexecuted, linked from the report without unsafe executable fault
-commands; new scope requires approval. Generic evidence-backed lessons remain
-Lead-owned in its skill's `improvement.md` (1–3 lines per deduplicated lesson).
+After **every terminal remote attempt**, including BLOCKED, INVALID and partial
+attempts, the Lead MUST complete a verified report pull from the **local/control
+checkout**, after remote analyses, bugs, run/consolidated reports and proposals
+are final and before any repaired retry. Repeat after any subsequent remote
+report, diagnosis or proposal update. If execution was already local, no SSH
+pull is needed. `make sync` is a source push, not a substitute; do not run the
+pull inside the remote checkout.
+
+```sh
+# Run in the local/control checkout, not via SSH in the remote checkout.
+make pull-reports SCENARIO=CBT-F-05 REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
+# Omit SCENARIO (including any environment/.env value) for all reports.
+make pull-reports REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
+```
+
+The unfiltered pull includes **all** repository-root `runs/**`. Scoped pulling
+includes the chosen scenario's `bugs/**`, `runs/**`, `consolidated-report.md`
+and `approval.json`, its `artifacts/<ID>/**`, and only root lifecycle directories
+referenced by `.lifecycle_ids` / `.lifecycle_id` in direct attempt `run.json`
+and `analysis.json`. Missing lifecycle directories are reported, not invented.
+Both modes include exact repository-relative proposal Jira paths referenced by
+attempt `.proposed_scenarios`; unfiltered mode also includes standalone
+Jira drafts with an explicit `PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW`
+status line, not ordinary scenario source Jira/spec files or body mentions.
+All files retain their repository-relative local paths; existing source
+scripts/specs/agents are untouched.
+
+Pulling needs local SSH/rsync/Python3 and remote Python3, not a cluster preflight
+or kubeconfig. It is remote-read-only, streams the inventory helper without
+installing it, and leaves remote evidence canonical. Full SHA-256 comparison
+selects changed content; verification covers every selected local file and a
+second remote inventory must prove selection/content remained stable.
+Checksum, source-stability, unsafe-path/metadata and transfer failures are not
+success or a reason to silently retry/broaden scope. Every replaced local file
+is preserved in `artifacts/sync-backups/<UTC-unique>/`; no `--delete`, local-only
+draft removal, archive, regrade or new execution is implied. Credential
+filenames/directories and disk images are excluded; symlinks are not followed.
+Filename filtering is not embedded-log redaction: sanitize evidence before
+transfer. See [Synchronization helper](../README.md#synchronization-helper)
+for complete selection, exclusion and failure rules.
+
+The final user summary MUST record successful local report/evidence/proposal
+paths and the verified pull outcome. If transfer or verification fails, preserve
+remote evidence and explicitly report **local synchronization incomplete** with
+the failure; do not claim the local reports are complete.
+
+The grading owner or an assigned area specialist may create a follow-up
+`scenarios_v2/<new-ID>/jira-issue.md` after Lead checks duplicates and allocates
+the exact unused ID/path. Mark it **PROPOSED — UNEXECUTED — PENDING HUMAN
+REVIEW**, cite originating evidence/author area, separate observation from
+hypothesis and describe objective, target/window, verification, scope/risks
+and unknown prerequisites. This is a saved proposal document, not executable
+scope or approval. No extra human approval is needed merely to save the
+Lead-allocated draft; actual test execution needs its own approval.
+
+Before closure, the Lead verifies every specialist-created draft exists and
+records it in the Lead-owned attempt `run.json.proposed_scenarios` array as a
+repository-relative string, for example
+`cbt-chaos/scenarios_v2/CBT-F-99/jira-issue.md` (use the actually allocated ID).
+Include grading-owner and area-specialist drafts; record `[]` if none. This
+metadata lets scoped pulling retrieve each exact document; a claimed-created
+but missing draft fails the pull. The Lead MUST NOT modify `analysis.json` to
+add proposal links; that file remains solely the grading owner's.
+
+The final user summary and run/consolidated reports list every created ID,
+short purpose, actual file path, evidence and review status, including area
+specialist drafts. Do not claim unwritten suggestions as created scenarios.
+Leave drafts for human review/revision or manual deletion; never automatically
+delete, prune or archive them. Generic lessons remain Lead-owned in its skill's
+`improvement.md` (1–3 lines per deduplicated lesson).
 V2 reports, bugs and drafts stay with scenarios, not `artifacts/`; raw captures
 and approval are local/gitignored. Archiving is optional and explicit, never an
 automatic v2 closure step. Do not move or regrade historical/legacy evidence.
