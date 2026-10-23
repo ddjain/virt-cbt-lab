@@ -87,11 +87,22 @@ spec:
             printf '%s' "$cores"
           }
 
-          full_qcow2="$(find /backups/full -type f -name '*.qcow2' -print | LC_ALL=C sort | head -n1)"
-          if [[ -z "$full_qcow2" ]]; then
-            echo "ERROR: no qcow2 file found under /backups/full" >&2
-            exit 1
-          fi
+          # Backup filenames end in -<VM volume name>.qcow2. Only rootdisk
+          # carries the workflow manifest; other disks need separate grading.
+          select_rootdisk_image() {
+            local directory="$1" listing image
+            local -a images=()
+            listing="$(find "$directory" -type f -name '*-rootdisk.qcow2' -print)" || return 1
+            while IFS= read -r image; do
+              [[ -z "$image" ]] || images+=("$image")
+            done <<< "$listing"
+            if ((${#images[@]} != 1)); then
+              printf 'ERROR: expected one rootdisk qcow2 under %s, found %s\n' "$directory" "${#images[@]}" >&2
+              return 1
+            fi
+            printf '%s\n' "${images[0]}"
+          }
+          full_qcow2="$(select_rootdisk_image /backups/full)"
           incremental_dirs=()
           if [[ -d /backups/incrementals ]]; then
             mapfile -t incremental_dirs < <(find /backups/incrementals -mindepth 1 -maxdepth 1 -type d -name 'p[0-9][0-9]' | LC_ALL=C sort)
@@ -310,13 +321,9 @@ spec:
               printf 'ERROR: expected incremental mount %s, found %s\n' "$expected_name" "$pass_name" >&2
               exit 1
             fi
-            mapfile -t pass_qcow2s < <(find "$incremental_dir" -type f -name '*.qcow2' | LC_ALL=C sort)
-            if ((${#pass_qcow2s[@]} != 1)); then
-              printf 'ERROR: expected one qcow2 file under %s, found %s\n' "$incremental_dir" "${#pass_qcow2s[@]}" >&2
-              exit 1
-            fi
+            pass_qcow2="$(select_rootdisk_image "$incremental_dir")"
             overlay="/work/${pass_name}.qcow2"
-            cp "${pass_qcow2s[0]}" "$overlay"
+            cp "$pass_qcow2" "$overlay"
             qemu-img rebase -b "$base_qcow2" -F qcow2 -f qcow2 -u "$overlay"
             overlay_paths+=("$overlay")
             base_qcow2="$overlay"

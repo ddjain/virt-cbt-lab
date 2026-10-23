@@ -3,22 +3,38 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: ./sync.sh [--pull-reports]
+Usage: ./sync.sh [--pull-reports [--scenario ID]]
 
 Without flags: push the repository working tree to REMOTE_HOST:REMOTE_DIR.
 The push excludes .env files, local credentials, and generated artifacts.
---pull-reports: pull REMOTE_HOST:REMOTE_DIR/runs/ back into ./runs/
-                (read-only on the remote; never touches REMOTE_DIR).
+--pull-reports: pull complete report artifacts and verify every file with SHA-256.
+--scenario ID: restrict to one v2 scenario, its diagnostics, referenced lifecycles
+               and proposed-scenario documents. Without it, pull all root runs
+               and all v2 scenario reports. Local conflicts are backed up;
+               the remote is never modified. Pull needs Python3 on both hosts.
 USAGE
 }
 
 MODE=push
-case "${1:-}" in
-  --pull-reports) MODE=pull-reports ;;
-  --help|-h) usage; exit 0 ;;
-  '') ;;
-  *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
-esac
+SCENARIO="${SCENARIO:-}"
+SCENARIO_OPTION=false
+while (($#)); do
+  case "$1" in
+    --pull-reports) MODE=pull-reports; shift ;;
+    --scenario)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        printf '%s\n' '--scenario requires a nonempty scenario ID.' >&2
+        exit 2
+      fi
+      SCENARIO="$2"; SCENARIO_OPTION=true; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+if [[ "$SCENARIO_OPTION" == true && "$MODE" != pull-reports ]]; then
+  printf '%s\n' '--scenario is only valid with --pull-reports.' >&2
+  exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/dotenv.sh
@@ -36,19 +52,10 @@ command -v ssh >/dev/null 2>&1 || { printf 'Required command not found: ssh\n' >
 command -v rsync >/dev/null 2>&1 || { printf 'Required command not found: rsync\n' >&2; exit 1; }
 
 if [[ "$MODE" == pull-reports ]]; then
-  SYNC_STEP="report pull"
-  sync_failed() {
-    local status=$?
-    printf '  ✗ Failed: %s (exit %d)\n' "$SYNC_STEP" "$status" >&2
-    return "$status"
-  }
-  trap sync_failed ERR
-  printf '[sync] Pull %s:%s/runs/ into %s/runs/.\n' "$REMOTE_HOST" "$REMOTE_DIR" "$ROOT_DIR" >&2
-  mkdir -p "$ROOT_DIR/runs"
-  rsync -a --human-readable --itemize-changes \
-    "$REMOTE_HOST:$REMOTE_DIR/runs/" "$ROOT_DIR/runs/"
-  printf '  ✓ Run artifacts pulled to %s/runs/.\n' "$ROOT_DIR" >&2
-  exit 0
+  command -v python3 >/dev/null 2>&1 || { printf 'Required command not found: python3\n' >&2; exit 1; }
+  exec python3 "$ROOT_DIR/scripts/pull-reports.py" \
+    --remote-host "$REMOTE_HOST" --remote-dir "$REMOTE_DIR" \
+    --local-root "$ROOT_DIR" --scenario "$SCENARIO"
 fi
 
 SYNC_STEP="remote directory preparation"

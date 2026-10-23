@@ -30,6 +30,7 @@ jobs:
           diskSize: "{{ .DISK_SIZE }}"
           storageClass: "{{ .STORAGE_CLASS }}"
           manifestVariant: "{{ .MANIFEST_VARIANT }}"
+          dataSourceName: "{{ .DATA_SOURCE_NAME }}"
           incrementalPasses: "{{ .INCREMENTAL_PASSES }}"
           managedByKey: "{{ .MANAGED_BY_KEY }}"
           managedByValue: "{{ .MANAGED_BY_VALUE }}"

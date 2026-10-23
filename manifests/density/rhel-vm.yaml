@@ -32,7 +32,7 @@ spec:
       spec:
         sourceRef:
           kind: DataSource
-          name: rhel9
+          name: {{ .dataSourceName | default "rhel9" }}
           namespace: openshift-virtualization-os-images
         storage:
           accessModes:

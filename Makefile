@@ -4,6 +4,7 @@ SHELL := /bin/bash
 UTC_TIMESTAMP = $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 export DEBUG KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_INCREMENTAL_PASSES EXTEND_TO_PASS GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB GUEST_INVENTORY_VERIFY GUEST_INVENTORY_SAMPLE_STRIDE MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS TYPE VM NAME RUN_ID GUEST_EXEC_POLL_INTERVAL GUEST_EXEC_POLL_ATTEMPTS EXISTING_VM POOL DENSITY_VM_COUNT DENSITY_INCREMENTAL_PASSES DENSITY_QPS DENSITY_WAIT_MINUTES STAGE_DRY_RUN STAGE_SKIP_PREFLIGHT
+export SCENARIO
 
 ifeq ($(strip $(VM_OS)),)
 VM_OS := rhel9
@@ -204,7 +205,7 @@ help:
 	  '  make monitor VM=vm-demo          Show backup timings.' \
 	  '  make clean-all                   Delete managed resources; run artifacts remain.' \
 	  '  make sync or make resync         Push working files; set REMOTE_HOST/REMOTE_DIR.' \
-	  '  make pull-reports                Pull REMOTE_HOST:REMOTE_DIR/runs/ locally.' \
+	  '  make pull-reports [SCENARIO=<ID>] Pull complete reports locally; back up conflicts and verify SHA-256.' \
 	  '  make test                        Run offline tests.' \
 	  '' \
 	  'DEFAULTS' \
@@ -226,6 +227,7 @@ test:
 	@bash tests/test-vm-cbt-recover.sh
 	@bash tests/test-vm-backup-failure-recording.sh
 	@bash tests/test-chaos-watch-resource.sh
+	@bash tests/test-chaos-run-id.sh
 	@bash tests/test-density-status.sh
 	@bash tests/test-density-setup.sh
 	@bash tests/test-existing-vm-adoption.sh
@@ -235,3 +237,8 @@ test:
 	@bash tests/test-cbt-f-01-injection-evidence.sh
 	@bash tests/test-trigger-plan-rehearsal.sh
 	@bash tests/test-evidence-index.sh
+	@bash tests/test-cbt-f-05-bundle.sh
+	@bash tests/test-cbt-f-03-bundle.sh
+	@bash tests/test-cbt-exp06-bundle.sh
+	@bash tests/test-cbt-exp10-bundle.sh
+	@PYTHONDONTWRITEBYTECODE=1 python3 tests/test-pull-reports.py

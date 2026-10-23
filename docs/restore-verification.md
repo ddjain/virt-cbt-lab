@@ -13,6 +13,8 @@ KubeVirt's CBT incremental-backup API writes qcow2 artifacts but does not define
 
 The restore sequence converts the full-only disk, then rebases each pass-specific overlay onto the preceding checkpoint, converts that cumulative prefix to raw, and compares it to the matching per-pass manifest before continuing. The short-lived privileged pod mounts backup PVCs read-only and uses the node's `/dev` for loop devices. Debian restores mount ext4, RHEL 9 restores mount XFS, and Windows restores mount NTFS with `ntfs3` or `ntfs-3g`.
 
+Linux backups name images `<backup-name>-<volume-name>.qcow2`. The verifier selects exactly one `*-rootdisk.qcow2` from the full PVC and each incremental PVC; missing or duplicate root images fail closed. It never chooses a data disk by filename ordering. Additional disks are not reconstructed or content-graded by this root-workload check; a multi-disk scenario must check its metadata coverage separately and disclose that content limitation.
+
 The restore pod creates no additional PVC: normal verification mounts the existing full and incremental backup PVCs read-only; recovery-only verification mounts the selected recovery full PVC read-only. Its `/work` volume is an `emptyDir` for raw images and temporary incremental copies; `/dev` is a hostPath for loop devices. The `emptyDir` has no `sizeLimit` in the current manifest, so its ephemeral-storage use is separate from the PVC budget.
 
 ## Workload and manifest contract

@@ -90,6 +90,7 @@ For the component, network, storage, checkpoint, source-code, sequence-diagram, 
 - `vm-cbt-backup.sh` adds new deterministic workload files and modifies one existing baseline file per pass, verifies the guest inventory against the saved manifest, creates its pass-specific incremental backup, then advances lifecycle state only after the backup and tracker checkpoint succeed.
 - `vm-cbt-verify.sh` checks CBT, completion, every distinct checkpoint, and the final tracker checkpoint, then verifies the full restore and every cumulative incremental restore prefix before merging report fragments into `report.json`.
 - `vm-cbt-restore-test.sh` reconstructs the guest disk from the full and every incremental backup PVC, then verifies the baseline and each cumulative restore prefix — see [`docs/restore-verification.md`](docs/restore-verification.md) for the full command-by-command reference and independent cross-checks.
+  Linux verification selects exactly one `*-rootdisk.qcow2` in each backup PVC, rejecting missing or ambiguous root images. Other disks may coexist, but their content is not verified by the root workload check.
 - `vm-cbt-recover.sh` takes a new full backup on the selected existing VM using the run's tracker and `forceFullBackup:true`, then selects that attempt for read-only baseline restore verification. It never deletes/reuses the original failed backup/PVC.
 - `clean-all.sh` removes workflow-managed resources, including per-run Windows OOBE Secrets, from the shared namespace and only the guest key marked as workflow-managed.
 
@@ -137,9 +138,10 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | Variable | Required | Default | Meaning |
 |---|---:|---|---|
 | `KUBECONFIG_PATH` | No | Unset | Kubeconfig path; when unset, use `$KUBECONFIG`, then the `oc` default. |
-| `GUEST_KEY` | No | `keys/id_ed25519` | Repository-local private key path (gitignored). |
+| `GUEST_KEY` | No | `keys/id_ed25519` | Configured private-key path (gitignored); setup preserves an existing key, derives a missing public half, or generates a missing private key. |
 | `REMOTE_HOST` | For `make sync`/`make resync`/`make pull-reports` | Unset | SSH host or alias used for synchronization. |
 | `REMOTE_DIR` | For `make sync`/`make resync`/`make pull-reports` | Unset | Destination directory on that host. |
+| `SCENARIO` | No | Unset | `pull-reports` filter: one v2 scenario plus its referenced lifecycle/proposal evidence. Unset includes all root runs and v2 report outputs. |
 | `NAMESPACE` | No | `vm-cbt-demo` | Kubernetes namespace for workflow resources. |
 | `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `recover`, `verify`, or `extend`. |
 | `VM` | For staged `incremental`/`recover`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
@@ -337,23 +339,42 @@ Cleanup deletes only resources labeled `app.kubernetes.io/managed-by=virt-cbt-la
 
 ## Synchronization helper
 
-`make sync` (also `make resync`) pushes the working tree. `make pull-reports` copies all of `REMOTE_DIR/runs/` into local `runs/` and does not modify the remote. All three targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`; neither has a built-in default. The push excludes `.env` files, `.git`, local credentials, generated data (including both legacy and v2 scenario `runs/` directories), and tooling state. Pull an individual scenario's run directory separately when needed.
+`make sync` (also `make resync`) pushes the working tree; it is not a report pull. The push excludes `.env` files, `.git`, local credentials, generated data (including legacy and v2 scenario `runs/`), and tooling state. `make pull-reports` is a read-only remote file transfer into the **local/control checkout**, preserving repository-relative paths. These targets use `REMOTE_HOST` and `REMOTE_DIR` from Make variables or `.env`, with no built-in host/path defaults.
 
-With `.env` configured, use:
-
-```sh
-make sync
-make pull-reports
-```
-
-For a one-off remote host and path:
+Run from the local/control checkout after remote report writers have finished:
 
 ```sh
-make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup sync
-make REMOTE_HOST=example-host REMOTE_DIR=/path/to/cbt-setup pull-reports
+# All reports; omit SCENARIO entirely for an unfiltered pull.
+make pull-reports REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
+
+# One scenario and only its referenced lifecycle evidence/proposal documents.
+make pull-reports SCENARIO=CBT-F-05 REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout
+
+# Equivalent shell interface.
+REMOTE_HOST=example-host REMOTE_DIR=/path/to/checkout ./sync.sh --pull-reports --scenario CBT-F-05
 ```
 
-The helper requires local `ssh` and `rsync` and never transfers credentials. `pull-reports` retrieves the local report artifacts; guest workload files remain inside the VM.
+With `REMOTE_HOST` and `REMOTE_DIR` configured in `.env`, use `make pull-reports` or `make pull-reports SCENARIO=CBT-F-05`. `SCENARIO` may also be configured in the environment; unset it to pull all reports. An ID must be one safe nonempty path component, not a path or `..`; quote host/path values containing spaces.
+
+**Selection and destinations:**
+
+- No filter: pull **all** repository-root `runs/**`, plus all v2 scenario output trees and scenario-keyed `artifacts/<ID>/**`.
+- `SCENARIO=<ID>`: pull `cbt-chaos/scenarios_v2/<ID>/{bugs/**,runs/**,consolidated-report.md,approval.json}` and `artifacts/<ID>/**`. Root `runs/<lifecycle-id>/**` is restricted to `.lifecycle_ids` arrays and `.lifecycle_id` strings referenced in that scenario's direct attempt `run.json` and `analysis.json`; unrelated lifecycle runs are not pulled. Missing referenced lifecycle directories, such as a BLOCKED-before-setup attempt, are reported without fabricating evidence.
+- Pull exact proposal documents listed in attempt metadata `.proposed_scenarios`: repository-relative `cbt-chaos/scenarios_v2/<new-ID>/jira-issue.md` strings. The Lead must record every created specialist draft in its owned `run.json.proposed_scenarios` before closeout; it must not edit independent `analysis.json`. Missing claimed-created drafts fail the pull. Unfiltered pulls also include standalone Jira drafts marked proposed and unexecuted, not ordinary scenario source Jira files.
+
+Proposal Jira documents must carry an explicit status line
+`PROPOSED — UNEXECUTED — PENDING HUMAN REVIEW` (Markdown emphasis is allowed).
+An ordinary source document merely mentioning those words is not a proposal.
+
+Existing source scripts, specs and agent files are not pulled or deployed. Remote evidence remains canonical: pulling does not archive, regrade, retry, clean up evidence or change the cluster. Guest workload files remain inside the VM.
+
+**Safety and verification:** pull requires local `ssh`, `rsync` and Python3, plus remote Python3. The inventory helper is streamed over SSH without installing scripts or writing remote manifests/directories. No cluster preflight or kubeconfig is needed for this read-only file transfer. Credential filenames/directories (`.env*`, kubeconfig variants, `.kube`, `.ssh`, keys/private-key files and Windows password files) and backup disk/image files are excluded; symlinks are never followed and special files are not payload. Filename filtering is **not embedded-log redaction**: evidence must already be sanitized.
+
+The helper hashes the exact selected remote regular files with full SHA-256, compares local content hashes, transfers changed files, and verifies **every** selected local file. It obtains a second remote inventory and fails if selection or content changed during transfer; size/mtime or `rsync --checksum` alone are not proof. Unsafe metadata/paths, destination symlinks/collisions, missing proposals, an empty overall selection, transfer errors, corruption or source instability fail explicitly, without silent retries or a success claim for a partial copy.
+
+Every replaced local file, including approval/consolidation files and review edits, is backed up outside the synced trees at `artifacts/sync-backups/<UTC-unique>/`. There is no `--delete`; local-only files and human-review drafts are preserved. Output reports counts, exclusions/missing lifecycle references, any conflict backup path and the verified result; unchanged stable reruns can succeed.
+
+For chaos v2, the Lead **must** perform a verified local pull after **every terminal remote attempt**, including BLOCKED, INVALID and partial attempts, once analysis, bugs, reports, consolidation and proposals are final. Repeat after any later remote report, diagnosis or proposal update. Do not run the pull inside the remote checkout or substitute `make sync` afterward. Already-local execution needs no SSH pull. Record actual successful local report/evidence/proposal paths and the verified outcome in the final user summary; on failure preserve remote evidence and state **local synchronization incomplete**, with the failure, rather than claiming success.
 
 ## Validation and testing
 
@@ -402,7 +423,160 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 
 ### AI-generated artifacts
 
-`artifacts/` (gitignored) consolidates all AI-generated output, organized by scenario: one directory per scenario ID (`analysis/`, `bugs/`, `followup/`, `matrix/`, `runs/`) plus `_`-prefixed categories (`_campaign/` campaign reports and chaos plans, `_plans/` top-level plans, `_validation/` validation reports, `_archive/` superseded material, `_misc/` e2e reports, screenshots, and logs). `artifacts/INDEX.md` is regenerated by `scripts/archive-run.sh --index`. Active runs keep writing to `runs/` and scenario dirs unchanged; archive a closed run with `scripts/archive-run.sh <run-id>` (refuses in-flight runs).
+`artifacts/` (gitignored) holds general AI-generated reports, matrices, analyses and plans, organized by scenario and `_`-prefixed categories. `scripts/archive-run.sh <run-id>` is an optional, explicitly requested archive of closed evidence (refuses in-flight runs); `--index` regenerates its archive index. CBT chaos v2 is a narrow exception: its reports, bugs and proposed scenario drafts stay canonical with their scenario, not in `artifacts/`; never automatically archive them. Existing archived/legacy evidence is not moved or regraded.
+
+## CBT chaos v2
+
+Request **“run CBT-F-01 with the chaos team”** via `cbt-chaos-team-v2`.
+Main dispatches one dedicated `cbt-chaos-lead-sol` subagent and relays human
+approval/clarification requests. The Lead owns discovery, approval recording,
+execution/monitoring, recovery, verified local report pulls and both reports.
+It uses a prepare-only Chaos Engineer and one independent Analyst as
+grading owner. After execution, Lead may assign additional expert Analysts to
+distinct bounded read-only areas; they return findings through Lead and never
+write competing overall grades or `analysis.json`. The script author never
+validates its own injection.
+
+### omp model routing
+
+Project agent definitions in `.omp/agents/` load the existing role skills:
+
+| Agent | Model / thinking | Assignment |
+|---|---|---|
+| `cbt-chaos-lead-sol` | GPT-6.1 Sol / high | Dedicated execution Lead; loads `cbt-chaos-lead-v2`, delegates specialists and requests human approval through main. |
+| `cbt-chaos-engineer-sol` | GPT-6.1 Sol / high | Default Engineer: new bundles and complex injection repairs. |
+| `cbt-chaos-engineer-luna` | GPT-6 Luna / high | Optional Engineer alternative: constrained adaptations of a verified pattern with explicit inputs, command metadata and effect checks. |
+| `cbt-chaos-analyst-sol` | GPT-6.1 Sol / xhigh | One grading owner or an explicitly assigned bounded area specialist; authorized defect/proposed-scenario drafts. |
+
+Choose one Engineer per preparation assignment, not both by default. New trigger
+design, ambiguous evidence and complex race repairs go to the Sol Engineer.
+The main session is not the Lead and need not use the Lead model. The dedicated
+Lead definition pins `openai/gpt-6.1-sol` with high thinking and prewalk disabled.
+Asynchronous task dispatch, parent/child messaging and at least two delegation
+levels are required: main → Lead → Engineer/Analyst. If unavailable, block
+rather than silently moving execution back into main.
+
+Open `/agents`, press **Ctrl+R**, enable the definitions if needed, and confirm
+their project source, effective model/thinking and disabled prewalk/advisor.
+Per-agent UI settings override file defaults. Skill autoloading must resolve
+`cbt-chaos-lead-v2` for Lead, `cbt-chaos-trigger-preparer-v2` for Engineers and
+`cbt-chaos-analyst-v2` for Analyst; Lead also reads its skill explicitly.
+Check child transcripts when smoke-testing setup. **Alt+A** opens
+Agent Hub to inspect the actual worker model and activity. Model availability
+fallback is not task-difficulty routing; do not silently downgrade the Analyst
+or use prewalk to change models mid-assignment.
+
+Lead sends main the exact commands, complete bundle hashes, parameters,
+target/window, blast radius and rollback, bound to a unique approval request
+and SHA-256 package fingerprint. Main uses structured **Approve bundle** /
+**Do not run**, then returns the exact answer, matching IDs/fingerprint and UTC
+timestamp. Lead records it and revalidates the bundle before execution.
+No answer, rejection, stale/mismatched response or changed bundle permits
+execution. Main never self-approves or runs a second workflow.
+
+Engineers prepare only; Lead owns execution. Analyst cluster access is
+read-only by policy, but a Bash grant and the approval relay are not security
+sandboxes: use read-only cluster credentials when enforcement is required.
+Only the four shared agent definitions are eligible for version control;
+other `.omp/` settings and connection metadata remain ignored.
+
+When approval is the only remaining work, Lead returns `approval_pending`
+instead of polling or holding a dummy process open. Main asks the user and
+resumes that same idle/parked Lead through messaging; pending is not completion.
+Newly installed skills missing from a session's autoload/URI snapshot are read
+directly from their canonical `.agents/skills/` paths.
+
+### Scenario discovery and evidence
+
+Discover the requested scenario under `cbt-chaos/scenarios_v2/`; read its
+`scenario-spec.md` and `jira-issue.md`, then inspect the executing checkout with
+`make help` and `make stage-list`. Read the selected Make recipe/stage scripts
+and scenario entrypoint before execution; use existing stages, monitor/watch
+helpers and an applicable scenario evaluator rather than a parallel workflow.
+The default full-interruption evaluator is not valid for arbitrary scenarios,
+including stable-system faults. No scenario or workflow script is generated
+merely by this documentation.
+
+CBT-F-05 has a prepared [native handler-interruption bundle](cbt-chaos/scenarios_v2/CBT-F-05/scenario-spec.md).
+Its `run.sh --plan` describes setup, full-copy injection, read-only multilevel
+cleanup observation through a fixed 300-second post-terminal test window, and
+the conditional same-VM follow-up. Residual or UNKNOWN cleanup safely blocks
+restore/reuse while preserving all resources. Execution requires complete-bundle
+approval, including the existing-handler host-mount/sysfs read scope and window.
+Guest-key approval supports an existing pair or setup-managed creation; only
+the existing setup stage may create a missing pair. Generic launcher-interruption
+evaluators are not applicable: independent analysis assesses scenario evidence.
+
+Before accepting a bundle, the Lead/Engineer reviews relevant existing
+scenario/component bug drafts and maps known failure surfaces to proposed
+coverage. History informs preparation, not the independent Analyst's verdict:
+its handoff contains neutral approved requirements and current raw evidence.
+The recovery map separates API, guest/workload and underlying host/storage
+state, with CLEAR / RESIDUAL / UNKNOWN and explicit observation bounds.
+The Engineer plans bounded read-only final collection on success **and abort**;
+the Analyst audits surviving resources and investigates cleanup warnings even
+when Ready/conditions clear. The Lead reports data correctness, availability
+and resource release separately, without claiming causality from recurrence.
+These duties use the existing role capabilities, with no fixed committee,
+extra execution/monitoring agents, unapproved control workloads, cleanup
+mutations or artifact ledger.
+
+Canonical layout, relative to `cbt-chaos/scenarios_v2/<ID>/`:
+
+```text
+scenario-spec.md, jira-issue.md
+run.sh                         # reusable scenario entrypoint
+inject.sh / condition/effect helpers (optional; names unrestricted)
+approval.json                  # local explicit approval + complete bundle hashes
+runs/<attempt-id>/
+  run.json                     # phase/verdict, identities, relation, timestamps, paths/statuses
+  injection-confirmation.json  # raw-evidence references and effect checks
+  analysis.json                # independent Analyst assessment
+  run-report.md                # Lead report, including INVALID/BLOCKED attempts
+  ... raw evidence and logs
+consolidated-report.md         # Lead roll-up of every terminal attempt
+bugs/<defect-slug>.md           # Analyst, one confirmed product defect across runs
+```
+
+Lifecycle evidence stays at repository `runs/<lifecycle-id>/` and is referenced,
+not copied. Raw attempt data and `approval.json` are gitignored; sanitized
+reports, bugs and scenario drafts may be committed. No extra verdict file,
+event ledger or output index is required.
+
+New chaos run IDs use
+`<dd-mm-yyyy-hh-mm-ss>-<vm_name>-<note>-iteration-<number>` with current UTC,
+the exact existing/planned VM name, and a short lowercase note. For example,
+`./cbt-chaos/run-id.sh vm-demo full-copy 1` prints that format. The Lead
+increments the scenario iteration for each new attempt, including a repaired
+retry, and records it in `run.json`. Lifecycle IDs keep their separate
+40-character limit: never pass the descriptive chaos ID as Make's `RUN_ID`.
+Existing run directories are not renamed.
+
+Approve the **complete bundle once**: entrypoint, every invoked local script
+and configuration, spec/Jira conditions, effective blast radius/window and run
+parameters. Record explicit approval and hashes, verify immediately before
+execution, and never edit mid-run. Unchanged approved bundles may rerun without
+another approval. After INVALID caused by an injection defect, permit **one**
+repair by the Chaos Engineer, fresh approval and a fresh attempt—never a silent
+retry. Close/report the original attempt before that optional retry.
+
+Injection proof captures condition-before-action, exact target UID before/after,
+timestamps, effect and exclusions using scenario-specific fail-closed machine
+checks, not sleeps or tool self-certification. Verdicts are PASS, product FAIL,
+INVALID injection, INCONCLUSIVE product evidence, or BLOCKED prerequisites.
+Every mandatory requirement must be proven for PASS; an expected interrupted
+backup's nonzero exit is not automatically product FAIL. Reports preserve
+deterministic failures/unknowns and link independent analysis and scoped evidence.
+
+The grading owner or an area specialist may create an actual
+`scenarios_v2/<new-ID>/jira-issue.md` after Lead deduplicates the idea and
+allocates an unused ID/path. Drafts must be **PROPOSED — UNEXECUTED — PENDING
+HUMAN REVIEW**, with source evidence, author area, test intent, scope/risks
+and honest unknowns. The final user summary and run/consolidated reports list
+every created ID, purpose and actual path, not just chat suggestions. Humans
+review/revise or manually delete unwanted drafts; agents never auto-prune or
+archive them. Creating a draft does not approve execution. Lead alone records
+deduplicated evidence-backed lessons in its skill's `improvement.md`.
 
 ## Chaos observer readiness
 
@@ -431,9 +605,21 @@ Each lifecycle has one immutable `runs/<run-id>/` directory. `run.json` stores t
 
 Unlike transient `state/` (the checkout operation lock), `runs/` is not deleted by `make clean-all` — it preserves each run's metadata, report, and debugging evidence. Normal output shows top-level Make stages and key progress/status; routine substeps/actions/successes are in `logs/workflow.log`, and `DEBUG=true` prints them plus detailed status snapshots. Inspect a run with `jq . runs/<run-id>/report.json` or compare two reports. Log collection is best-effort and does not collect cluster component logs.
 
-For a chaos run's Jira-ready engineering issue, draft it from [`cbt-chaos/template/engineering-jira-issue-template.md`](cbt-chaos/template/engineering-jira-issue-template.md) and store one file per defect under the scenario's `bugs/` directory, `cbt-chaos/scenarios_v2/<scenario-id>/bugs/<defect>.md` — never inside a single run directory, because one finding is often corroborated by several runs. Keep CBT product defects and test-harness defects in separate drafts; a draft does not create a Jira issue, so never invent a Jira key or claim one was filed.
+For CBT chaos v2, the independent Analyst drafts confirmed product defects from
+[`cbt-chaos/template/bug-template-v2.md`](cbt-chaos/template/bug-template-v2.md)
+at `cbt-chaos/scenarios_v2/<ID>/bugs/<defect-slug>.md`, deduplicated across
+attempts. Valid injection plus an observed required product violation is
+necessary; root cause may be unknown. Unknown outcomes, injection failures and
+harness issues belong in analysis/reports, not product bug drafts. A draft does
+not create a Jira issue; never invent a Jira key or claim one was filed.
 
-Each draft is expected to stand alone for an engineer without this repository. The template requires the ticket to open with a plain-language paragraph and a **`When → then → expected`** block that names the product action in flight, the disruption applied (the scenario, or the operator action — with an explicit note when no krknctl scenario fits), the current behaviour and the expected behaviour; then a `Concrete objects used in this report` table (kind, name, UID, created, and whether the report kept or deleted it); a measured environment matrix (platform, CNV/KubeVirt and launcher image digests, libvirt/QEMU, the backup CRD group/version, the storage class with its provisioner, CSI driver version and backing device/filesystem, the ODF/RHCS versions present-but-not-exercised, and the guest OS/kernel/agent versions, with `not recorded` used instead of a guess); an explicit reproducibility class (`deterministic n/n`, `partial n/m`, `special case`, or `single observation`); steps to reproduce that a reader with cluster access can execute verbatim, each step stating *when* to run it and *what must be seen*, plus the injection window and fail-closed pre/post checks; current versus expected behaviour with the acceptance check; impact/workaround/data-safety; an evidence index with a UTC timeline and retained state; the refuted hypotheses and what would falsify the ticket; and a sanitisation checklist.
+Keep each draft engineering-friendly and standalone: sanitized reproduction
+preconditions/window/blast radius, measured versions and object UIDs, actual
+versus expected behavior, decisive scoped evidence/timestamps, recovery and
+limits, and links to independent analysis and supporting attempts. The more
+detailed [`engineering-jira-issue-template.md`](cbt-chaos/template/engineering-jira-issue-template.md)
+remains available for other engineering investigations; historical drafts
+retain their original format.
 
 ## Known limitations
 

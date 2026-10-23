@@ -28,8 +28,13 @@ spec:
           resources:
             requests:
               storage: 40Gi
-          storageClassName: ocs-storagecluster-ceph-rbd-virtualization
-          volumeMode: Block
+          # HostPath pool (cbt-demo-hpp): the pool exists only on
+          # d38-h18-000-r660 and backs /dev/sdb, the exact node/disk the
+          # node-io-hog writes to. Ceph RBD left the VM's data path off the
+          # node entirely, so a node-local I/O hog could not contend on the
+          # copy (EXP-9 v1 was placement-INVALID for exactly that reason).
+          storageClassName: cbt-demo-hpp
+          volumeMode: Filesystem
   template:
     metadata:
       labels:
@@ -38,6 +43,13 @@ spec:
         virt-cbt-lab/run-id: __RUN_ID__
     spec:
       evictionStrategy: None
+      # The cbt-demo-hpp pool (and its WaitForFirstConsumer provisioner
+      # deployment hpp-pool-cbt-demo-pool-d38-h18-000-r660) exists only on
+      # d38-h18-000-r660; the explicit selector makes the chaos driver's
+      # post-setup placement guard fail closed instead of racing the
+      # scheduler.
+      nodeSelector:
+        kubernetes.io/hostname: d38-h18-000-r660
       domain:
         cpu:
           cores: 4
