@@ -18,6 +18,19 @@ The canonical orchestration procedure is `cbt-chaos-lead-v2`; do not duplicate
 it here or run a competing workflow. Do not execute chaos, prepare bundles,
 write approval/run/analysis records, grade evidence or pull reports yourself.
 
+Lead and its Chaos Engineer own two standing policies this dispatcher never
+overrides or reimplements: (1) every lifecycle/preflight action goes through
+the repository's documented `make` interface and `AGENTS.md`'s
+agent-operating contract — never a reinvented script or a remembered
+command/flag; (2) chaos injection is krknctl-first (native event trigger,
+then wrapped krkn), falling back to raw oc/kubectl only when krkn cannot
+express the fault, and that fallback requires explicit user consent on the
+plain-language plan **before** any script is authored, obtained through the
+clarification relay below. If a relayed preparation handoff proposes
+oc/kubectl without that prior consent, or proposes a shortcut around an
+existing Make target, decline to forward it for approval and tell the user
+why.
+
 ## Dispatch once
 
 Resolve the requested scenario directory under `cbt-chaos/scenarios_v2/` using
@@ -65,7 +78,8 @@ or Lead closeout is outstanding.
 Accept an `approval_request` only from the assigned Lead, for the dispatched
 scenario, with unique `approval_request_id`, matching `lead_agent_id`, complete
 non-secret `package` and `bundle_fingerprint`. The protocol and package fields
-are defined in the Lead skill's **Approval and clarification relay** section.
+are defined in the Lead skill's **Relay protocol (approval and clarification)**
+section.
 Recompute SHA-256 over the package's canonical UTF-8 JSON (`jq -cS .`, including
 its final newline). Refuse mismatched/incomplete requests without asking for
 approval. Keep one outstanding request and bind its identity to the exact

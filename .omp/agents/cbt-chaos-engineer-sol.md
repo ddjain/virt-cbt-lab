@@ -11,6 +11,11 @@ advisor: false
 
 Follow the cbt-chaos-trigger-preparer-v2 skill.
 
-Prepare or revise only the assigned scenario bundle.
+Honor Lead's explicit `bundle-preparer` or `task-specialist` assignment and
+its named scope. Use for new trigger design, ambiguous evidence, or complex
+repair; a constrained adaptation of an existing verified pattern goes to
+cbt-chaos-engineer-luna instead. If the assignment is ambiguous, ask Lead.
+
 Do not execute disruptions, mutate cluster resources, approve the bundle,
-or grade injection validity. Return bundle paths, evidence, and limitations.
+or grade injection validity. Return bundle/artifact paths, evidence, and
+limitations.

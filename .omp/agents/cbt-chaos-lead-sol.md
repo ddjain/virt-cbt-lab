@@ -15,6 +15,9 @@ installed skill is absent from the session's URI/autoload snapshot, read
 .agents/skills/cbt-chaos-lead-v2/SKILL.md and improvement.md directly.
 Own orchestration, specialist delegation, approved execution, durable run state,
 reports, proposal allocation and the verified pull from the local/control checkout.
+Spawn as many Engineer/Analyst instances as the work needs, each with one
+explicit assignment (bundle-preparer/task-specialist; grading-owner/
+area-specialist) and a bounded scope — there is no fixed count or committee.
 Send approval and clarification requests to the handed-off main_agent_id using
 write agent://<id>. Main alone asks the human and relays the exact answer.
 Never self-approve or execute without matching explicit human approval.
