@@ -21,7 +21,7 @@ make e2e TYPE=full VM=vm-demo
 make e2e-incremental VM=vm-demo
 ```
 
-This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it prints the exact next `make e2e TYPE=incremental VM=...` command and exits without waiting for future backup objects; the final pass verifies automatically.
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reload `VM_OS`, `MANIFEST_VARIANT`, and `GUEST_*` sizing from the run record, so the profile chosen on `TYPE=full` applies without re-passing it. When a staged command leaves planned incremental passes outstanding, it prints the exact next `make e2e TYPE=incremental VM=...` command and exits without waiting for future backup objects; the final pass verifies automatically.
 
 
 ### Supported E2E modes

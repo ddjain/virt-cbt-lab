@@ -193,6 +193,10 @@ help:
 	  'PROFILES' \
 	  '  VM_OS: rhel9 (default), debian, windows.' \
 	  '  make e2e VM_OS=debian           Use the Debian override.' \
+	  '  MANIFEST_VARIANT: large-odf (default for every VM_OS), odf, large, default.' \
+	  '  make e2e MANIFEST_VARIANT=large  Opt into the hostpath (cbt-demo-hpp) backend.' \
+	  '  Only TYPE=all/full reads the profile from the environment; TYPE=incremental' \
+	  '  and TYPE=verify reload VM_OS/MANIFEST_VARIANT/GUEST_* from the run record.' \
 	  '  make windows-e2e                 Alias for Windows E2E.' \
 	  '  Windows targets: windows-vm-setup, windows-golden-image.' \
 	  '' \
