@@ -21,7 +21,7 @@ create_windows_vm_resources() {
 
   new_run_id
 
-  workflow_step "1/5 Prepare the cached Windows golden image"
+  workflow_step "1/6 Prepare the cached Windows golden image"
   if ! oc_cmd get datasource windows-server-2022 -n "$WINDOWS_IMAGES_NAMESPACE" >/dev/null 2>&1; then
     workflow_action "Windows DataSource is absent; running the one-time ISO install and sysprep workflow"
     "$ROOT_DIR/scripts/windows-golden-image-setup.sh"
@@ -31,15 +31,15 @@ create_windows_vm_resources() {
   workflow_status "Windows DataSource $WINDOWS_IMAGES_NAMESPACE/windows-server-2022 is ready"
   workflow_success "Windows DataSource is ready"
 
-  workflow_step "2/5 Generate the run-scoped OOBE secret"
+  workflow_step "2/6 Generate the run-scoped OOBE secret"
   OOBE_SECRET="windows-oobe-${RUN_ID}"
   create_windows_oobe_secret "$OOBE_SECRET" "$RUN_LABEL_RUN_ID_KEY" "$RUN_ID"
   workflow_success "Run-scoped Windows OOBE Secret is ready"
 
-  workflow_step "3/5 Create the CBT-enabled Windows VM"
+  workflow_step "3/6 Create the CBT-enabled Windows VM"
   workflow_action "Ensure namespace $NAMESPACE exists"
   oc_cmd create namespace "$NAMESPACE" --dry-run=client -o yaml | oc_cmd apply -f - >/dev/null
-  workflow_action "Apply Windows VM $VM_NAME with cloned 40Gi root disk and OOBE Secret $OOBE_SECRET"
+  workflow_action "Apply Windows VM $VM_NAME with cloned 60Gi root disk and OOBE Secret $OOBE_SECRET"
   sed \
     -e "s|__NAMESPACE__|$NAMESPACE|g" \
     -e "s|__VM_NAME__|$VM_NAME|g" \
@@ -54,7 +54,7 @@ create_windows_vm_resources() {
 
 if [[ -n "${EXISTING_VM:-}" ]]; then
   adopt_existing_run_id
-  workflow_step "1-3/5 Skip VM creation"
+  workflow_step "1-3/6 Skip VM creation"
   workflow_success "Adopting existing VM $VM_NAME"
 else
   create_windows_vm_resources
@@ -62,7 +62,7 @@ fi
 
 # shellcheck source=scripts/windows-guest-agent.sh
 source "$ROOT_DIR/scripts/windows-guest-agent.sh"
-workflow_step "4/5 Wait for Windows readiness and confirm CBT and Guest Agent"
+workflow_step "4/6 Wait for Windows readiness and confirm CBT and Guest Agent"
 workflow_action "Wait up to 60m for VM/$VM_NAME to reach Ready after OOBE"
 oc_cmd wait "vm/$VM_NAME" -n "$NAMESPACE" --for=jsonpath='{.status.ready}'=true --timeout=60m >/dev/null
 vm_json="$(oc_cmd get vm "$VM_NAME" -n "$NAMESPACE" -o json)"
@@ -84,7 +84,27 @@ wait_for_guest_agent "$VM_NAME" "$NAMESPACE"
 workflow_progress "Windows VM is Ready; CBT state is $cbt_state and QEMU Guest Agent is connected"
 workflow_success "Windows VM ready · CBT $cbt_state · QEMU Guest Agent connected"
 
-workflow_step "5/5 Verify startup workloads and initialize the baseline file workload"
+workflow_step "5/6 Extend the C: volume to the full cloned disk"
+workflow_action "Resize the Windows C: partition when the cloned root disk is larger than the golden image"
+windows_extend_script="$(mktemp)"
+cat > "$windows_extend_script" <<'PS1'
+$ErrorActionPreference = 'Stop'
+$supported = Get-PartitionSupportedSize -DriveLetter C
+$partition = Get-Partition -DriveLetter C
+if ($partition.Size -lt $supported.SizeMax) {
+  Resize-Partition -DriveLetter C -Size $supported.SizeMax | Out-Null
+}
+$volume = Get-Volume -DriveLetter C
+Write-Output ('C_SIZE_BYTES=' + $volume.Size)
+PS1
+windows_extend_output="$(guest_exec_script "$VM_NAME" "$NAMESPACE" \
+  "$windows_extend_script" \
+  'C:\Windows\Temp\cbt-extend-c.ps1')"
+rm -f "$windows_extend_script"
+c_volume_bytes="$(printf '%s' "$windows_extend_output" | sed -n 's/^C_SIZE_BYTES=//p' | tail -1)"
+workflow_status "C: volume size is ${c_volume_bytes:-unknown} bytes"
+
+workflow_step "6/6 Verify startup workloads and initialize the baseline file workload"
 workflow_action "Verify Python 3.12.4, file/SQLite writes, HTTP 8080, and the SYSTEM startup task on this clone"
 if ! guest_exec_script "$VM_NAME" "$NAMESPACE" \
   "$ROOT_DIR/scripts/windows-workload-verify.ps1" \

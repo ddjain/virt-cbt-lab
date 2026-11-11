@@ -649,6 +649,7 @@ clone; each clone uses it to create a run-scoped OOBE Secret.
 
 After the single-VM setup is validated, run `make e2e VM_OS=windows NAME=windows-cbt-1` for the full Windows CBT workflow. It reuses the existing generic full-backup, tracker, incremental-backup, report, and verification stages; Windows-specific logic covers OOBE, guest mutation, and NTFS restore inspection. The Windows profile requires the ODF virtualization Block class for VM disks and the ODF Filesystem class for backup PVCs. Follow [`docs/windows-server-2022-setup-runbook.md`](windows-server-2022-setup-runbook.md) for the end-to-end setup procedure; this document remains the exact repository workflow reference.
 - The Windows VM template sets `evictionStrategy: None` for this demo. A migration during a QEMU Guest Agent command can invalidate the guest-exec process handle; runtime setup probes the agent socket and retries the startup workload verification once after a transient guest-agent failure.
+- The Windows runtime setup extends the clone's `C:` partition to the full root disk (`Resize-Partition` through the guest agent, a no-op when the root matches the golden image) before initializing the baseline workload, so root disks larger than the 40Gi golden image are usable by the guest. The Windows root request is 60Gi and the full-backup destination 70Gi on ODF.
 
 ## Troubleshooting signals
 

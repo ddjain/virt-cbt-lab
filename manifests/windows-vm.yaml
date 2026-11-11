@@ -27,14 +27,17 @@ spec:
             - ReadWriteOnce
           resources:
             requests:
-              storage: 40Gi
-          # HostPath pool (cbt-demo-hpp): the pool exists only on
-          # d38-h18-000-r660 and backs /dev/sdb, the exact node/disk the
-          # node-io-hog writes to. Ceph RBD left the VM's data path off the
-          # node entirely, so a node-local I/O hog could not contend on the
-          # copy (EXP-9 v1 was placement-INVALID for exactly that reason).
-          storageClassName: cbt-demo-hpp
-          volumeMode: Filesystem
+              storage: 60Gi
+          # ODF Ceph RBD (ocs-storagecluster-ceph-rbd-virtualization): the
+          # same storage class as the windows-golden DataSource PVC, so the
+          # root disk smart-clones from the golden instead of copying
+          # cross-class. The HPP pool (cbt-demo-hpp on d38-h18-000-r660) was
+          # for node-io-hog co-location experiments (EXP-9); ODF moves the
+          # data path onto Ceph, so those scenarios no longer contend on the
+          # node-local disk. 60Gi fits Windows (~12.5GiB) plus both 1000-file
+          # workload passes (~17.4GiB each) with headroom.
+          storageClassName: ocs-storagecluster-ceph-rbd-virtualization
+          volumeMode: Block
   template:
     metadata:
       labels:
@@ -43,13 +46,10 @@ spec:
         virt-cbt-lab/run-id: __RUN_ID__
     spec:
       evictionStrategy: None
-      # The cbt-demo-hpp pool (and its WaitForFirstConsumer provisioner
-      # deployment hpp-pool-cbt-demo-pool-d38-h18-000-r660) exists only on
-      # d38-h18-000-r660; the explicit selector makes the chaos driver's
-      # post-setup placement guard fail closed instead of racing the
-      # scheduler.
-      nodeSelector:
-        kubernetes.io/hostname: d38-h18-000-r660
+      # No nodeSelector: the root disk is network-attached Ceph RBD, so any
+      # node can run the VM and the scheduler is free to spread load. The
+      # previous d38-h18-000-r660 pin existed only to co-locate the VM with
+      # the node-local cbt-demo-hpp pool for node-io-hog scenarios.
       domain:
         cpu:
           cores: 4

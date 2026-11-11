@@ -7,10 +7,11 @@ metadata:
     __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
     __RUN_ID_LABEL_KEY__: __RUN_ID__
 spec:
-  # HostPath pool destination (same node/disk as the hog and the root disk).
-  # The size stays the approved INCREMENTAL_PVC_SIZE (30Gi default); on this
-  # pool the claim is a directory on the node filesystem, not a sized volume.
-  storageClassName: cbt-demo-hpp
+  # ODF Ceph RBD Filesystem destination (plain ceph-rbd class, as documented
+  # for Windows backup PVCs). Ceph RBD enforces PVC capacity strictly; the
+  # claim is sized by INCREMENTAL_PVC_SIZE (30Gi default), which must exceed
+  # the peak changed-block payload of a pass.
+  storageClassName: ocs-storagecluster-ceph-rbd
   accessModes:
     - ReadWriteOnce
   volumeMode: Filesystem
