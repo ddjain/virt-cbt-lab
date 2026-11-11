@@ -21,7 +21,7 @@ make e2e TYPE=full VM=vm-demo
 make e2e-incremental VM=vm-demo
 ```
 
-This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reuse settings saved by the full stage. When a staged command leaves planned incremental passes outstanding, it prints the exact next `make e2e TYPE=incremental VM=...` command and exits without waiting for future backup objects; the final pass verifies automatically.
+This runs the default single incremental pass after the full backup; the final pass also runs verification. For `N` passes, set `GUEST_INCREMENTAL_PASSES=N` on `TYPE=full`, then run `make e2e-incremental VM=vm-<run-id>` `N` times. `make e2e TYPE=incremental VM=...` remains an equivalent interface. Keep the same `VM`; later stages reload `VM_OS`, `MANIFEST_VARIANT`, and `GUEST_*` sizing from the run record, so the profile chosen on `TYPE=full` applies without re-passing it. When a staged command leaves planned incremental passes outstanding, it prints the exact next `make e2e TYPE=incremental VM=...` command and exits without waiting for future backup objects; the final pass verifies automatically.
 
 
 ### Supported E2E modes
@@ -110,7 +110,7 @@ Cluster resources:
 - The `IncrementalBackup` feature gate.
 - The default RHEL 9 large-ODF profile requires a ready `rhel9` DataSource in `openshift-virtualization-os-images`, a `Bound` source PVC, and the `ocs-storagecluster-ceph-rbd` class. It requests an 80Gi root disk and full-backup PVC plus a 30Gi incremental PVC per pass; CDI may increase the actual root PVC request.
 - Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for its RWO VM and backup PVCs. Use `VM_OS=debian MANIFEST_VARIANT=default` for HPP or `MANIFEST_VARIANT=odf` for the small ODF profile.
-- Windows requires `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 60Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. These ODF classes are used by the Windows manifests.
+- Windows ODF runs (`MANIFEST_VARIANT=large-odf`, the default) require `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 60Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. Windows HPP runs (`MANIFEST_VARIANT=large`) use the node-local `cbt-demo-hpp` pool for the 40Gi Filesystem root and both backup PVCs.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
 
@@ -156,7 +156,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `GUEST_FILE_SIZE_MIN_MIB` / `GUEST_FILE_SIZE_MAX_MIB` | No | `4` / `12` | Inclusive whole-MiB size range for each file. Selected sizes and SHA-256 hashes are recorded in the run manifest. |
 | `GUEST_INVENTORY_VERIFY` | No | `full` | Strength of the guest inventory check before each incremental mutation: `full` re-hashes every workload file, `sample` verifies names and sizes for every file and hashes every `GUEST_INVENTORY_SAMPLE_STRIDE`-th file plus the file that pass modifies, and `skip` verifies names and sizes only. The post-mutation inventory and the restore verification always hash every file. Linux guests only; Windows runs use `full`. |
 | `GUEST_INVENTORY_SAMPLE_STRIDE` | No | `16` | Stride used by `GUEST_INVENTORY_VERIFY=sample`. |
-| `MANIFEST_VARIANT` | No | `large-odf` | `large-odf` is the standard RHEL 9 ODF profile; Debian also supports `odf`, `default`, and `large`. RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows uses fixed ODF storage sizing. |
+| `MANIFEST_VARIANT` | No | `large-odf` | `large-odf` is the standard RHEL 9 ODF profile; Debian also supports `odf`, `default`, and `large`. RHEL 9 maps HPP variants to `large` and ODF variants to `large-odf`; Windows maps HPP variants to the 40Gi node-local HPP profile and ODF variants to the 60Gi Block-mode ODF profile. |
 | `WINDOWS_ISO_PATH` | If the ISO is not already staged | Unset | Local Windows Server 2022 Evaluation ISO path used only when `vm-cbt-images/windows-iso` is not `Succeeded`; never copied into the repository. |
 | `WINDOWS_ADMIN_PASSWORD_FILE` | For Windows setup | Unset | Local, gitignored file containing the Administrator password; never committed or logged. |
 | `EXISTING_VM` | For pool adoption | Unset | `vm-<pool>-NNNN` density-pool VM to adopt with `make e2e` (`TYPE=all|full` only; cannot combine with `VM`/`NAME`). Pool annotations override the profile variables. |
@@ -632,7 +632,7 @@ retain their original format.
 
 - All runs share the namespace and local/RWO storage. The checkout E2E lock prevents concurrent `make e2e` operations in one checkout; use separate repository copies for parallel operations. Staged `TYPE=incremental` commands use the per-VM lifecycle record. `make clean-all` removes every workflow-managed run in the namespace, not only the most recent one.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses a 60Gi Block-mode root plus 70Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
+- Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses either a 60Gi Block-mode root plus 70Gi/30Gi ODF Filesystem backup PVCs (ODF variants) or a 40Gi HPP Filesystem root plus 48Gi/30Gi HPP backup PVCs (HPP variants). These are demo configurations, not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
 - `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `qemu-nbd`, `kmod`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod. The pod mounts the node's `/dev` and `/lib/modules`: when the `nbd` kernel module is available (or can be loaded by the pod's `modprobe`), the backup's qcow2 chain is mounted directly through `qemu-nbd`; otherwise the pod falls back to converting each image to a raw file and mounting it with `losetup`. Both paths run the identical read-only mount and hash verification.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.
