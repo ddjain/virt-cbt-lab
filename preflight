@@ -108,7 +108,7 @@ check_repository() {
   [[ -f "$ROOT_DIR/Makefile" ]] && result PASS "Makefile found" || result FAIL "Makefile is missing"
   local files=(scripts/common.sh scripts/dotenv.sh scripts/workload-manifest.sh scripts/vm-setup.sh scripts/vm-backup.sh scripts/vm-cbt-backup.sh scripts/vm-cbt-extend.sh scripts/vm-cbt-verify.sh manifests/vm.yaml manifests/full-backup.yaml manifests/incremental-backup.yaml)
   if [[ "$VM_OS" == windows ]]; then
-    files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-incremental-backup.yaml manifests/windows-restore-verify-pod.yaml)
+    files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-vm-hpp.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-full-backup-hpp.yaml manifests/windows-incremental-backup.yaml manifests/windows-incremental-backup-hpp.yaml manifests/windows-restore-verify-pod.yaml)
   fi
   if [[ "$VM_OS" == rhel9 ]]; then
     files+=(manifests/vm-large.yaml manifests/vm-large-odf.yaml manifests/full-backup-large.yaml manifests/full-backup-large-odf.yaml manifests/incremental-backup-large.yaml manifests/incremental-backup-large-odf.yaml)
@@ -260,7 +260,12 @@ check_cluster_capabilities() {
   done
   if [[ "$VM_OS" == windows ]]; then
     local storage_class
-    for storage_class in cbt-demo-hpp ocs-storagecluster-ceph-rbd-virtualization ocs-storagecluster-ceph-rbd; do
+    local -a windows_storage_classes=()
+    case "${MANIFEST_VARIANT:-large-odf}" in
+      odf | large-odf) windows_storage_classes=(ocs-storagecluster-ceph-rbd-virtualization ocs-storagecluster-ceph-rbd) ;;
+      *) windows_storage_classes=(cbt-demo-hpp) ;;
+    esac
+    for storage_class in "${windows_storage_classes[@]}"; do
       if oc get storageclass "$storage_class" >/dev/null 2>"$TMP_DIR/oc-error"; then
         result PASS "storage class $storage_class is available"
       else

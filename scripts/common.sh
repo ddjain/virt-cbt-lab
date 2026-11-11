@@ -194,7 +194,15 @@ validate_positive_integer GUEST_INVENTORY_SAMPLE_STRIDE "$GUEST_INVENTORY_SAMPLE
 manifest_path() {
   local base_name="$1" variant="$MANIFEST_VARIANT"
   if [[ "$VM_OS" == windows ]]; then
-    printf '%s/manifests/windows-%s.yaml' "$ROOT_DIR" "$base_name"
+    # Windows has one profile per backend, so the variant selects it the
+    # same way it does for Linux: ODF variants (odf|large-odf, the default)
+    # keep the unsuffixed Block-mode manifests on
+    # ocs-storagecluster-ceph-rbd-virtualization; HPP variants
+    # (default|large) use the node-local cbt-demo-hpp Filesystem manifests.
+    case "$variant" in
+      default | large) printf '%s/manifests/windows-%s-hpp.yaml' "$ROOT_DIR" "$base_name" ;;
+      odf | large-odf) printf '%s/manifests/windows-%s.yaml' "$ROOT_DIR" "$base_name" ;;
+    esac
   else
     if [[ "$VM_OS" == rhel9 ]]; then
       case "$variant" in

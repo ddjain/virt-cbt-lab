@@ -39,7 +39,7 @@ create_windows_vm_resources() {
   workflow_step "3/6 Create the CBT-enabled Windows VM"
   workflow_action "Ensure namespace $NAMESPACE exists"
   oc_cmd create namespace "$NAMESPACE" --dry-run=client -o yaml | oc_cmd apply -f - >/dev/null
-  workflow_action "Apply Windows VM $VM_NAME with cloned 60Gi root disk and OOBE Secret $OOBE_SECRET"
+  workflow_action "oc apply -f $(manifest_path vm) (Windows VM $VM_NAME, DataVolume $DV_NAME, OOBE Secret $OOBE_SECRET)"
   sed \
     -e "s|__NAMESPACE__|$NAMESPACE|g" \
     -e "s|__VM_NAME__|$VM_NAME|g" \
@@ -47,7 +47,7 @@ create_windows_vm_resources() {
     -e "s|__OOBE_SECRET__|$OOBE_SECRET|g" \
     -e "s|__RUN_ID__|$RUN_ID|g" \
     -e "s|__MANAGED_BY_VALUE__|$RUN_LABEL_MANAGED_BY_VALUE|g" \
-    "$ROOT_DIR/manifests/windows-vm.yaml" | oc_cmd apply -f - >/dev/null
+    "$(manifest_path vm)" | oc_cmd apply -f - >/dev/null
   workflow_progress "Windows VM resources applied in namespace $NAMESPACE"
   workflow_success "Windows VM resources created"
 }

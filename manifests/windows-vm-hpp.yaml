@@ -1,0 +1,99 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: __VM_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    cbt-demo: enabled
+    app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+    virt-cbt-lab/run-id: __RUN_ID__
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: __DV_NAME__
+        labels:
+          app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+          virt-cbt-lab/run-id: __RUN_ID__
+        annotations:
+          cdi.kubevirt.io/storage.bind.immediate.requested: "true"
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: windows-server-2022
+          namespace: vm-cbt-images
+        storage:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 40Gi
+          # HPP variant (MANIFEST_VARIANT=default|large): the node-local
+          # cbt-demo-hpp pool. The only Windows golden DataSource is the
+          # Block-mode RBD PVC, so the root pays a host-assisted cross-class
+          # clone at setup instead of the ODF variant's smart clone. HPP
+          # supports Filesystem volumes only. 40Gi is the EXP-9 sizing: after
+          # Windows (~12.5GiB) roughly 27GiB remain for workload passes, so
+          # size GUEST_* so every planned pass fits (the default 1000 x
+          # 15-20MiB two-pass workload needs the 60Gi ODF profile).
+          storageClassName: cbt-demo-hpp
+          volumeMode: Filesystem
+  template:
+    metadata:
+      labels:
+        cbt-demo: enabled
+        app.kubernetes.io/managed-by: __MANAGED_BY_VALUE__
+        virt-cbt-lab/run-id: __RUN_ID__
+    spec:
+      evictionStrategy: None
+      # The cbt-demo-hpp pool (and its WaitForFirstConsumer provisioner
+      # deployment hpp-pool-cbt-demo-pool-d38-h18-000-r660) exists only on
+      # d38-h18-000-r660 on this cluster; the explicit selector makes
+      # placement deterministic and lets chaos drivers that co-locate on the
+      # pool disk fail closed instead of racing the scheduler.
+      nodeSelector:
+        kubernetes.io/hostname: d38-h18-000-r660
+      domain:
+        cpu:
+          cores: 4
+        memory:
+          guest: 8Gi
+        resources:
+          requests:
+            memory: 8Gi
+        machine:
+          type: q35
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        devices:
+          disks:
+            - name: rootdisk
+              disk:
+                bus: sata
+            - name: sysprep
+              cdrom:
+                bus: sata
+                readonly: true
+          channels:
+            - name: org.qemu.guest_agent.0
+              channel:
+                target:
+                  name: org.qemu.guest_agent.0
+                  type: virtio
+          interfaces:
+            - name: default
+              masquerade: {}
+              model: virtio
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: rootdisk
+          dataVolume:
+            name: __DV_NAME__
+        - name: sysprep
+          sysprep:
+            secret:
+              name: __OOBE_SECRET__
