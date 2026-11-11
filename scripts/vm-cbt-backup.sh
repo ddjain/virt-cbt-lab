@@ -282,7 +282,17 @@ foreach (\$entry in Get-ChildItem -LiteralPath \$directory -Force) {
   \$sha256 = (Get-FileHash -LiteralPath \$entry.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
   Write-Output ('FILE_RECORD=' + \$entry.Name + '|' + \$entry.Length + '|' + \$sha256)
 }"
-  guest_output="$(guest_exec "$VM_NAME" "$NAMESPACE" "$windows_mutation_command")"
+  # The mutation script embeds one [pscustomobject] line per planned file, so
+  # at realistic pass sizes it exceeds the Windows CreateProcess command-line
+  # limit and guest-exec fails with "Failed to execute helper program". Ship
+  # it as a guest file and execute the short path instead, exactly like the
+  # baseline write in windows-vm-setup.sh.
+  windows_mutation_script="$(mktemp)"
+  printf '%s' "$windows_mutation_command" > "$windows_mutation_script"
+  guest_output="$(guest_exec_script "$VM_NAME" "$NAMESPACE" \
+    "$windows_mutation_script" \
+    'C:\Windows\Temp\cbt-incremental-write.ps1')"
+  rm -f "$windows_mutation_script"
 else
   incremental_items=""
   while IFS='|' read -r workload_name workload_size_bytes; do

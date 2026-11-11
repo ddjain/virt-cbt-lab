@@ -344,6 +344,7 @@ require_command() {
 
 require_command oc
 require_command jq
+require_command pkill
 if [[ -n "$KUBECONFIG_PATH" && ! -r "$KUBECONFIG_PATH" ]]; then
   printf 'Kubeconfig is not readable: %s\n' "$KUBECONFIG_PATH" >&2
   exit 1
@@ -675,6 +676,10 @@ ssh_guest_command() {
 
 guest_ssh_stop_forward() {
   if [[ -n "$GUEST_SSH_FORWARD_PID" ]]; then
+    # The forward is started through the oc_cmd wrapper, so $! is a wrapping
+    # subshell and oc is its child. Signal the child first so killing the
+    # wrapper cannot orphan a live "oc port-forward" under PID 1.
+    pkill -TERM -P "$GUEST_SSH_FORWARD_PID" 2>/dev/null || true
     kill "$GUEST_SSH_FORWARD_PID" 2>/dev/null || true
     wait "$GUEST_SSH_FORWARD_PID" 2>/dev/null || true
     GUEST_SSH_FORWARD_PID=

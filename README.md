@@ -110,7 +110,7 @@ Cluster resources:
 - The `IncrementalBackup` feature gate.
 - The default RHEL 9 large-ODF profile requires a ready `rhel9` DataSource in `openshift-virtualization-os-images`, a `Bound` source PVC, and the `ocs-storagecluster-ceph-rbd` class. It requests an 80Gi root disk and full-backup PVC plus a 30Gi incremental PVC per pass; CDI may increase the actual root PVC request.
 - Debian requires `cbt-demo-hpp` or the selected ODF StorageClass for its RWO VM and backup PVCs. Use `VM_OS=debian MANIFEST_VARIANT=default` for HPP or `MANIFEST_VARIANT=odf` for the small ODF profile.
-- Windows requires `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 40Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. These ODF classes are used by the Windows manifests.
+- Windows requires `cbt-demo-hpp` for ISO staging, `ocs-storagecluster-ceph-rbd-virtualization` for the 60Gi Block-mode VM disk, and `ocs-storagecluster-ceph-rbd` for filesystem backup PVCs. These ODF classes are used by the Windows manifests.
 
 The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Virtualization version before use.
 
@@ -632,7 +632,7 @@ retain their original format.
 
 - All runs share the namespace and local/RWO storage. The checkout E2E lock prevents concurrent `make e2e` operations in one checkout; use separate repository copies for parallel operations. Staged `TYPE=incremental` commands use the per-VM lifecycle record. `make clean-all` removes every workflow-managed run in the namespace, not only the most recent one.
 - The workflow depends on preview/alpha backup APIs and cluster-specific storage/feature-gate configuration.
-- Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses a 40Gi Block-mode root plus 48Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
+- Debian uses small local/RWO disks, RHEL 9 uses an 80Gi root/full-backup request with 25Gi/30Gi incremental PVCs on HPP/ODF, and Windows uses a 60Gi Block-mode root plus 70Gi/30Gi ODF Filesystem backup PVCs. These are demo configurations, not production storage or disaster-recovery guidance.
 - `StrictHostKeyChecking=no` is limited to the ephemeral localhost port-forward used by the demo; do not copy that SSH configuration to general remote administration.
 - `make vm-cbt-restore-test` uses a privileged pod to reconstruct backups and read guest files from ext4 (Debian), XFS (RHEL 9), or NTFS (Windows). Build and push `images/restore-helper/Dockerfile` with `qemu-img`, `qemu-nbd`, `kmod`, `util-linux`, and `ntfs-3g`, set `RESTORE_HELPER_IMAGE`, and allow the privileged pod. The pod mounts the node's `/dev` and `/lib/modules`: when the `nbd` kernel module is available (or can be loaded by the pod's `modprobe`), the backup's qcow2 chain is mounted directly through `qemu-nbd`; otherwise the pod falls back to converting each image to a raw file and mounting it with `losetup`. Both paths run the identical read-only mount and hash verification.
 - `sync.sh` is an operator convenience, not a deployment or release mechanism.
