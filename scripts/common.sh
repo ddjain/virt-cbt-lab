@@ -131,9 +131,9 @@ set_vm_os_profile
 MANIFEST_VARIANT="${MANIFEST_VARIANT:-large-odf}"
 set_manifest_variant_settings() {
   case "$MANIFEST_VARIANT" in
-    default | large | odf | large-odf) ;;
+    default | large | odf | large-odf | hpp-odf | odf-hpp) ;;
     *)
-      printf 'MANIFEST_VARIANT must be "default", "large", "odf", or "large-odf" (got: %s)\n' "$MANIFEST_VARIANT" >&2
+      printf 'MANIFEST_VARIANT must be "default", "large", "odf", "large-odf", "hpp-odf", or "odf-hpp" (got: %s)\n' "$MANIFEST_VARIANT" >&2
       exit 1
       ;;
   esac
@@ -147,10 +147,19 @@ set_manifest_variant_settings() {
   # 85Gi PVC, csi-clone overhead), so the full-backup destination must be
   # larger than the root or the copy hits a false ENOSPC (78.36GiB disk.img
   # into an 80Gi dest; the I-05 precedent fit by only 256MiB).
+  # Mixed variants (CBT-T-05): hpp-odf = root on cbt-demo-hpp, backups on
+  # ODF (needs the ODF backup sizing); odf-hpp = root on ODF, backups on
+  # cbt-demo-hpp (needs the HPP backup sizing = root size).
   case "$VM_OS:$MANIFEST_VARIANT" in
-    rhel9:odf | rhel9:large-odf) FULL_BACKUP_DISK_SIZE=90Gi ;;
+    rhel9:odf | rhel9:large-odf | rhel9:hpp-odf) FULL_BACKUP_DISK_SIZE=90Gi ;;
     *) FULL_BACKUP_DISK_SIZE="$LARGE_MANIFEST_DISK_SIZE" ;;
   esac
+  # Optional override for backup-destination sizing sweeps (CBT-T-05 A0):
+  # set FULL_BACKUP_DISK_SIZE in the environment / make command line to
+  # override the variant default. Must be a valid size (NNNgGi).
+  if [ -n "${FULL_BACKUP_DISK_SIZE_OVERRIDE:-}" ]; then
+    FULL_BACKUP_DISK_SIZE="$FULL_BACKUP_DISK_SIZE_OVERRIDE"
+  fi
 }
 set_manifest_variant_settings
 
@@ -208,6 +217,7 @@ manifest_path() {
       case "$variant" in
         default | large) variant=large ;;
         odf | large-odf) variant=large-odf ;;
+        hpp-odf | odf-hpp) ;;  # mixed variants have their own manifests
       esac
     fi
     if [[ "$variant" == "default" ]]; then

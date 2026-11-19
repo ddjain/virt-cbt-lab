@@ -179,9 +179,21 @@ actually fails and needs to be investigated as an unexpected regression.
   (selected by the run-unique `vm.kubevirt.io/name=vm-<RUN_ID>` label), 22 ports, both
   directions, both protocols, for 60 seconds. No other namespace resources are touched.
   The filter is removed automatically by the krknctl workload after
-  `--chaos-duration` elapses (confirmed by reading `pod_network_filter.py`'s
-  `time.sleep(self.config.test_duration)` followed by rule cleanup) — no manual recovery
-  step is required by design, matching the issue's stated recovery.
+  `--chaos-duration` elapses — **but this is not guaranteed, and the filter is NOT
+  confined to the launcher netns.** 2026-11-11 incidents (d39-h07 18:36:39Z, d39-h03
+  20:34:59Z): within ~10 s of the `pod-filter-*` helper pod starting, krkn's
+  `nsenter --target <pid> --net` applied `OUTPUT -j DROP` rules for ports 22/53/67 in the
+  **HOST** netns (iptables-legacy). The node was never hung (h03 uptime 44 d, SEL has no
+  hardware events); its kubelet lost DNS (`lookup api-int…: write udp …: operation not
+  permitted`) and SSH, so heartbeats stopped and the node went NotReady. The rules were
+  never removed (pod-filter pod was evicted/deleted before cleanup). The backup copy phase
+  is only the trigger timing, not the cause.
+  **Mandatory after every run / on any NotReady node:** from a host with node access run
+  `iptables-legacy-save | grep DROP` via
+  `podman run --network host --privileged --entrypoint iptables-legacy-save
+  quay.io/krkn-chaos/krkn-hub-multiarch:workload-krkn-network-chaos` and delete leaked
+  rules with `iptables-legacy -D OUTPUT …` (no reboot needed). Do not include ports
+  22/53/67/6443/10250 in the filter list until krkn is fixed to scope to the target netns.
 - **Prerequisites:** `krknctl`, `oc`, `jq`, `make` on the execution host; a unique
   `RUN_ID`; `KUBECONFIG_PATH` set to the approved host-local kubeconfig; no existing
   cluster resources named for that `RUN_ID`.

@@ -1,0 +1,33 @@
+# HPP-ODF MIXED VARIANT (CBT-T-05) — opt-in via MANIFEST_VARIANT=hpp-odf.
+# Incremental destination on ocs-storagecluster-ceph-rbd (VM root on HPP).
+# Structurally identical to incremental-backup-large-odf.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __INCREMENTAL_BACKUP_PVC__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  storageClassName: ocs-storagecluster-ceph-rbd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: __INCREMENTAL_PVC_SIZE__
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackup
+metadata:
+  name: __INCREMENTAL_BACKUP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: backup.kubevirt.io
+    kind: VirtualMachineBackupTracker
+    name: __TRACKER_NAME__
+  pvcName: __INCREMENTAL_BACKUP_PVC__

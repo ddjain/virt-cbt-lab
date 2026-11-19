@@ -5,7 +5,7 @@
 # document: Windows guest access uses the QEMU guest agent, not SSH.
 # $rid is re-declared per document; Go-template variables do not cross
 # document boundaries.
-{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+{{ $rid := printf "%s-%04d" .poolId (add (atoi .startIndex) (add1 .Iteration)) }}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:

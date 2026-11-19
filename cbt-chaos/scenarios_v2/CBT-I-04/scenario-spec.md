@@ -17,13 +17,13 @@
 
 Two-stage lifecycle (I-01 pattern): `make e2e TYPE=full` → `make e2e TYPE=incremental` (RHEL 9, default variant). The hog starts before the incremental stage and fires when p01 reaches Progressing=True ∧ Done≠True (krknctl trigger-command, 3 s interval).
 
-Cluster facts (F-09 measured): the only node with the cbt-demo-hpp backing disk is d38-h18-000-r660 (also where every campaign VM is scheduled); pool parent dir `/mnt/local-storage/cbt-demo-local-pool` hosts the /dev/sdb filesystem backing both the VM root disk and backup destinations; ~1.2 t free — 8 × 2 g = 16 g writes fill <1.4%.
+Cluster facts (measured 2026-11-12, F-09/I-04 probes): the only node with the cbt-demo-hpp backing disk is d38-h18-000-r660 (also where every campaign VM is scheduled); the pool device is **/dev/sdb mounted at /var/hpvolumes/csi** (findmnt-verified; the old `/mnt/local-storage/cbt-demo-local-pool` path in this spec was wrong); ~1.3 t free — 64 × 2 g = 128 g transient dsync writes fill <10%.
 
 ## 4. Target and validated disruption
 
-**Target:** the CBT storage filesystem on the VM's worker node (d38-h18-000-r660, `/mnt/local-storage/cbt-demo-local-pool`).
+**Target:** the CBT storage filesystem on the VM's worker node (d38-h18-000-r660, `/var/hpvolumes/csi` on /dev/sdb).
 
-**Action:** `krknctl run node-io-hog` (upstream krkn, ground-truth CLI verified in F-09): `--namespace hog-ns-<RUN_ID>`, `--node-selector kubernetes.io/hostname=d38-h18-000-r660`, `--node-mount-path /mnt/local-storage/cbt-demo-local-pool`, `--chaos-duration 60` (Jira), `--io-workers 8`, `--io-write-bytes 2g`, `--io-block-size 1m`, `--trigger-command` (active-copy compound condition on the p01 vmbackup), `--triggers-interval 3`, `--triggers-timeout 1800`, `--triggers-on-timeout fail`, `--kubeconfig $KUBECONFIG_PATH`.
+**Action (variant 2, executed 2026-11-12):** direct run-owned privileged pod (NOT krknctl — see §9): nodeSelector `kubernetes.io/hostname=d38-h18-000-r660`, hostPath `/var/hpvolumes/csi` (type Directory) mounted at /hog-data, `stress-ng --hdd 64 --hdd-bytes 2g --hdd-write-size 1m --hdd-opts dsync --timeout 120s`, armed via `direct-trigger.sh` polling p01 Progressing=True ∧ Done≠True (3 s interval, fail-closed, live pod-spec assertion). krknctl node-io-hog is NOT usable for this fault: its buffered writes are page-cache absorbed (~16 MB/s device writes at 64×2g/120s, rc=0, "disk space allocated: 0.145 MB" — silent no-op; see bugs/krknctl-node-io-hog-buffered-writes-no-device-load.md). The EXP-09 `--node-mount-path`→`/tmp` bug does NOT reproduce with plugin digest edea0aeb… — targeting works; only the write mode is broken.
 
 **Condition:** p01 exists ∧ Progressing=True ∧ Done≠True (the exact F-09/I-02 compound condition, single-quoted JSONPath validated live in F-09).
 
@@ -54,4 +54,10 @@ Root cause (source-verified, not invented): the krkn hog image's io path (`run.s
 
 Variant 2 design (r03): keep the validated injection shape (same node, path, 3 s gated trigger on p01 active-copy) but replace the hog pod with a DIRECT pod running `stress-ng --hdd 8 --hdd-bytes 2g --hdd-write-size 1m --hdd-opts dsync` (F-10 direct-pod precedent; dsync = O_DSYNC per-write synchronous writes — forces the disk queue contention the Jira wants). Expect p01 duration > 21 s (the no-contention baseline ceiling). If it still completes in the baseline band with dsync writes landing during the copy, that is itself a meaningful resilience result (the pool disk absorbs both streams).
 
-Budget note: this is parameter variant 2 of 3 for CBT-I-04. r01 invalid (pool ENOSPC, no chaos), r02 PASS-correctness/no-effect, r03 = direct dsync hog.
+
+## 9. r03 result (variant 2 executed, 2026-11-12)
+
+Run `runs/12-11-2026-13-00-53-vm-20261112-cbti04-r01-i04-incremental-io-hog-iteration-1/` — **RESILIENT**. Control `20261112-cbti04-r01ctl`: same pins, incremental copy 15 s, 18.28 GB payload, PASS. Chaos leg: trigger satisfied 2 s after Progressing=True (13:04:40), hog pod Running 13:04:43 with live-spec assertion (node + hostPath + dsync args), telemetry shows sustained sdb writes across the copy window, p01 Done 13:04:57 (≈19 s vs control 15 s — mild slowdown, not a gate). Type=Incremental, distinct chained checkpoint, tracker advanced exactly once, payload byte-identical to control, full+cumulative restore verification PASS. Hog cleanup clean (namespace deleted, residue absent).
+
+Sizing note: this execution used the user-approved 64 workers × 2 g × 120 s dsync (the spec's original 8 × 2 g × 60 s remains the Jira's nominal ask; both are variant 2 in spirit — synchronous writes on the pool device).
+

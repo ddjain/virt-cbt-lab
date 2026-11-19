@@ -128,3 +128,47 @@ Only one current leader pod in `openshift-cnv` is eligible; controller failover 
 Do not run `make clean-all`, delete failed/original backup objects or PVCs, retry by reusing names, or mutate unrelated resources. Preserve original objects, events, controller/launcher logs, tracker/checkpoint state, and attachment evidence before any separately approved cleanup. Krkn's expected-recovery timeout is an observation guard, not proof of product recovery.
 
 Live triage was read-only: cluster access, controller replicas/Lease, runtime logs/status/events, and Krkn registry/help/dry-run were inspected; no E2E or chaos was run. The observed controller image reports the cluster's KubeVirt version context, but downstream patches and timing remain execution uncertainties. The trigger was not live-validated, and availability of `oc` in a Krkn trigger-command container was not established; the host-local observer fallback is intentional. The actual replacement leader, copy duration, terminal outcome, tracker update count, attachment cleanup, and same-VM follow-up result remain unproven until an approved run.
+
+## 7. Active trigger implementation (addendum, 2026-11-10)
+
+The materialized bundle is `run.sh` (orchestration) + `inject.sh` (fault action),
+following `cbt-chaos/template/chaos-trigger-pattern-v2.md`'s default two-file
+shape. This addendum supersedes §3's host-local-observer launch sequence only;
+the target, signal, sizing, void rule, and criteria above are unchanged.
+
+- **Pattern A (native krkn trigger), not a host observer launching krknctl.**
+  The `cbt-chaos-run` skill mandates that a krknctl disruption be gated by the
+  native krkn trigger with krkn armed early: krkn/container startup can consume
+  the mid-copy window. The concern that `oc` is unavailable inside the krkn
+  container is resolved: the krkn-hub image ships `oc`/`kubectl`/`jq`, and
+  `krknctl --kubeconfig` mounts the approved host-local kubeconfig into the
+  container (established by the CBT-F-05 bundle preparation on this registry).
+- `run.sh` resolves the current Lease holder, verifies it is a Running
+  `kubevirt.io=virt-controller` pod with a live standby, then arms `inject.sh`
+  (via `setsid`, own process group) BEFORE starting `make e2e TYPE=full`.
+  Arming readiness is confirmed by the `waiting for triggers` marker in the
+  krkn action log (fallback: live inject process + new podman container).
+- `inject.sh` runs the single `krknctl run pod-scenarios` command with
+  `--namespace openshift-cnv --name-pattern ^<holder>$ --disruption-count 1
+  --execution serial --kill-timeout 180 --expected-recovery-time 120` and the
+  native trigger: `--trigger-command <base64 condition> --trigger-expected-rc 0
+  --triggers-mode all_of --triggers-interval 1 --triggers-timeout 2700
+  --triggers-on-timeout fail`. The condition script (base64-embedded, saved
+  decoded next to the evidence) requires ALL of: exactly one Running launcher
+  for the run VM; its compute log shows `Backup started` and the exact backup
+  name; the backup is not yet `Done=True`; the armed holder is still the Lease
+  holder. Any miss keeps polling; timeout fails the scenario (never skip or
+  run_anyway). `--pod-label` is omitted deliberately (installed pod-scenarios
+  ignores `--name-pattern` when a pod label is supplied).
+- `run.sh` also runs an **evidence-only** copy-signal watcher (launcher log
+  line + backup condition transitions) and a post-terminal capture set
+  (backup/tracker/controller/VMI/hp-volume/PVC/events), then gates the same-VM
+  `TYPE=incremental` follow-up on the full backup's real terminal state
+  (`Done=True`, non-`Backup has failed` reason, non-empty checkpoint).
+- Bounds: arm-ready 600 s, full stage 4500 s, krkn join 900 s, follow-up
+  3000 s, native trigger timeout 2700 s, whole-run 10800 s. Exit status is
+  orchestration-only, never a product or injection verdict.
+- Interface: `CHAOS_RUN_ID=<id> LIFECYCLE_ID=<id> bash
+  cbt-chaos/scenarios_v2/CBT-F-04/run.sh --plan|--execute`; the Lead
+  pre-creates `runs/<CHAOS_RUN_ID>/run.json` and the observer subtree;
+  attempts are never reused.
