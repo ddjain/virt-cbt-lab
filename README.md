@@ -419,7 +419,8 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 ## Repository structure
 
 ```text
-├── artifacts/            # AI-generated reports, matrices, bug reports, analyses, plans, and archived closed-run evidence (gitignored; see scripts/archive-run.sh)
+├── artifacts/            # AI-generated reports, matrices, bug reports, analyses, plans, scale-run state/evidence, and archived closed-run evidence (gitignored; see scripts/archive-run.sh)
+├── cbt-scale/            # Tracked scale-and-chaos fleet tooling (see cbt-scale/README.md); state goes to artifacts/
 ├── .env.example          # Sanitized local configuration template
 ├── .gitignore            # Secret and generated-artifact exclusions
 ├── AGENTS.md             # Repository-specific contributor/agent guidance

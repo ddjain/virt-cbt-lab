@@ -242,6 +242,7 @@ test:
 	@bash tests/test-chaos-watch-resource.sh
 	@bash tests/test-chaos-run-id.sh
 	@bash tests/test-density-status.sh
+	@bash tests/test-cbt-scale-tools.sh
 	@bash tests/test-density-setup.sh
 	@bash tests/test-existing-vm-adoption.sh
 	@bash tests/test-stage-dispatch.sh
