@@ -1,0 +1,50 @@
+# HPP-ODF MIXED VARIANT (CBT-T-05) — opt-in via MANIFEST_VARIANT=hpp-odf.
+# Backup destination on ocs-storagecluster-ceph-rbd (VM root stays on HPP).
+# `__LARGE_DISK_SIZE__` resolves to FULL_BACKUP_DISK_SIZE (90Gi default for
+# rhel9 ODF-destination variants, CBT-O-01 CDI overhead; overridable via
+# FULL_BACKUP_DISK_SIZE_OVERRIDE for sizing sweeps). Structurally identical
+# to full-backup-large-odf.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __FULL_BACKUP_PVC__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  storageClassName: ocs-storagecluster-ceph-rbd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: __LARGE_DISK_SIZE__
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackupTracker
+metadata:
+  name: __TRACKER_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: __VM_NAME__
+---
+apiVersion: backup.kubevirt.io/v1alpha1
+kind: VirtualMachineBackup
+metadata:
+  name: __FULL_BACKUP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    __MANAGED_BY_KEY__: __MANAGED_BY_VALUE__
+    __RUN_ID_LABEL_KEY__: __RUN_ID__
+spec:
+  source:
+    apiGroup: backup.kubevirt.io
+    kind: VirtualMachineBackupTracker
+    name: __TRACKER_NAME__
+  pvcName: __FULL_BACKUP_PVC__

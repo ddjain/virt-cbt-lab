@@ -36,3 +36,4 @@ jobs:
           managedByValue: "{{ .MANAGED_BY_VALUE }}"
           runIdKey: "{{ .RUN_ID_KEY }}"
           poolKey: "{{ .POOL_KEY }}"
+          startIndex: "{{ .START_INDEX }}"

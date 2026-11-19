@@ -5,7 +5,7 @@
 # manifests/density/config.yaml, so no Namespace document here.
 # $rid is re-declared per document; Go-template variables do not cross
 # document boundaries.
-{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+{{ $rid := printf "%s-%04d" .poolId (add (atoi .startIndex) (add1 .Iteration)) }}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
@@ -98,7 +98,7 @@ spec:
                   ssh_authorized_keys:
                     - {{ .sshPublicKey }}
 ---
-{{ $rid := printf "%s-%04d" .poolId (add1 .Iteration) }}
+{{ $rid := printf "%s-%04d" .poolId (add (atoi .startIndex) (add1 .Iteration)) }}
 apiVersion: v1
 kind: Service
 metadata:
