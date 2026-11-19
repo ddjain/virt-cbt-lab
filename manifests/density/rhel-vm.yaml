@@ -1,7 +1,9 @@
-# DENSITY RHEL 9 VM template for kube-burner (`make density-setup`).
-# Keep structurally in sync with manifests/vm-large-odf.yaml (RHEL 9 sizing,
-# cloud-init hard-coded for the rhel9 profile: package_update false, no
-# packages, wheel group, sshd service). Namespace comes from
+# DENSITY RHEL 9 VM template for kube-burner (`make density-setup`), used for
+# VM_OS=rhel9 and rhel9-light (os-profile, DataSource name/namespace, and
+# disk size come from the density-setup user-data). Keep structurally in
+# sync with manifests/vm-large-odf.yaml (cloud-init hard-coded for the RHEL
+# profiles: package_update false, no packages, wheel group, sshd service).
+# Namespace comes from
 # manifests/density/config.yaml, so no Namespace document here.
 # $rid is re-declared per document; Go-template variables do not cross
 # document boundaries.
@@ -17,7 +19,7 @@ metadata:
     {{ .runIdKey }}: {{ $rid }}
     {{ .poolKey }}: {{ .poolId }}
   annotations:
-    virt-cbt-lab/os-profile: rhel9
+    virt-cbt-lab/os-profile: {{ .osProfile | default "rhel9" }}
     virt-cbt-lab/manifest-variant: "{{ .manifestVariant }}"
     virt-cbt-lab/incremental-passes: "{{ .incrementalPasses }}"
 spec:
@@ -33,7 +35,7 @@ spec:
         sourceRef:
           kind: DataSource
           name: {{ .dataSourceName | default "rhel9" }}
-          namespace: openshift-virtualization-os-images
+          namespace: {{ .dataSourceNamespace | default "openshift-virtualization-os-images" }}
         storage:
           accessModes:
             - ReadWriteOnce

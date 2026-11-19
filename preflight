@@ -91,9 +91,9 @@ EXISTING_VM="${EXISTING_VM:-}"
 DEBUG="${DEBUG:-false}"
 
 case "$VM_OS" in
-  debian | rhel9 | windows) ;;
+  debian | rhel9 | rhel9-light | windows) ;;
   *)
-    printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
+    printf 'VM_OS must be "debian", "rhel9", "rhel9-light", or "windows" (got: %s)\n' "$VM_OS" >&2
     exit 2
     ;;
 esac
@@ -110,7 +110,7 @@ check_repository() {
   if [[ "$VM_OS" == windows ]]; then
     files+=(scripts/windows-vm-setup.sh scripts/windows-golden-image-setup.sh scripts/windows-guest-agent.sh scripts/windows-golden-workloads.ps1 scripts/windows-workload-verify.ps1 scripts/windows-autounattend.xml.tmpl scripts/windows-oobe.xml.tmpl manifests/windows-installer.yaml manifests/windows-vm.yaml manifests/windows-vm-hpp.yaml manifests/windows-image.yaml manifests/windows-golden-datasource.yaml manifests/windows-full-backup.yaml manifests/windows-full-backup-hpp.yaml manifests/windows-incremental-backup.yaml manifests/windows-incremental-backup-hpp.yaml manifests/windows-restore-verify-pod.yaml)
   fi
-  if [[ "$VM_OS" == rhel9 ]]; then
+  if [[ "$VM_OS" == rhel9 || "$VM_OS" == rhel9-light ]]; then
     files+=(manifests/vm-large.yaml manifests/vm-large-odf.yaml manifests/full-backup-large.yaml manifests/full-backup-large-odf.yaml manifests/incremental-backup-large.yaml manifests/incremental-backup-large-odf.yaml)
   fi
   for file in "${files[@]}"; do
@@ -302,19 +302,26 @@ check_cluster_capabilities() {
       result FAIL "storage class $demo_storage_class is unavailable"
     fi
   fi
-  if [[ "$VM_OS" == rhel9 ]]; then
-    local rhel9_source_pvc rhel9_source_phase
-    if rhel9_source_pvc="$(oc get datasource rhel9 -n openshift-virtualization-os-images -o 'jsonpath={.spec.source.pvc.name}' 2>"$TMP_DIR/oc-error")" &&
+  if [[ "$VM_OS" == rhel9 || "$VM_OS" == rhel9-light ]]; then
+    local rhel9_source_pvc rhel9_source_phase rhel9_ds_name rhel9_ds_ns
+    if [[ "$VM_OS" == rhel9-light ]]; then
+      rhel9_ds_name="${RHEL_LIGHT_DATA_SOURCE_NAME:-rhel9-light}"
+      rhel9_ds_ns="${RHEL_LIGHT_DATA_SOURCE_NAMESPACE:-vm-cbt-images}"
+    else
+      rhel9_ds_name=rhel9
+      rhel9_ds_ns=openshift-virtualization-os-images
+    fi
+    if rhel9_source_pvc="$(oc get datasource "$rhel9_ds_name" -n "$rhel9_ds_ns" -o 'jsonpath={.spec.source.pvc.name}' 2>"$TMP_DIR/oc-error")" &&
        [[ -n "$rhel9_source_pvc" ]]; then
-      result PASS "RHEL 9 DataSource rhel9 is available"
-      rhel9_source_phase="$(oc get pvc "$rhel9_source_pvc" -n openshift-virtualization-os-images -o 'jsonpath={.status.phase}' 2>"$TMP_DIR/oc-error" || true)"
+      result PASS "RHEL 9 DataSource $rhel9_ds_name is available"
+      rhel9_source_phase="$(oc get pvc "$rhel9_source_pvc" -n "$rhel9_ds_ns" -o 'jsonpath={.status.phase}' 2>"$TMP_DIR/oc-error" || true)"
       if [[ "$rhel9_source_phase" == Bound ]]; then
         result PASS "RHEL 9 DataSource source PVC is Bound"
       else
         result FAIL "RHEL 9 DataSource source PVC is not Bound (phase: ${rhel9_source_phase:-unknown})"
       fi
     else
-      result FAIL "RHEL 9 DataSource rhel9 is unavailable in openshift-virtualization-os-images"
+      result FAIL "RHEL 9 DataSource $rhel9_ds_name is unavailable in $rhel9_ds_ns$([[ "$VM_OS" == rhel9-light ]] && printf ' (run make rhel-light-golden)')"
     fi
   fi
 

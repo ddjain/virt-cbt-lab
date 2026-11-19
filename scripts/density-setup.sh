@@ -48,6 +48,7 @@ if [[ -z "$POOL" ]]; then
   # OS-prefixed timestamp: names read vm-<os>-<ts>-NNNN, unique across runs.
   case "$VM_OS" in
     rhel9) POOL="rhel-$(date -u +%m%d%H%M%S)" ;;
+    rhel9-light) POOL="rhl-$(date -u +%m%d%H%M%S)" ;;
     windows) POOL="win-$(date -u +%m%d%H%M%S)" ;;
     *) POOL="d$(date -u +%m%d%H%M%S)" ;;
   esac

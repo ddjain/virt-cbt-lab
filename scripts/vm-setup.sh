@@ -8,6 +8,7 @@ WORKFLOW_NAME="vm-setup"
 require_command ssh
 require_command ssh-keygen
 create_vm_resources() {
+  check_rhel_light_workload_fits || exit 1
   new_run_id
 
   workflow_step "1/5 Prepare the $VM_OS image source"
@@ -20,23 +21,24 @@ create_vm_resources() {
       workflow_status "Debian golden image is ready (downloaded once, reused on subsequent runs)"
       workflow_success "Debian image source is ready"
       ;;
-    rhel9)
+    rhel9|rhel9-light)
       workflow_action "Read DataSource $VM_DATA_SOURCE_NAME in namespace $VM_DATA_SOURCE_NAMESPACE"
       if ! source_pvc_name="$(oc_cmd get datasource "$VM_DATA_SOURCE_NAME" -n "$VM_DATA_SOURCE_NAMESPACE" -o 'jsonpath={.spec.source.pvc.name}')"; then
-        printf 'Unable to read RHEL 9 DataSource %s in namespace %s.\n' "$VM_DATA_SOURCE_NAME" "$VM_DATA_SOURCE_NAMESPACE" >&2
+        printf 'Unable to read %s DataSource %s in namespace %s.\n' "$VM_OS" "$VM_DATA_SOURCE_NAME" "$VM_DATA_SOURCE_NAMESPACE" >&2
+        if [[ "$VM_OS" == rhel9-light ]]; then printf 'Run `make rhel-light-golden` first to build it.\n' >&2; fi
         exit 1
       fi
       if [[ -z "$source_pvc_name" ]]; then
-        printf 'RHEL 9 DataSource %s does not reference a source PVC.\n' "$VM_DATA_SOURCE_NAME" "$VM_DATA_SOURCE_NAMESPACE" >&2
+        printf '%s DataSource %s does not reference a source PVC.\n' "$VM_OS" "$VM_DATA_SOURCE_NAME" >&2
         exit 1
       fi
       workflow_action "oc wait pvc/$source_pvc_name -n $VM_DATA_SOURCE_NAMESPACE --for=jsonpath={.status.phase}=Bound --timeout=20m"
       oc_cmd wait "pvc/$source_pvc_name" -n "$VM_DATA_SOURCE_NAMESPACE" --for=jsonpath='{.status.phase}'=Bound --timeout=20m >/dev/null
-      workflow_status "RHEL 9 DataSource $VM_DATA_SOURCE_NAME is ready"
-      workflow_success "RHEL 9 DataSource is ready"
+      workflow_status "$VM_OS DataSource $VM_DATA_SOURCE_NAME is ready"
+      workflow_success "$VM_OS DataSource is ready"
       ;;
     *)
-      printf 'scripts/vm-setup.sh requires VM_OS=debian or rhel9 (got %s).\n' "$VM_OS" >&2
+      printf 'scripts/vm-setup.sh requires VM_OS=debian, rhel9, or rhel9-light (got %s).\n' "$VM_OS" >&2
       exit 2
       ;;
   esac
