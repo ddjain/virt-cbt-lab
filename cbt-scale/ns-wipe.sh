@@ -27,12 +27,16 @@ oc="oc -n $NS"
 for r in vmbackup vmbackuptracker vm pvc svc; do
   log "pre-$r: $($oc get $r --no-headers 2>/dev/null | wc -l | tr -d \" \")"
 done
+log "pre-secret (labeled): $($oc get secret -l app.kubernetes.io/managed-by=virt-cbt-lab --no-headers 2>/dev/null | wc -l | tr -d \" \")"
 
 # 2. delete (wait=false; we poll drain ourselves)
 $oc delete vmbackup --all --wait=false 2>/dev/null || true
 $oc delete vmbackuptracker --all --wait=false 2>/dev/null || true
 $oc delete pvc --all --wait=false 2>/dev/null || true
 $oc delete vm --all --wait=false 2>/dev/null || true
+# Workflow-created secrets only (Windows OOBE etc.), selected by the managed-by
+# label so default namespace secrets (service accounts, tokens) are never touched.
+$oc delete secret -l app.kubernetes.io/managed-by=virt-cbt-lab --wait=false 2>/dev/null || true
 $oc delete svc --all --wait=false 2>/dev/null || true
 
 # 3. wait for drain, force-unstick finalizers after grace
