@@ -188,7 +188,7 @@ set_manifest_variant_settings() {
   if [ -n "${FULL_BACKUP_DISK_SIZE_OVERRIDE:-}" ]; then
     FULL_BACKUP_DISK_SIZE="$FULL_BACKUP_DISK_SIZE_OVERRIDE"
   fi
-  fi
+
 }
 set_manifest_variant_settings
 

@@ -26,7 +26,7 @@ A documented threshold point (or proof of absorption across the full range)
 ## Priority
 P2 (campaign-authored)
 ## Technical Scenario
-node-cpu-hog (direct pod — krknctl hog unusable in-cluster, bugs #1/#10)
+node-cpu-hog via krknctl (validated 2026-11-14, CBT-T-01 Phase 1: works in the default namespace; a fresh privileged ns gets an SCC that injects readOnlyRootFilesystem and crashes the hog — krknctl-bugs #1 variant). Direct weighted pod reserved for the escalation phase (Phase 4), where requests.cpu is needed to out-compete the launcher.
 ## Chaos Phase
 Active operation
 
