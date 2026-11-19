@@ -78,6 +78,10 @@ tmp-*/
 !.agents/skills/cbt-chaos-trigger-preparer-v2/**
 !.agents/skills/cbt-chaos-analyst-v2/
 !.agents/skills/cbt-chaos-analyst-v2/**
+!.agents/skills/cbt-scale-chaos/
+!.agents/skills/cbt-scale-chaos/**
+!.agents/skills/cbt-chaos-simple/
+!.agents/skills/cbt-chaos-simple/**
 .claude/
 .pi/
 skills-lock.json
