@@ -34,6 +34,9 @@ ccv2_oc() {
   # ccv2_oc <deadline> -- <oc args...>
   local deadline="$1" remaining limit=15
   shift
+  # Honor the documented "--" separator (GNU timeout cannot: it would treat it
+  # as the command name). Strip exactly one leading "--" when present.
+  if [[ "${1:-}" == "--" ]]; then shift; fi
   remaining="$(ccv2_budget_remaining "$deadline")"
   ((limit <= remaining)) || limit="$remaining"
   timeout -k 2 "$limit" oc --request-timeout=10s "$@"
@@ -45,6 +48,9 @@ ccv2_record() {
   # its exit status to <name>.status.json. Never masks the real exit status.
   local work="$1" deadline="$2" name="$3" limit="$4" rc remaining child_pid
   shift 4
+  # Strip the documented "--" separator before the command; GNU timeout would
+  # otherwise try to execute "--" itself (rc 127).
+  if [[ "${1:-}" == "--" ]]; then shift; fi
   remaining="$(ccv2_budget_remaining "$deadline")"
   ((limit <= remaining)) || limit="$remaining"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$work/$name.started.utc"
@@ -60,6 +66,8 @@ ccv2_capture() {
   # Like ccv2_record but writes stdout atomically to <dest-file> instead of a log.
   local work="$1" deadline="$2" name="$3" limit="$4" dest="$5" rc remaining
   shift 5
+  # Strip the documented "--" separator before the command (same as ccv2_record).
+  if [[ "${1:-}" == "--" ]]; then shift; fi
   remaining="$(ccv2_budget_remaining "$deadline")"
   ((limit <= remaining)) || limit="$remaining"
   date -u +%Y-%m-%dT%H:%M:%SZ > "$work/$name.started.utc"

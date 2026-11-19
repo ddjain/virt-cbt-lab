@@ -17,7 +17,7 @@
 
 ## 3. Design
 
-krknctl node-memory-hog natively supports `--chaos-duration 90 --memory-consumption <pct> --node-selector kubernetes.io/hostname=d38-h18-000-r660 --namespace <ns>` and the triggers group (`--trigger-command`) for gating on active copy. Sizing: node has ~500GiB allocatable with ~61GiB (11%) used — the VM compute container has no memory limit? (verify at trigger time via launcher pod spec) — bounded pressure of 40% (~200GiB) leaves ample headroom and cannot OOM the VM whose RSS is bounded by its configured guest memory (verify from VMI spec). stress-ng vm workers allocate and hold; 90s duration.
+krknctl node-memory-hog supports `--chaos-duration 90 --memory-consumption <pct> --node-selector kubernetes.io/hostname=<node> --namespace <ns>` plus the triggers group for gating on active copy. **Verified 2026-11-14 (r01): the plugin is deterministically broken on this cluster** — its hog image wrapper (`/stress-ng/run.sh`) writes `hog-jobfile.conf` to a read-only cwd and aborts (`temp-path '.' must be readable and writeable`). Executed run r02 used the user-approved fallback: the same hog image run as a direct privileged pod with an emptyDir working dir (see `runs/20261114-cbtx01-r02/run-report.md`). Sizing: ODF workers have ~512GiB allocatable at 1–6% used; the launcher node is resolved at trigger time (r02: d39-h06-000-r660, worker). VM guest memory is 4Gi (manifest vm-large-odf.yaml); stress-ng `vm 1 / vm-bytes 95% / vm-keep / timeout 90` held ~95% of container-visible node memory (node usage peaked 89% of allocatable), leaving ~25GiB headroom — accepted by the user over the original 40%.
 
 Gate: command trigger on the full backup Progressing-by-type (I-08-proven jsonpath), so the hog runs during the copy.
 
@@ -30,15 +30,15 @@ krknctl exit status + hog pod logs captured. Memory telemetry: `oc adm top node`
 
 ## 4. Target and validated disruption
 
-**Target:** CBT worker node memory (d38-h18-000-r660).
-**Action:** stress-ng vm workers holding ~40% of node memory for 90s.
-**Window:** full backup Progressing (copy active).
-**Blast radius:** node-local; VM RSS is bounded by guest memory config (~16GiB); node has 500GiB; 40% hold leaves >250GiB free. Other pods on the node: the VM launcher + plugin pods (tens of GiB total).
+**Target:** CBT worker node memory (launcher node resolved at vm-setup; r02: d39-h06-000-r660, worker).
+**Action:** stress-ng vm worker holding ~95% of node memory for 90s (user-approved over the original 40%; ~25GiB headroom remained).
+**Window:** active backup copy (PVC Bound + launcher + Done≠True + "Backup started" in launcher logs).
+**Blast radius:** node-local; VM RSS bounded by guest memory config (4Gi); other pods on the node: the VM launcher + plugin pods (tens of GiB total). Node MemoryPressure stayed False throughout the executed run.
 
 ## 5. Verification criteria
 
 - Hog ran during copy (trigger satisfied → hog pod Running while backup Progressing).
-- Backup Done=True success, type Full, duration recorded (vs 52-58s baseline).
+- Backup Done=True success, type Full, duration recorded (vs control-run copy duration; rhel9/large-odf full copy ≈ 64–67s).
 - Launcher restartCount unchanged, VMI Running, no OOMKill events.
 - Tracker advances exactly once to the full checkpoint.
 - Incremental follow-up pass clean; workflow final verification PASS (bit-exact hashes).
@@ -46,9 +46,9 @@ krknctl exit status + hog pod logs captured. Memory telemetry: `oc adm top node`
 
 ## 6. Pre-run guards
 
-- Node memory ≥80% free at start (verified: 11% used).
-- VM guest memory from VMI spec recorded (expect ~16GiB).
-- HostPath pool ≥300GiB free.
+- Node memory ≥80% free at start (r02: 6% used).
+- VM guest memory from VMI spec recorded (r02: 4Gi).
+- Full redo on the same RUN_ID requires deleting the vmbackup + PVC **and the tracker**, else the redo types as Incremental.
 - RUN_ID collision guards.
 
 ## 7. Uncertainties

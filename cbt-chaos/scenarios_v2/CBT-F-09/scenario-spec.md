@@ -84,6 +84,25 @@ installed), so the direct privileged pod is the supported expression of the
 same fault. Read-only `oc` queries used for the condition and evidence are not
 a fault-action fallback.
 
+> **Update (2026-11-11, iteration-4): the flag path is fixed upstream and
+> validated.** krkn-hub PR #421 (commit `1cc5d9e`, merged 2026-11-11) aligned
+> the io-hog template keys with `HogConfig`, so `--node-mount-path` and
+> `--io-workers` are honored. The post-fix scenario image
+> (`sha256:a826ad40…`, pushed 2026-11-11T10:57Z; template verified to contain
+> `io-target-pod-volume`/`io-target-pod-folder`/`workers`) was validated end
+> to end by run `runs/11-11-2026-11-10-43-vm-20261111-cbtf09-r03-f09-iteration-4/`:
+> the live hog pod mounted `/var/hpvolumes/csi` on `d38-h18-000-r660`, ran
+> 8 × 2 GiB × 1 MiB for the full 90 s inside the active-copy window via the
+> native `--trigger-command` (fail-closed), and the backup remained correct
+> (RESILIENT re-confirmed). krknctl `node-io-hog` is therefore a supported
+> delivery mechanism for this scenario again — the direct privileged pod is
+> retained as the harness-owned alternative and cross-check. Two operational
+> notes for the krknctl path: always pass `--node-mount-path` explicitly
+> (its default is the node's `/root`), and expect two residue files
+> (`hog-jobfile.conf`, `output.yaml`) at the node mount path — capture as
+> evidence and remove them on shared pools. See the iteration-4 run report
+> for the full tooling-validation table.
+
 ## 5. Deterministic injection signal
 
 Command trigger on `vm-backup-${RUN_ID}`: `Progressing=True` AND `Done≠True`,
