@@ -5,6 +5,7 @@ UTC_TIMESTAMP = $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 export DEBUG KUBECONFIG_PATH GUEST_KEY REMOTE_HOST REMOTE_DIR RESTORE_HELPER_IMAGE GUEST_BASE_FILE_COUNT GUEST_INCREMENTAL_FILE_COUNT GUEST_INCREMENTAL_PASSES EXTEND_TO_PASS GUEST_FILE_SIZE_MIN_MIB GUEST_FILE_SIZE_MAX_MIB GUEST_INVENTORY_VERIFY GUEST_INVENTORY_SAMPLE_STRIDE MANIFEST_VARIANT NAMESPACE WINDOWS_ISO_PATH WINDOWS_ADMIN_PASSWORD_FILE VM_OS TYPE VM NAME RUN_ID GUEST_EXEC_POLL_INTERVAL GUEST_EXEC_POLL_ATTEMPTS EXISTING_VM POOL DENSITY_VM_COUNT DENSITY_INCREMENTAL_PASSES DENSITY_QPS DENSITY_WAIT_MINUTES STAGE_DRY_RUN STAGE_SKIP_PREFLIGHT
 export SCENARIO
+export RHEL_LIGHT_DATA_SOURCE_NAME RHEL_LIGHT_DATA_SOURCE_NAMESPACE RHEL_LIGHT_ROOT_SIZE RHEL_LIGHT_FULL_BACKUP_SIZE RHEL_LIGHT_INCREMENTAL_PVC_SIZE RHEL_LIGHT_GOLDEN_SIZE RHEL_LIGHT_GOLDEN_STORAGE_CLASS RHEL_LIGHT_IMAGE_URL
 
 ifeq ($(strip $(VM_OS)),)
 VM_OS := rhel9
@@ -16,8 +17,8 @@ endif
 # scripts/stage.sh picks the setup script from VM_OS (windows ->
 # scripts/windows-vm-setup.sh, otherwise scripts/vm-setup.sh); the Makefile
 # only rejects unsupported profiles early.
-ifeq ($(filter $(VM_OS),debian rhel9 windows),)
-$(error VM_OS must be either debian, rhel9, or windows, got '$(VM_OS)')
+ifeq ($(filter $(VM_OS),debian rhel9 rhel9-light windows),)
+$(error VM_OS must be debian, rhel9, rhel9-light, or windows, got '$(VM_OS)')
 endif
 ifeq ($(strip $(GUEST_INCREMENTAL_PASSES)),)
 GUEST_INCREMENTAL_PASSES := 1
@@ -135,6 +136,10 @@ windows-vm-setup:
 windows-e2e:
 	@$(MAKE) --no-print-directory e2e VM_OS=windows
 
+rhel-light-golden:
+	@printf '[%s] [make] [1/1] RHEL light golden: import the RHEL 9 guest image into a 10Gi DataVolume and publish the %s DataSource (idempotent).\n' "$(UTC_TIMESTAMP)" "$${RHEL_LIGHT_DATA_SOURCE_NAME:-rhel9-light}"
+	@./scripts/rhel-light-golden.sh
+
 density-setup:
 	@$(MAKE) --no-print-directory preflight VM_OS=$(VM_OS)
 	@./scripts/density-setup.sh
@@ -191,7 +196,9 @@ help:
 	  '         the resolved run identity and the exact command without contacting the cluster.' \
 	  '' \
 	  'PROFILES' \
-	  '  VM_OS: rhel9 (default), debian, windows.' \
+	  '  VM_OS: rhel9 (default), rhel9-light (right-sized RHEL 9: 10Gi root), debian, windows.' \
+	  '  make rhel-light-golden            Build the rhel9-light golden DataSource once, then:' \
+	  '  make e2e VM_OS=rhel9-light        Right-sized RHEL 9 lifecycle (sizes: RHEL_LIGHT_* in .env.example).' \
 	  '  make e2e VM_OS=debian           Use the Debian override.' \
 	  '  MANIFEST_VARIANT: large-odf (default for every VM_OS), odf, large, default.' \
 	  '  make e2e MANIFEST_VARIANT=large  Opt into the hostpath (cbt-demo-hpp) backend.' \
@@ -202,6 +209,7 @@ help:
 	  '' \
 	  'DENSITY' \
 	  '  make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10   Create a density VM pool with kube-burner.' \
+	  '  make density-setup VM_OS=rhel9-light DENSITY_VM_COUNT=10   Same with right-sized RHEL 9 VMs.' \
 	  '  make density-status [POOL=<pool>]  Fleet view of all density VMs; POOL= restricts to one pool.' \
 	  '' \
 	  'OPERATIONS' \
@@ -220,6 +228,7 @@ help:
 
 test:
 	@bash tests/test-default-profile.sh
+	@bash tests/test-rhel-light-profile.sh
 	@bash tests/test-incremental-passes.sh
 	@bash tests/test-vm-cbt-extend.sh
 	@bash tests/test-restore-timeout.sh

@@ -31,6 +31,8 @@ jobs:
           storageClass: "{{ .STORAGE_CLASS }}"
           manifestVariant: "{{ .MANIFEST_VARIANT }}"
           dataSourceName: "{{ .DATA_SOURCE_NAME }}"
+          dataSourceNamespace: "{{ .DATA_SOURCE_NAMESPACE }}"
+          osProfile: "{{ .OS_PROFILE }}"
           incrementalPasses: "{{ .INCREMENTAL_PASSES }}"
           managedByKey: "{{ .MANAGED_BY_KEY }}"
           managedByValue: "{{ .MANAGED_BY_VALUE }}"

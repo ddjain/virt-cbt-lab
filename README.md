@@ -147,7 +147,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `TYPE` | No | `all` | E2E mode: `all`, `full`, `incremental`, `recover`, `verify`, or `extend`. |
 | `VM` | For staged `incremental`/`recover`/`verify`/`extend` | Unset | Managed VM name `vm-<run-id>`; optionally set on `full` for a predictable name. |
 | `NAME` | No | Unset | Optional fixed run ID for `TYPE=all` or `TYPE=full`; when neither `NAME` nor `VM` supplies it, a new UTC timestamp-prefixed run ID is generated. |
-| `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `debian`, or `windows`. |
+| `VM_OS` | No | `rhel9` | Guest profile for `make e2e`: `rhel9` (cluster-provided RHEL 9 DataSource), `rhel9-light` (right-sized RHEL 9, see below), `debian`, or `windows`. |
 | `RESTORE_HELPER_IMAGE` | For `vm-cbt-restore-test` and successful `TYPE=recover` | Unset | Image providing `qemu-img`, `qemu-nbd`, `kmod`, `util-linux`, and `ntfs-3g`, built from `images/restore-helper/Dockerfile` and pushed to a registry you control. |
 | `DEBUG` | No | `false` | Normal output shows effective non-secret pipeline settings, target VM/resource names, concise phase/step results, warnings/failures, and the final PASS/FAIL/INCOMPLETE box. `DEBUG=true` adds timestamped command, status, progress, and backup-condition/VMI diagnostics. |
 | `GUEST_BASE_FILE_COUNT` | No | `8` | Number of deterministic files created before the full backup. |
@@ -173,6 +173,18 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 ### Default RHEL 9 large-ODF profile
 
 With no profile overrides, `make e2e` uses VM_OS=rhel9 and MANIFEST_VARIANT=large-odf. It clones the cluster-provided RHEL 9 DataSource using the ODF large manifests (80Gi root/full requests and 30Gi per incremental PVC). Check the available ODF capacity before multi-pass runs.
+
+### Right-sized RHEL 9 (`VM_OS=rhel9-light`)
+
+Same RHEL 9 guest as `rhel9`, with a 10Gi root, a 12Gi full-backup PVC, and a 2Gi incremental PVC (about 25Gi allocated per VM versus 80/90/30Gi for `rhel9`). The RHEL 9 guest image is a 10GiB virtual disk, so 10Gi is the smallest root CDI accepts (8Gi is rejected at import), and the full backup writes the whole virtual disk. The stock `rhel9` golden cannot be cloned to a 10Gi root, so the profile uses its own DataSource built once from the same registry image:
+
+```sh
+make rhel-light-golden                 # idempotent; publishes DataSource rhel9-light in vm-cbt-images
+make e2e VM_OS=rhel9-light             # full lifecycle with the right-sized PVCs
+make density-setup VM_OS=rhel9-light DENSITY_VM_COUNT=10
+```
+
+Sizes and the golden build are tunable with the `RHEL_LIGHT_*` variables in `.env.example`; the profile ignores `INCREMENTAL_PVC_SIZE` and uses `RHEL_LIGHT_INCREMENTAL_PVC_SIZE` instead. About 7GiB of the root is usable by the guest, so keep `GUEST_*_FILE_COUNT` and the file-size range small enough for every planned pass; the golden's storage class follows `MANIFEST_VARIANT` (RBD for the ODF variants), so switching backend needs a different `RHEL_LIGHT_DATA_SOURCE_NAME` or a rebuilt golden.
 
 ### Small Debian ODF variant
 
@@ -201,7 +213,7 @@ For a Debian chaos-test starting point, run `make e2e MANIFEST_VARIANT=large GUE
 Create a pool of bare, backup-eligible VMs in bulk, then drive individual VMs through the normal E2E pipeline without re-creating them:
 
 ```sh
-make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10
+make density-setup VM_OS=rhel9 DENSITY_VM_COUNT=10   # or VM_OS=rhel9-light after make rhel-light-golden
 make e2e EXISTING_VM=vm-<pool>-0001
 make density-status                # fleet view: all pools + un-pooled VMs
 make density-status POOL=<pool>    # one pool's funnel

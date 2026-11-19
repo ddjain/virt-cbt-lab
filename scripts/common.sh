@@ -103,9 +103,22 @@ set_vm_os_profile() {
       GUEST_CLOUD_INIT_PACKAGE_UPDATE=false
       GUEST_CLOUD_INIT_PACKAGES='[]'
       ;;
+    rhel9-light)
+      # Right-sized RHEL 9: same guest as rhel9 (cloud-init, wheel, sshd,
+      # qemu-guest-agent) on its own small golden DataSource built by
+      # `make rhel-light-golden`. The stock rhel9 golden cannot be cloned to
+      # a 10Gi root (clones must be >= the source PVC). Env vars are
+      # RHEL_LIGHT_*-prefixed so a rhel9 VM_DATA_SOURCE_NAME is never inherited.
+      VM_DATA_SOURCE_NAME="${RHEL_LIGHT_DATA_SOURCE_NAME:-rhel9-light}"
+      VM_DATA_SOURCE_NAMESPACE="${RHEL_LIGHT_DATA_SOURCE_NAMESPACE:-vm-cbt-images}"
+      GUEST_LINUX_GROUP=wheel
+      GUEST_SSHD_SERVICE=sshd
+      GUEST_CLOUD_INIT_PACKAGE_UPDATE=false
+      GUEST_CLOUD_INIT_PACKAGES='[]'
+      ;;
     windows) ;;
     *)
-      printf 'VM_OS must be "debian", "rhel9", or "windows" (got: %s)\n' "$VM_OS" >&2
+      printf 'VM_OS must be "debian", "rhel9", "rhel9-light", or "windows" (got: %s)\n' "$VM_OS" >&2
       exit 1
       ;;
   esac
@@ -139,6 +152,10 @@ set_manifest_variant_settings() {
   esac
   case "$VM_OS:$MANIFEST_VARIANT" in
     rhel9:*) LARGE_MANIFEST_DISK_SIZE=80Gi ;;
+    # Measured on cloud05 (probe sz10/sz10b11): the RHEL 9 guest image is a
+    # 10GiB virtual disk, so 10Gi is the smallest root CDI accepts (8Gi is
+    # rejected at import).
+    rhel9-light:*) LARGE_MANIFEST_DISK_SIZE="${RHEL_LIGHT_ROOT_SIZE:-10Gi}" ;;
     *:odf|*:large-odf) LARGE_MANIFEST_DISK_SIZE=48Gi ;;
     *) LARGE_MANIFEST_DISK_SIZE=40Gi ;;
   esac
@@ -152,16 +169,51 @@ set_manifest_variant_settings() {
   # cbt-demo-hpp (needs the HPP backup sizing = root size).
   case "$VM_OS:$MANIFEST_VARIANT" in
     rhel9:odf | rhel9:large-odf | rhel9:hpp-odf) FULL_BACKUP_DISK_SIZE=90Gi ;;
+    # The full backup writes the whole virtual disk (10GiB raw for the light
+    # profile) plus filesystem overhead: 11Gi passed on cloud05; a 10Gi run
+    # did not reach the copy (attach timeout), so 12Gi keeps a margin.
+    rhel9-light:*) FULL_BACKUP_DISK_SIZE="${RHEL_LIGHT_FULL_BACKUP_SIZE:-12Gi}" ;;
     *) FULL_BACKUP_DISK_SIZE="$LARGE_MANIFEST_DISK_SIZE" ;;
   esac
+  # Incremental PVCs must hold the data written between checkpoints; the
+  # light profile ignores the 30Gi INCREMENTAL_PVC_SIZE default (measured:
+  # a 256MiB change used 296MiB). Raise RHEL_LIGHT_INCREMENTAL_PVC_SIZE for
+  # heavier per-pass workloads.
+  if [[ "$VM_OS" == rhel9-light ]]; then
+    INCREMENTAL_PVC_SIZE="${RHEL_LIGHT_INCREMENTAL_PVC_SIZE:-2Gi}"
+  fi
   # Optional override for backup-destination sizing sweeps (CBT-T-05 A0):
   # set FULL_BACKUP_DISK_SIZE in the environment / make command line to
   # override the variant default. Must be a valid size (NNNgGi).
   if [ -n "${FULL_BACKUP_DISK_SIZE_OVERRIDE:-}" ]; then
     FULL_BACKUP_DISK_SIZE="$FULL_BACKUP_DISK_SIZE_OVERRIDE"
   fi
+  fi
 }
 set_manifest_variant_settings
+
+# rhel9-light has a ~10Gi root, so a workload sized for the 80Gi profile
+# (e.g. 1000 x 15-20MiB files) fills it mid-setup. Fail before any VM exists
+# when the planned payload (upper bound: every file at the maximum size,
+# base plus all incremental passes) exceeds 65% of the root disk.
+check_rhel_light_workload_fits() {
+  [[ "$VM_OS" == rhel9-light ]] || return 0
+  local root_gib files budget_mib planned_mib
+  if ! [[ "$LARGE_MANIFEST_DISK_SIZE" =~ ^([1-9][0-9]*)Gi$ ]]; then
+    printf 'RHEL_LIGHT_ROOT_SIZE must look like 10Gi (got: %s)\n' "$LARGE_MANIFEST_DISK_SIZE" >&2
+    return 1
+  fi
+  root_gib="${BASH_REMATCH[1]}"
+  files=$((GUEST_BASE_FILE_COUNT + GUEST_INCREMENTAL_FILE_COUNT * GUEST_INCREMENTAL_PASSES))
+  planned_mib=$((files * GUEST_FILE_SIZE_MAX_MIB))
+  budget_mib=$((root_gib * 1024 * 65 / 100))
+  if ((planned_mib > budget_mib)); then
+    printf 'VM_OS=rhel9-light root is %s: the planned workload (%d files x up to %d MiB = up to %d MiB) exceeds the %d MiB budget (65%% of the root).\n' \
+      "$LARGE_MANIFEST_DISK_SIZE" "$files" "$GUEST_FILE_SIZE_MAX_MIB" "$planned_mib" "$budget_mib" >&2
+    printf 'Lower GUEST_BASE_FILE_COUNT, GUEST_INCREMENTAL_FILE_COUNT, GUEST_INCREMENTAL_PASSES or GUEST_FILE_SIZE_MAX_MIB, or raise RHEL_LIGHT_ROOT_SIZE.\n' >&2
+    return 1
+  fi
+}
 
 validate_positive_integer() {
   local variable_name="$1" value="$2"
@@ -213,7 +265,7 @@ manifest_path() {
       odf | large-odf) printf '%s/manifests/windows-%s.yaml' "$ROOT_DIR" "$base_name" ;;
     esac
   else
-    if [[ "$VM_OS" == rhel9 ]]; then
+    if [[ "$VM_OS" == rhel9 || "$VM_OS" == rhel9-light ]]; then
       case "$variant" in
         default | large) variant=large ;;
         odf | large-odf) variant=large-odf ;;

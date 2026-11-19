@@ -661,6 +661,19 @@ ephemeral storage, has no `sizeLimit` in the current manifest, and is not
 included in the PVC total; peak scratch usage is not recorded by the run report.
 The measured restore passed with 8 baseline and 12 combined guest files.
 
+### Right-sized `rhel9-light` footprint
+
+`VM_OS=rhel9-light` (`make rhel-light-golden` once, then `make e2e VM_OS=rhel9-light`) targets the smallest PVCs that still pass a full and incremental backup. Measured on cloud05 with `scripts/rhel-minroot-probe.sh` (CBT-enabled VM, 4.3GiB random workload plus a 256MiB mutation, guest sha256 re-check passed):
+
+| PVC | Requested | Granted | Used on Ceph (`rbd du`) |
+|---|---|---|---|
+| Root | 10Gi | 11Gi (11,381,663,335 bytes after CDI overhead) | 6.6GiB |
+| Full backup | 11Gi and 12Gi both passed | same | 10GiB (whole virtual disk) |
+| Incremental | 1Gi and 2Gi both passed | same | 296MiB for a 256MiB change |
+| KubeVirt persistent-state | 554Mi | 554Mi | 20MiB |
+
+Floors: an 8Gi root is rejected at import (`virtual image size 10737418240 is larger than the reported available storage 9105330668`), so the root minimum is the image's 10GiB virtual size. A 10Gi full-backup PVC did not reach the copy in that run (attach timeout), so it is untested and the default stays at 12Gi. The guest OS uses 1.9GB of the 9.4GB root partition (492 packages). Going below 10Gi requires a trimmed image built fresh; XFS cannot be shrunk in place.
+
 ## Windows VM setup and CBT profile
 
 Run `make windows-vm-setup` first to provision one Windows Server 2022 VM and initialize its CBT workload under `C:\cbt-data\workload` through QEMU Guest Agent. If `windows-server-2022` is not cached, setup installs Windows from the Evaluation ISO, installs Python 3.12.4 and the file-writer/SQLite-writer/HTTP-server workloads, registers their SYSTEM startup task, verifies them, removes generated test data, syspreps the disk, and publishes the reusable DataSource in `vm-cbt-images`. The runtime clone is then checked for startup workload continuity before the CBT file set is initialized. This is separate from the Debian default and does not require SSH access to Windows.
