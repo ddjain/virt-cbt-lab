@@ -47,6 +47,14 @@ GROUPS_DIR="$SCALE_STATE_DIR/groups"
 # both OSes back up to the replica-1 scale pool (test data only); set
 # WIN_SC=ocs-storagecluster-ceph-rbd for durable (3-copy) windows backups
 RHEL_SC="cbt-scale-pool"; WIN_SC="${WIN_SC:-cbt-scale-pool}"
+# ROOT_SC: StorageClass for VM ROOT disks at fleet-setup/extend time.
+# Default keeps the durable profile (roots on 3-copy ODF). Set
+# ROOT_SC=cbt-scale-pool for fully replica-1 fleets (test data only, zero
+# durability). Verified 2026-11-19: cross-pool clone from both the
+# rhel9-light and windows-server-2022 golden DataSources works.
+ROOT_SC="${ROOT_SC:-}"
+ROOT_SC_ARG=()
+[[ -n "$ROOT_SC" ]] && ROOT_SC_ARG=(ROOT_SC="$ROOT_SC")
 WAVE_DEFAULT=25
 
 ts_id(){ date -u +"%d-%m-%Y-%H-%M-%S"; }
@@ -158,19 +166,19 @@ cmd_fleet_setup(){
   set -a; . ./.env 2>/dev/null || true; set +a
   if (( rhel > 0 )); then
     # VM_OS/POOL are make ARGUMENTS: `.env` (VM_OS=rhel9) overrides env vars in make
-    make density-setup VM_OS=rhel9 POOL=fleet-rhel MANIFEST_VARIANT=large-odf \
+    make density-setup VM_OS=rhel9 POOL=fleet-rhel MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$rhel" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( rhel / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhel.log" 2>&1 \
       || die "rhel fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-rhel.log)"
   fi
   if (( light > 0 )); then
-    make density-setup VM_OS=rhel9-light POOL=fleet-rhl MANIFEST_VARIANT=large-odf \
+    make density-setup VM_OS=rhel9-light POOL=fleet-rhl MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$light" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( light / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhl.log" 2>&1 \
       || die "rhel9-light fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-rhl.log; run 'make rhel-light-golden' once if the DataSource is missing)"
   fi
   if (( win > 0 )); then
-    make density-setup VM_OS=windows POOL=fleet-win GUEST_EXEC_POLL_ATTEMPTS=450 \
+    make density-setup VM_OS=windows POOL=fleet-win GUEST_EXEC_POLL_ATTEMPTS=450 "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$win" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( win / 4 + 120 )) > "$SCALE_STATE_DIR/fleet-setup-win.log" 2>&1 \
       || die "windows fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-win.log)"
@@ -208,19 +216,19 @@ cmd_fleet_extend(){
 
   log "FLEET-EXTEND: +$rhel rhel9 (from $rstart), +$light rhel9-light (from $lstart) and +$win windows (from $wstart), in parallel"
   if (( rhel > 0 )); then
-    make density-setup VM_OS=rhel9 POOL=fleet-rhel DENSITY_START_INDEX="$rstart" MANIFEST_VARIANT=large-odf \
+    make density-setup VM_OS=rhel9 POOL=fleet-rhel DENSITY_START_INDEX="$rstart" MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$rhel" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( rhel / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-extend-rhel.log" 2>&1 &
     rpid=$!
   fi
   if (( light > 0 )); then
-    make density-setup VM_OS=rhel9-light POOL=fleet-rhl DENSITY_START_INDEX="$lstart" MANIFEST_VARIANT=large-odf \
+    make density-setup VM_OS=rhel9-light POOL=fleet-rhl DENSITY_START_INDEX="$lstart" MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$light" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( light / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-extend-rhl.log" 2>&1 &
     lpid=$!
   fi
   if (( win > 0 )); then
-    make density-setup VM_OS=windows POOL=fleet-win DENSITY_START_INDEX="$wstart" GUEST_EXEC_POLL_ATTEMPTS=450 \
+    make density-setup VM_OS=windows POOL=fleet-win DENSITY_START_INDEX="$wstart" GUEST_EXEC_POLL_ATTEMPTS=450 "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$win" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
       DENSITY_WAIT_MINUTES=$(( win / 4 + 120 )) > "$SCALE_STATE_DIR/fleet-extend-win.log" 2>&1 &
     wpid=$!

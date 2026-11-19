@@ -34,3 +34,14 @@ for `rhel9-light`).
 
 `ns-wipe.sh` and `scale-pool-gc.sh --delete` are destructive; do not run them
 as tests. Offline checks: `bash tests/test-cbt-scale-tools.sh`.
+
+## Storage classes and durability
+
+Backups always default to the replica-1 `cbt-scale-pool` (test data only).
+Root disks default to durable 3-copy ODF; set `ROOT_SC=cbt-scale-pool` (env,
+see `.env.example`) at `fleet-setup`/`fleet-extend`/`make density-setup` time
+for fully 1-copy fleets (~3x less raw per root). Cross-pool CDI clone from
+the `rhel9-light` and `windows-server-2022` golden DataSources verified
+2026-11-19 (full+incremental backups PASS on both OSes with 1-copy roots;
+CNV's per-VM `persistent-state` PVCs stay on the profile default — moving
+those is a cluster-wide change, not per-fleet).
