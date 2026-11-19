@@ -69,6 +69,32 @@ find_orphans   # re-read PV set immediately before deleting
 (( N_ORPH == 0 )) && { log "no orphans after re-check"; exit 0; }
 
 log "deleting $N_ORPH orphan images (jobs=$JOBS)"
+
+# Stale exclusive locks: a dead CSI node-plugin session can keep a lock on an
+# orphan image ("image still has watchers"), which blocks rbd rm. The image is
+# already confirmed orphan (no PV references it), so the lock cannot belong to
+# a live consumer. Release locks before deleting. Lock list output:
+#   Locker          ID                     Address
+#   client.5149359  auto 18446462598...    100.64.0.24:0/673861413
+UNLOCK_SCRIPT=$(cat <<'REMOTE'
+POOL="$1"
+unlock_one(){
+  img="$1"
+  rbd lock list "$POOL/$img" 2>/dev/null | awk -v img="$img" '
+    /^client\./ { locker=$1; id=$2; sub(/ .*/, "", id); print img "\t" locker "\t" id }
+  ' | while IFS="$(printf "\t")" read -r im locker id; do
+    rbd lock remove "$POOL/$im" "$id" "$locker" >/dev/null 2>&1 || echo "unlock-failed $im $locker"
+  done
+}
+export -f unlock_one; export POOL
+xargs -P 8 -I{} bash -c 'unlock_one {}'
+REMOTE
+)
+log "releasing stale exclusive locks on orphan images"
+oc exec -i -n openshift-storage "$TB" -- bash -c "$UNLOCK_SCRIPT" _ "$POOL" \
+  < "$TMP/orphans.txt" > "$TMP/unlock.out" || true
+unlock_fail=$(grep -c 'unlock-failed' "$TMP/unlock.out" || true)
+(( unlock_fail == 0 )) || log "WARNING: $unlock_fail lock release(s) failed (live watchers?)"
 # One exec: the script is passed as an argument, the orphan list on stdin.
 # Per image: read PV name from image metadata, rm image, drop its CSI omap entries.
 REMOTE_SCRIPT=$(cat <<'REMOTE'
