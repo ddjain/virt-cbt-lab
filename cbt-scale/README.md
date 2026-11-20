@@ -30,7 +30,7 @@ for `rhel9-light`).
 | `prom-sweep.sh <start-UTC> <end-UTC> [report.md]` | Layer-2 Prometheus sweep |
 | `storage-snapshot.sh <label>` | append a ceph/PVC usage row to `storage-200b.csv` |
 | `scale-status.sh [pool] [interval]` | live read-only backup fleet status |
-| `scale-pool-gc.sh [--delete]` | orphan RBD image report / GC (destructive with `--delete`) |
+| `scale-pool-gc.sh [--delete]` | orphan RBD image report / GC (destructive with `--delete`); image list from `rbd ls`, sizes from best-effort `rbd du` (a dangling-parent image makes `rbd du` exit 2) |
 | `ns-wipe.sh --yes` | destructive namespace wipe; refuses without `--yes` |
 | `lib-naming.sh` | sourced; the only place fleet group object names are built (`scale_full_name`, `scale_incr_name`, `scale_tracker_name`, `scale_group_object_regex`) |
 
@@ -42,7 +42,7 @@ all use `lib-naming.sh`; never build these names inline. `fleet-e2e.sh reset
 
 `ns-wipe.sh` and `scale-pool-gc.sh --delete` are destructive; do not run them
 as tests. Offline checks: `bash tests/test-cbt-scale-tools.sh`,
-`bash tests/test-fleet-naming.sh`.
+`bash tests/test-fleet-naming.sh`, `bash tests/test-scale-pool-gc.sh`.
 
 ## Storage classes and durability
 
