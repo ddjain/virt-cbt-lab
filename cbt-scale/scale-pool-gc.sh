@@ -4,6 +4,8 @@
 # cluster references it (imageName). Orphans appear when a wipe force-strips PV
 # finalizers / deletes PV objects while the backing RBD image survives; they
 # consume raw Ceph capacity but are unreachable from Kubernetes.
+# Only plain csi-vol-<uuid> images count; ceph-csi internal clone parents
+# (rf-*, rest-*, csi-vol-<uuid>-temp) are reported as skipped, never deleted.
 #
 # Usage: KUBECONFIG=... cbt-scale/scale-pool-gc.sh [--pool cbt-scale-pool]
 #                                                  [--namespace vm-cbt-demo]
@@ -57,14 +59,20 @@ find_orphans(){  # writes $TMP/orphans.txt ; sets N_ORPH, ORPH_GIB, N_IMG
   fi
   [[ -s "$TMP/sizes.tsv" ]] || log "WARNING: rbd du unusable; written size reported as 0 (see: $(grep -v librbd "$TMP/du.err" | tail -1))"
   LC_ALL=C join -t $'\t' -a1 -e0 -o 0,2.2 "$TMP/names.txt" "$TMP/sizes.tsv" > "$TMP/images.tsv"
-  LC_ALL=C comm -23 "$TMP/names.txt" "$TMP/pv.txt" > "$TMP/orphans.txt"
+  # Only plain CSI volumes (csi-vol-<uuid>) are orphan candidates. ceph-csi
+  # internals (rf-*, rest-*, csi-vol-<uuid>-temp) are the clone parents of
+  # live PVs (cross-pool clones of the golden images): never PV-referenced by
+  # name, but `rbd rm` correctly refuses them while a child clone exists.
+  LC_ALL=C comm -23 "$TMP/names.txt" "$TMP/pv.txt" > "$TMP/unreferenced.txt"
+  grep -E '^csi-vol-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' "$TMP/unreferenced.txt" > "$TMP/orphans.txt" || true
+  N_INTERNAL=$(( $(wc -l < "$TMP/unreferenced.txt" | tr -d ' ') - $(wc -l < "$TMP/orphans.txt" | tr -d ' ') ))
   N_ORPH=$(wc -l < "$TMP/orphans.txt" | tr -d ' ')
   ORPH_GIB=$(LC_ALL=C join -t $'\t' "$TMP/orphans.txt" "$TMP/images.tsv" | awk -F'\t' '{s+=$2} END{printf "%.0f", s/1073741824}')
   N_IMG=$(wc -l < "$TMP/names.txt" | tr -d ' ')
 }
 
 find_orphans
-log "pool=$POOL images=$N_IMG pv-referenced=$(wc -l < "$TMP/pv.txt" | tr -d ' ') orphans=$N_ORPH written=${ORPH_GIB}GiB"
+log "pool=$POOL images=$N_IMG pv-referenced=$(wc -l < "$TMP/pv.txt" | tr -d ' ') orphans=$N_ORPH written=${ORPH_GIB}GiB (ceph-csi internal images skipped: $N_INTERNAL)"
 (( N_ORPH == 0 )) && exit 0
 if (( ! DELETE )); then
   log "report only; re-run with --delete to remove them"
