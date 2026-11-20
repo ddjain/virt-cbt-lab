@@ -25,7 +25,7 @@ mkdir -p "$OUT"
 pass=0; fail=0
 : > "$OUT/verify.tsv"
 while IFS=$'\t' read -r vm _ _ _ _; do
-  [[ "$vm" == "vm" ]] && continue
+  [[ "$vm" == "vm" ]] && continue; vm="${vm#vm-}"
   full=$(oc get vmbackup -n "$NAMESPACE" "vm-backup-$GID-$vm" \
     -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
   incr=$(oc get vmbackup -n "$NAMESPACE" "vm-incremental-$GID-$vm-p01" \

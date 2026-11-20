@@ -48,7 +48,7 @@ reason_is_failure() { [[ "$1" == "Backup has failed"* ]]; }
 # the manifest VM names (used both as VM/service names and as object ids).
 each_vm() {  # emits "rid<TAB>logname" per VM
   if [[ -n "${GROUP_FILE:-}" ]]; then
-    local vm; for vm in "${GROUP_VMS[@]}"; do printf '%s\t%s\n' "$vm" "$vm"; done
+    local vm; for vm in "${GROUP_VMS[@]}"; do printf '%s\t%s\n' "${vm#vm-}" "$vm"; done
   else
     local n; for ((n = START_N; n <= END_N; n++)); do
       printf '%s\t%s\n' "$(rid_for "$n")" "$(rid_for "$n")"
@@ -85,6 +85,9 @@ MOD_PATTERN="CBT-WORKLOAD-V1:$MOD_NAME:MODIFIED-PASS-01"
 gen_cmd='gen() { local spec="$1" name sz t a; IFS="|" read -r name sz <<< "$spec"; t="$WD/.cbt-workload-$name.tmp"; set +o pipefail; yes "CBT-WORKLOAD-V1:$name" | head -c "$sz" > "$t"; set -o pipefail; a=$(stat -c %s "$t"); [[ "$a" == "$sz" ]] || exit 1; if [[ -e "$WD/$name" ]]; then rm -f "$t"; else mv "$t" "$WD/$name"; fi; }'
 baseline_script="set -euo pipefail; WD='$WORKLOAD_DIR'; mkdir -p \"\$WD\"; $gen_cmd; for s in $baseline_items; do gen \"\$s\"; done; sync; du -sb \"\$WD\""
 incr_script="set -euo pipefail; WD='$WORKLOAD_DIR'; mkdir -p \"\$WD\"; $gen_cmd; for s in $incr_items; do gen \"\$s\"; done; T=\"\$WD/$MOD_NAME\"; [[ -f \"\$T\" ]] || exit 1; set +o pipefail; yes '$MOD_PATTERN' | head -c '$MOD_SIZE' > \"\$WD/.m.tmp\"; set -o pipefail; mv -f \"\$WD/.m.tmp\" \"\$T\"; sync; du -sb \"\$WD\""
+
+# Windows guest mutation via QEMU guest-agent (no SSH in the image)
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/win-workload-agent.sh"
 
 ssh_run() {
   local svc="$1" script="$2" log="$3" pf rc port ready
@@ -189,14 +192,15 @@ wait_family() {  # $1 name-prefix  $2 label  $3 timeout-s
 
 # ---- Phase A: baseline workload ----
 echo "=== Phase A: baseline workload ==="
-while IFS=$'\t' read -r rid _; do
+while IFS=$'\t' read -r rid logname; do
   while (( $(jobs -rp | wc -l) >= WAVE )); do sleep 2; done
   (
-    log="$(logf "$rid")"
+    log="$(logf "${logname:-$rid}")"
     [[ -f "$log" ]] && grep -q "baseline workload written" "$log" 2>/dev/null && exit 0
     ok=false
     for attempt in 1 2 3 4 5; do
-      if out="$(ssh_run "vm-ssh-$rid" "$baseline_script" "$log" 2>>"$log")"; then ok=true; break; fi
+      if is_win_vm "$rid"; then out="$(win_workload_ps "vm-$rid" baseline 2>>"$log")" && ok=true && break
+      elif out="$(ssh_run "vm-ssh-$rid" "$baseline_script" "$log" 2>>"$log")"; then ok=true; break; fi
       note "baseline ssh attempt $attempt failed" "$log"; sleep 5
     done
     if [[ "$ok" != true ]]; then note "RESULT baseline_workload FAILED" "$log"; exit 1; fi
@@ -208,10 +212,10 @@ wait || true
 # ---- Phase B: all full backups at once (apply all, then poll) ----
 echo "=== Phase B: all full backups at once ==="
 T0=$(date +%s)
-while IFS=$'\t' read -r rid _; do
-  obj="$(obj_prefix)$rid"; log="$(logf "$rid")"
+while IFS=$'\t' read -r rid logname; do
+  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
   if oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
-  if [[ -n "${GROUP_FILE:-}" ]]; then render_full_g "$rid" "$obj"; else render_full "$rid"; fi \
+  if [[ -n "${GROUP_FILE:-}" ]]; then render_full_g "vm-$rid" "$obj"; else render_full "$rid"; fi \
     | oc apply -f - >>"$log" 2>&1 || note "RESULT full_apply FAILED" "$log"
 done < <(each_vm)
 note "all full backup requests applied" "$LOG_DIR/phase.log"
@@ -220,8 +224,8 @@ T1=$(date +%s)
 echo "full phase wall: $((T1-T0))s" | tee -a "$LOG_DIR/phase.log"
 
 # per-VM full validation
-while IFS=$'\t' read -r rid _; do
-  obj="$(obj_prefix)$rid"; log="$(logf "$rid")"
+while IFS=$'\t' read -r rid logname; do
+  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
   reason="$(oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT full_backup FAILED reason=$reason" "$log"
@@ -232,14 +236,15 @@ done < <(each_vm)
 
 # ---- Phase C: incremental workload ----
 echo "=== Phase C: incremental workload ==="
-while IFS=$'\t' read -r rid _; do
+while IFS=$'\t' read -r rid logname; do
   while (( $(jobs -rp | wc -l) >= WAVE )); do sleep 2; done
   (
-    log="$(logf "$rid")"
+    log="$(logf "${logname:-$rid}")"
     grep -q "incremental workload written" "$log" 2>/dev/null && exit 0
     ok=false
     for attempt in 1 2 3 4 5; do
-      if out="$(ssh_run "vm-ssh-$rid" "$incr_script" "$log" 2>>"$log")"; then ok=true; break; fi
+      if is_win_vm "$rid"; then out="$(win_workload_ps "vm-$rid" incr 2>>"$log")" && ok=true && break
+      elif out="$(ssh_run "vm-ssh-$rid" "$incr_script" "$log" 2>>"$log")"; then ok=true; break; fi
       note "incremental ssh attempt $attempt failed" "$log"; sleep 5
     done
     if [[ "$ok" != true ]]; then note "RESULT incremental_workload FAILED" "$log"; exit 1; fi
@@ -251,10 +256,10 @@ wait || true
 # ---- Phase D: all incremental backups at once ----
 echo "=== Phase D: all incremental backups at once ==="
 T2=$(date +%s)
-while IFS=$'\t' read -r rid _; do
-  obj="$(obj_prefix)$rid"; log="$(logf "$rid")"
+while IFS=$'\t' read -r rid logname; do
+  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
   if oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
-  if [[ -n "${GROUP_FILE:-}" ]]; then render_incr_g "$rid" "$obj"; else render_incr "$rid"; fi \
+  if [[ -n "${GROUP_FILE:-}" ]]; then render_incr_g "vm-$rid" "$obj"; else render_incr "$rid"; fi \
     | oc apply -f - >>"$log" 2>&1 || note "RESULT incr_apply FAILED" "$log"
 done < <(each_vm)
 note "all incremental backup requests applied" "$LOG_DIR/phase.log"
@@ -263,8 +268,8 @@ T3=$(date +%s)
 echo "incr phase wall: $((T3-T2))s" | tee -a "$LOG_DIR/phase.log"
 
 # per-VM incremental validation + tracker
-while IFS=$'\t' read -r rid _; do
-  obj="$(obj_prefix)$rid"; log="$(logf "$rid")"
+while IFS=$'\t' read -r rid logname; do
+  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
   reason="$(oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT incr_backup FAILED reason=$reason" "$log"
@@ -281,8 +286,8 @@ done < <(each_vm)
 
 # ---- tally ----
 pass=0; fail=0
-while IFS=$'\t' read -r rid _; do
-  l="$(logf "$rid")"
+while IFS=$'\t' read -r rid logname; do
+  l="$(logf "${logname:-$rid}")"
   if grep -q "full backup done reason=" "$l" 2>/dev/null && \
      grep -q "incr backup done reason=" "$l" 2>/dev/null && \
      ! grep -q "RESULT .* FAILED" "$l" 2>/dev/null && \
