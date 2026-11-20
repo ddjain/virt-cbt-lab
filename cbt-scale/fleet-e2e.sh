@@ -27,7 +27,8 @@
 # Group/run id format: <kind>-<dd-mm-yyyy-HH-MM-SS> (UTC), e.g.
 #   rhel-18-11-2026-14-05-33 — easy to identify when it ran.
 #
-# Backup naming: vm-backup-<group-id>-<vm> (run-scoped, no collisions).
+# Backup naming: see cbt-scale/lib-naming.sh (vm-backup-<group-id>-<rid>, rid = VM name
+# without the leading `vm-`; run-scoped, no collisions).
 # Cleanup: group-scoped reset only (vmbackups, trackers, backup PVCs/PVs of
 # the group's VMs); VMs/roots are NEVER touched by a run. Fleet rebuild
 # (`fleet-setup`) is the only destructive fleet-level action.
@@ -36,6 +37,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=cbt-scale/lib-naming.sh
+source "$ROOT_DIR/cbt-scale/lib-naming.sh"
 # Code lives in cbt-scale/ (tracked); runtime state and evidence live in
 # SCALE_STATE_DIR (default: <repo>/artifacts, gitignored).
 SCALE_STATE_DIR="${SCALE_STATE_DIR:-$ROOT_DIR/artifacts}"; export SCALE_STATE_DIR
@@ -96,26 +99,27 @@ group_set(){  # $1 group  $2 vm  $3 field-index(3=state,4=full,5=incr,6=result) 
 
 # ---------- group-scoped backup reset (keeps VMs/roots) ----------
 reset_group_backups(){  # $1 group  (uses vm list from manifest)
-  local g="$1" vm
+  local g="$1" re; local -a vms
+  mapfile -t vms < <(group_vms "$g")
+  (( ${#vms[@]} > 0 )) || die "group $g has no VMs in manifest; refusing to reset"
+  re="$(scale_group_object_regex "$g" "${vms[@]}")"
   log "RESET: deleting backup objects for group $g (VMs/roots untouched)"
-  for vm in $(group_vms "$g"); do
-    oc delete vmbackup -n "$NAMESPACE" \
-      --field-selector metadata.name!="x" -o name 2>/dev/null \
-      | grep -E "^virtualmachinebackup\.backup\.kubevirt\.io/(vm-backup-$g-$vm|vm-incremental-$g-$vm)" \
-      | xargs -r -n1 oc delete -n "$NAMESPACE" --wait=false 2>/dev/null || true
+  # `get` (never `delete`) enumerates; only names matching this group's
+  # anchored regex are deleted.
+  local kind
+  for kind in vmbackup vmbackuptracker pvc; do
+    oc get "$kind" -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null \
+      | { grep -E "$re" || true; } \
+      | xargs -r oc delete "$kind" -n "$NAMESPACE" --wait=false 2>/dev/null || true
   done
-  oc delete vmbackuptracker -n "$NAMESPACE" -o name 2>/dev/null \
-    | grep "vm-tracker-$g-" | xargs -r -n1 oc delete -n "$NAMESPACE" --wait=false 2>/dev/null || true
-  oc delete pvc -n "$NAMESPACE" -o name 2>/dev/null \
-    | grep -E "vm-(backup|incremental)-pvc-$g-" | xargs -r -n1 oc delete -n "$NAMESPACE" --wait=false 2>/dev/null || true
   # finalizer force-unstick (known 4-hop chain stall)
   sleep 45
-  oc get vmbackup -n "$NAMESPACE" -o name 2>/dev/null \
-    | { grep -E "vm-(backup|incremental)-$g-" || true; } \
+  oc get vmbackup -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null \
+    | { grep -E "$re" || true; } \
     | while read -r vb; do
-        oc patch -n "$NAMESPACE" "$vb" --type=json \
+        oc patch -n "$NAMESPACE" vmbackup "$vb" --type=json \
           -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
-        oc delete -n "$NAMESPACE" "$vb" --wait=false >/dev/null 2>&1 || true
+        oc delete -n "$NAMESPACE" vmbackup "$vb" --wait=false >/dev/null 2>&1 || true
       done
   # purge backup PVs (Released/Available only, scoped by reclaim of deleted PVCs)
   sleep 30
@@ -369,14 +373,14 @@ cmd_run(){
 validate_and_summarize(){  # $1 group  $2 expected count  $3 wall
   local g="$1" n="$2" wall="$3" vm full incr cp pass fail=0
   for vm in $(group_vms "$g"); do
-    full=$(oc get vmbackup -n "$NAMESPACE" "vm-backup-$g-$vm" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-    incr=$(oc get vmbackup -n "$NAMESPACE" "vm-incremental-$g-$vm-p01" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-    cp=$(oc get vmbackuptracker -n "$NAMESPACE" "vm-tracker-$g-$vm" -o jsonpath='{.status.latestCheckpoint.name}' 2>/dev/null || echo missing)
+    full=$(oc get vmbackup -n "$NAMESPACE" "$(scale_full_name "$g" "$vm")" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
+    incr=$(oc get vmbackup -n "$NAMESPACE" "$(scale_incr_name "$g" "$vm" 1)" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
+    cp=$(oc get vmbackuptracker -n "$NAMESPACE" "$(scale_tracker_name "$g" "$vm")" -o jsonpath='{.status.latestCheckpoint.name}' 2>/dev/null || echo missing)
     if [[ "$full" == "Successfully completed VirtualMachineBackup" \
        && "$incr" == "Successfully completed VirtualMachineBackup" \
-       && "$cp" == "vm-incremental-$g-$vm-p01-"* ]]; then
-      group_set "$g" "$vm" 3 full_done; group_set "$g" "$vm" 4 "vm-backup-$g-$vm"
-      group_set "$g" "$vm" 5 "vm-incremental-$g-$vm-p01"; group_set "$g" "$vm" 6 pass
+       && "$cp" == "$(scale_incr_name "$g" "$vm" 1)-"* ]]; then
+      group_set "$g" "$vm" 3 full_done; group_set "$g" "$vm" 4 "$(scale_full_name "$g" "$vm")"
+      group_set "$g" "$vm" 5 "$(scale_incr_name "$g" "$vm" 1)"; group_set "$g" "$vm" 6 pass
     else
       group_set "$g" "$vm" 6 "fail(full=$full,incr=$incr,cp=$cp)"
       fail=$((fail+1))

@@ -9,6 +9,8 @@ set -euo pipefail
 # Requires: KUBECONFIG, GUEST_KEY, NAMESPACE, manifests in the repo checkout.
 
 ROOT_DIR="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# shellcheck source=cbt-scale/lib-naming.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib-naming.sh"
 SCALE_STATE_DIR="${SCALE_STATE_DIR:-$ROOT_DIR/artifacts}"
 POOL="${1:-}"
 START_N="${2:-}"
@@ -48,14 +50,15 @@ reason_is_failure() { [[ "$1" == "Backup has failed"* ]]; }
 # the manifest VM names (used both as VM/service names and as object ids).
 each_vm() {  # emits "rid<TAB>logname" per VM
   if [[ -n "${GROUP_FILE:-}" ]]; then
-    local vm; for vm in "${GROUP_VMS[@]}"; do printf '%s\t%s\n' "${vm#vm-}" "$vm"; done
+    local vm; for vm in "${GROUP_VMS[@]}"; do printf '%s\t%s\n' "$(scale_rid "$vm")" "$vm"; done
   else
     local n; for ((n = START_N; n <= END_N; n++)); do
       printf '%s\t%s\n' "$(rid_for "$n")" "$(rid_for "$n")"
     done
   fi
 }
-obj_prefix() { if [[ -n "${GROUP_FILE:-}" ]]; then echo "${GROUP_ID}-"; else echo ""; fi; }
+# object id for a rid: group mode scopes it to the group (lib-naming.sh)
+obj_for() { if [[ -n "${GROUP_FILE:-}" ]]; then scale_obj_id "$GROUP_ID" "$1"; else echo "$1"; fi; }
 family_prefix() { if [[ -n "${GROUP_FILE:-}" ]]; then echo "${GROUP_ID}-"; else echo "$POOL-"; fi; }
 
 file_size_bytes() {
@@ -213,7 +216,7 @@ wait || true
 echo "=== Phase B: all full backups at once ==="
 T0=$(date +%s)
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
+  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
   if oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
   if [[ -n "${GROUP_FILE:-}" ]]; then render_full_g "vm-$rid" "$obj"; else render_full "$rid"; fi \
     | oc apply -f - >>"$log" 2>&1 || note "RESULT full_apply FAILED" "$log"
@@ -225,7 +228,7 @@ echo "full phase wall: $((T1-T0))s" | tee -a "$LOG_DIR/phase.log"
 
 # per-VM full validation
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
+  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
   reason="$(oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT full_backup FAILED reason=$reason" "$log"
@@ -257,7 +260,7 @@ wait || true
 echo "=== Phase D: all incremental backups at once ==="
 T2=$(date +%s)
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
+  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
   if oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
   if [[ -n "${GROUP_FILE:-}" ]]; then render_incr_g "vm-$rid" "$obj"; else render_incr "$rid"; fi \
     | oc apply -f - >>"$log" 2>&1 || note "RESULT incr_apply FAILED" "$log"
@@ -269,7 +272,7 @@ echo "incr phase wall: $((T3-T2))s" | tee -a "$LOG_DIR/phase.log"
 
 # per-VM incremental validation + tracker
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_prefix)$rid"; log="$(logf "${logname:-$rid}")"
+  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
   reason="$(oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT incr_backup FAILED reason=$reason" "$log"
