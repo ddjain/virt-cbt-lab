@@ -43,14 +43,24 @@ pv_images(){  # image names referenced by any PV in $POOL
   oc get pv -o json | jq -r --arg p "$POOL" \
     '.items[] | select(.spec.csi.volumeAttributes.pool==$p) | .spec.csi.volumeAttributes.imageName' | sort -u
 }
-find_orphans(){  # writes $TMP/orphans.txt ; sets N_ORPH, ORPH_GIB
-  pv_images > "$TMP/pv.txt"
-  tools rbd du -p "$POOL" --format json > "$TMP/du.json"
-  jq -r '.images[] | [.name, (.used_size // 0)] | @tsv' "$TMP/du.json" | sort -k1,1 > "$TMP/images.tsv"
-  cut -f1 "$TMP/images.tsv" | comm -23 - "$TMP/pv.txt" > "$TMP/orphans.txt"
+find_orphans(){  # writes $TMP/orphans.txt ; sets N_ORPH, ORPH_GIB, N_IMG
+  # Image names come from `rbd ls` (authoritative). `rbd du` aborts with exit 2
+  # when ONE image has a dangling parent snapshot (stale ceph-csi rf-*/rest-*
+  # image), so it is best-effort and only supplies the written-size estimate.
+  pv_images | LC_ALL=C sort -u > "$TMP/pv.txt"
+  tools rbd ls -p "$POOL" | LC_ALL=C sort -u > "$TMP/names.txt"
+  : > "$TMP/sizes.tsv"
+  if tools rbd du -p "$POOL" --format json > "$TMP/du.json" 2>"$TMP/du.err" \
+     || jq -e . "$TMP/du.json" >/dev/null 2>&1; then
+    jq -r '.images[] | select(.snapshot == null) | [.name, (.used_size // 0)] | @tsv' "$TMP/du.json" \
+      | LC_ALL=C sort -k1,1 > "$TMP/sizes.tsv" || true
+  fi
+  [[ -s "$TMP/sizes.tsv" ]] || log "WARNING: rbd du unusable; written size reported as 0 (see: $(grep -v librbd "$TMP/du.err" | tail -1))"
+  LC_ALL=C join -t $'\t' -a1 -e0 -o 0,2.2 "$TMP/names.txt" "$TMP/sizes.tsv" > "$TMP/images.tsv"
+  LC_ALL=C comm -23 "$TMP/names.txt" "$TMP/pv.txt" > "$TMP/orphans.txt"
   N_ORPH=$(wc -l < "$TMP/orphans.txt" | tr -d ' ')
-  ORPH_GIB=$(join -t $'\t' "$TMP/orphans.txt" "$TMP/images.tsv" | awk -F'\t' '{s+=$2} END{printf "%.0f", s/1073741824}')
-  N_IMG=$(wc -l < "$TMP/images.tsv" | tr -d ' ')
+  ORPH_GIB=$(LC_ALL=C join -t $'\t' "$TMP/orphans.txt" "$TMP/images.tsv" | awk -F'\t' '{s+=$2} END{printf "%.0f", s/1073741824}')
+  N_IMG=$(wc -l < "$TMP/names.txt" | tr -d ' ')
 }
 
 find_orphans
