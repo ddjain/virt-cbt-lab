@@ -26,6 +26,7 @@ for `rhel9-light`).
 | `density-e2e-mixed.sh` | throwaway rhel9+windows wave (dispatched by `density-e2e.sh --mixed`) |
 | `density-scale-test.sh [N] [VM_OS]` | interactive wrapper (asks before cleaning) |
 | `scale-driver2.sh <pool> <start> <end> [wave]` | poll-based driver, phases A-D; also group mode via `GROUP_FILE`+`GROUP_ID` |
+| `win-workload-agent.sh` | sourced by `scale-driver2.sh`; Windows guest mutation via qemu-guest-agent (no SSH in the image) |
 | `prom-sweep.sh <start-UTC> <end-UTC> [report.md]` | Layer-2 Prometheus sweep |
 | `storage-snapshot.sh <label>` | append a ceph/PVC usage row to `storage-200b.csv` |
 | `scale-status.sh [pool] [interval]` | live read-only backup fleet status |
@@ -45,3 +46,12 @@ the `rhel9-light` and `windows-server-2022` golden DataSources verified
 2026-11-19 (full+incremental backups PASS on both OSes with 1-copy roots;
 CNV's per-VM `persistent-state` PVCs stay on the profile default — moving
 those is a cluster-wide change, not per-fleet).
+
+## Guest mutation transport
+
+The driver's workload phases (A/C) mutate guests before backups: **rhel** VMs
+over SSH through their `vm-ssh-<rid>` Services; **windows** VMs via the QEMU
+guest-agent (`win-workload-agent.sh` runs PowerShell through
+`virsh qemu-agent-command` inside the virt-launcher pod — the fleet Windows
+images run no SSH server). Windows mutation requires the guest-agent connected
+(`AgentConnected=True`); agent-less VMs also skip the backup freeze.
