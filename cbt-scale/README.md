@@ -32,9 +32,17 @@ for `rhel9-light`).
 | `scale-status.sh [pool] [interval]` | live read-only backup fleet status |
 | `scale-pool-gc.sh [--delete]` | orphan RBD image report / GC (destructive with `--delete`) |
 | `ns-wipe.sh --yes` | destructive namespace wipe; refuses without `--yes` |
+| `lib-naming.sh` | sourced; the only place fleet group object names are built (`scale_full_name`, `scale_incr_name`, `scale_tracker_name`, `scale_group_object_regex`) |
+
+Group object names: VM `vm-fleet-rhl-0001` in group `G` yields
+`vm-backup-G-fleet-rhl-0001`, `vm-incremental-G-fleet-rhl-0001-p01`,
+`vm-tracker-G-fleet-rhl-0001`. The driver, `fleet-e2e.sh` and `fleet-verify.sh`
+all use `lib-naming.sh`; never build these names inline. `fleet-e2e.sh reset
+<group>` deletes only objects matching that group's anchored names.
 
 `ns-wipe.sh` and `scale-pool-gc.sh --delete` are destructive; do not run them
-as tests. Offline checks: `bash tests/test-cbt-scale-tools.sh`.
+as tests. Offline checks: `bash tests/test-cbt-scale-tools.sh`,
+`bash tests/test-fleet-naming.sh`.
 
 ## Storage classes and durability
 

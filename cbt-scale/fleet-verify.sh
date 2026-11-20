@@ -13,6 +13,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # SCALE_STATE_DIR (default: <repo>/artifacts, gitignored).
 SCALE_STATE_DIR="${SCALE_STATE_DIR:-$ROOT_DIR/artifacts}"; export SCALE_STATE_DIR
 cd "$ROOT_DIR"
+# shellcheck source=cbt-scale/lib-naming.sh
+source "$ROOT_DIR/cbt-scale/lib-naming.sh"
 : "${KUBECONFIG:?export KUBECONFIG}"
 GID="${1:?group id required}"
 S_EPOCH="${2:-}"; E_EPOCH="${3:-}"
@@ -25,17 +27,17 @@ mkdir -p "$OUT"
 pass=0; fail=0
 : > "$OUT/verify.tsv"
 while IFS=$'\t' read -r vm _ _ _ _; do
-  [[ "$vm" == "vm" ]] && continue; vm="${vm#vm-}"
-  full=$(oc get vmbackup -n "$NAMESPACE" "vm-backup-$GID-$vm" \
+  [[ "$vm" == "vm" ]] && continue
+  full=$(oc get vmbackup -n "$NAMESPACE" "$(scale_full_name "$GID" "$vm")" \
     -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-  incr=$(oc get vmbackup -n "$NAMESPACE" "vm-incremental-$GID-$vm-p01" \
+  incr=$(oc get vmbackup -n "$NAMESPACE" "$(scale_incr_name "$GID" "$vm" 1)" \
     -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-  cp=$(oc get vmbackuptracker -n "$NAMESPACE" "vm-tracker-$GID-$vm" \
+  cp=$(oc get vmbackuptracker -n "$NAMESPACE" "$(scale_tracker_name "$GID" "$vm")" \
     -o jsonpath='{.status.latestCheckpoint.name}' 2>/dev/null || echo missing)
   verdict=pass
   [[ "$full" == "Successfully completed VirtualMachineBackup" ]] || verdict="full:$full"
   [[ "$incr" == "Successfully completed VirtualMachineBackup" ]] || verdict="${verdict};incr:$incr"
-  [[ "$cp" == "vm-incremental-$GID-$vm-p01-"* ]] || verdict="${verdict};tracker:$cp"
+  [[ "$cp" == "$(scale_incr_name "$GID" "$vm" 1)-"* ]] || verdict="${verdict};tracker:$cp"
   if [[ "$verdict" == "pass" ]]; then pass=$((pass+1)); else fail=$((fail+1)); fi
   printf '%s\t%s\t%s\t%s\t%s\n' "$vm" "$full" "$incr" "$cp" "$verdict" >> "$OUT/verify.tsv"
 done < "$GF"
