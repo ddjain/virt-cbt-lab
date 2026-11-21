@@ -101,7 +101,7 @@ unlock_one(){
   rbd lock list "$POOL/$img" 2>/dev/null | awk -v img="$img" '
     /^client\./ { locker=$1; id=$2; sub(/ .*/, "", id); print img "\t" locker "\t" id }
   ' | while IFS="$(printf "\t")" read -r im locker id; do
-    rbd lock remove "$POOL/$im" "$id" "$locker" >/dev/null 2>&1 || echo "unlock-failed $im $locker"
+    timeout 60 rbd lock remove "$POOL/$im" "$id" "$locker" >/dev/null 2>&1 || echo "unlock-failed $im $locker"
   done
 }
 export -f unlock_one; export POOL
@@ -109,11 +109,33 @@ xargs -P 8 -I{} bash -c 'unlock_one {}'
 REMOTE
 )
 log "releasing stale exclusive locks on orphan images"
+# Full OSDs hang rbd lock remove / rbd rm indefinitely (seen 2026-11-21:
+# osd.19/41 at 85.09% vs full_ratio 0.85 — every removal call blocked, GC
+# spun silently for an hour). If ceph reports full OSDs, raise
+# mon_osd_full_ratio to 0.95 so the removals complete, and restore it
+# before exit. --no-unblock refuses instead of touching the threshold.
+RAISED=0; SAVED_RATIO=""
+restore_full_ratio(){
+  (( RAISED )) || return 0
+  log "restoring mon_osd_full_ratio=$SAVED_RATIO"
+  tools ceph osd set-full-ratio "$SAVED_RATIO" || true
+  RAISED=0
+}
+trap restore_full_ratio EXIT
+if tools ceph health 2>/dev/null | grep -q 'full osd'; then
+  if [[ -n "${NO_UNBLOCK:-}" ]]; then
+    echo "refusing: ceph reports full OSDs and NO_UNBLOCK set (rbd ops would hang)" >&2; exit 2
+  fi
+  SAVED_RATIO=$(tools ceph osd dump 2>/dev/null | awk '/^full_ratio/ {print $2; exit}')
+  if [[ -n "${SAVED_RATIO:-}" ]]; then
+    log "ceph reports full OSDs — raising mon_osd_full_ratio $SAVED_RATIO -> 0.95 for the deletion pass (auto-restored)"
+    tools ceph osd set-full-ratio 0.95 && RAISED=1
+  fi
+fi
 oc exec -i -n openshift-storage "$TB" -- bash -c "$UNLOCK_SCRIPT" _ "$POOL" \
   < "$TMP/orphans.txt" > "$TMP/unlock.out" || true
 unlock_fail=$(grep -c 'unlock-failed' "$TMP/unlock.out" || true)
 (( unlock_fail == 0 )) || log "WARNING: $unlock_fail lock release(s) failed (live watchers?)"
-# One exec: the script is passed as an argument, the orphan list on stdin.
 # Per image: read PV name from image metadata, rm image, drop its CSI omap entries.
 REMOTE_SCRIPT=$(cat <<'REMOTE'
 POOL="$1"; JOBS="$2"
@@ -136,6 +158,10 @@ oc exec -i -n openshift-storage "$TB" -- bash -c "$REMOTE_SCRIPT" _ "$POOL" "$JO
   < "$TMP/orphans.txt" > "$TMP/gc.out"
 ok=$(grep -c '^ok ' "$TMP/gc.out" || true); fail=$(grep -c '^FAIL ' "$TMP/gc.out" || true)
 log "deleted=$ok failed=$fail (of $N_ORPH)"
+restore_full_ratio
 find_orphans
 log "after: images=$N_IMG orphans=$N_ORPH"
 (( fail == 0 && N_ORPH == 0 )) || exit 1
+
+# NO_UNBLOCK=1 in the environment makes this script refuse (exit 2) instead
+# of raising mon_osd_full_ratio when ceph reports full OSDs.
