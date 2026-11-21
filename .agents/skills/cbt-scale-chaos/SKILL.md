@@ -49,6 +49,7 @@ was stated; never run anything mutating before the form is answered.
 | 4 | Cleanup previous run? | leftover objects AND not fleet-scoped | fleet runs self-clean per group (reset); throwaway mode: wipe everything (default) / keep |
 | 5 | Chaos? | not stated | **none** (default) / with chaos → **scenario ID** (from `cbt-chaos/scenarios_v2/`), **fire point** (e.g. at 50% fulls Done), **blast radius** (per-VM name-pattern vs fleet-wide). Rule 3 approval still happens before arming. |
 | 6 | Defaults OK? | always (catch-all) | wave 25 (workload SSH parallelism; 50–100 for N≥500), backup SCs (all OSes→replica-1 cbt-scale-pool, test data only; durable ODF for Windows only on request), keep VMs after verify (default: leave). If RHEL: stock `rhel9` (80Gi, heavy) vs **`rhel9-light`** (~25Gi per VM) — recommend `rhel9-light` unless the scenario needs the large disk |
+| 7 | Backup concurrency | the request spans 2+ OS families/groups and concurrency is not stated | **all at once (default, and the purpose of this skill)**: every VM's full backup fires in one wave, then every VM's incremental in one wave, across ALL OS families simultaneously (`PARALLEL_OS=true`) / sequential per OS family (only if the user explicitly asks; label timings as non-concurrent). If the user's wording is ambiguous about simultaneity, ask this at the start; never silently run families one after another. |
 
 Run/group ids are auto-generated `<os>-<dd-mm-yyyy-HH-MM-SS>` (UTC) so runs
 are easy to identify by timestamp. Group state lives in
@@ -58,6 +59,27 @@ the fleet registry is `artifacts/fleet.yaml`.
 Not asked (fixed defaults, never prompt): light incremental profile only,
 storage snapshots always taken, ROOT disks on durable 3-copy ODF unless the
 user explicitly asks for replica-1 roots (`ROOT_SC=cbt-scale-pool`).
+
+**Concurrency rule (always):** the goal is to simulate parallel backup load.
+Full backups for ALL selected VMs are triggered together, then incremental
+backups for ALL selected VMs are triggered together (incremental can only
+start after its VM's full is Done, so full → incremental ordering stays).
+`fleet-e2e.sh run` defaults to `PARALLEL_OS=false` (families driven one after
+another: a 5 rhel + 5 windows run on 2026-11-20 ran Windows only after RHEL
+finished). For any multi-family fleet run, ALWAYS prefix the command with
+`PARALLEL_OS=true`. After the run, confirm concurrency from the driver logs:
+every family's "all full backup requests applied" timestamp must be within
+seconds of the others; if not, say so in the report. Record per-phase timings
+(reset, GC, full wall, incremental wall per family, total) in the report.
+
+**Timing record (always, never needs to be requested):** every run's final
+report MUST include a UTC timestamp table: group reset start/end, GC end,
+drive start/end, and per family: full created→last Done, incremental
+created→last Done (min/max per-backup duration from `vmbackup`
+`creationTimestamp` → `Done` condition `lastTransitionTime`), driver stage
+walls, whole-script wall, and storage snapshot deltas. Pull them from the
+wrapper log, `<os>/summary.txt`, driver logs and the `vmbackup` objects, and
+compare against the previous comparable run when one exists.
 
 After the form: run the ONE deterministic command from Phase 1 (fleet or
 throwaway mode), then continue with Phase 2/3.
@@ -137,6 +159,17 @@ Prometheus is the fleet health oracle.
     remain. NEVER use it for fleet group reset (that is fleet-e2e's
     group-scoped reset); it exists for pre-fleet-build wipes and throwaway
     cleanup. Refuses without `--yes`.
+  - `cbt-scale/backup-wipe.sh` — **deterministic backup-objects-only cleanup**
+    (fleet-safe): `KUBECONFIG=... cbt-scale/backup-wipe.sh --yes
+    [--namespace vm-cbt-demo]` deletes ALL vmbackups/trackers/backup PVCs and
+    their PVs across every group (VMs, roots, persistent-state volumes,
+    Services untouched), then runs `scale-pool-gc.sh --delete`. Escalates
+    automatically when drains stall: strips vmbackup/PVC finalizers, forces
+    Bound backup PVs whose PVC is gone, and if ceph reports full OSDs raises
+    `mon_osd_full_ratio` to 0.95 for the deletion pass (restored before
+    exit). Use this instead of hand-driven cleanup after stacked runs; use
+    `fleet-e2e.sh reset <group-id>` for one group, `ns-wipe.sh` for full
+    teardown including VMs. Refuses without `--yes`.
   - `cbt-scale/scale-pool-gc.sh` — **orphan RBD image GC** for the replica-1
     backup pool. `KUBECONFIG=... cbt-scale/scale-pool-gc.sh [--pool P]
     [--delete] [--jobs 8]`: lists images with no referencing PV (report
@@ -202,7 +235,8 @@ when a script covers the scenario):
        cbt-scale/fleet-e2e.sh fleet-setup --rhel N [--rhel-light K] [--windows M]`
      - per run, cheap: `KUBECONFIG=/root/mno/kubeconfig
        cbt-scale/fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N [--offset M]
-       [--windows-count M2] [--wave 25]` — group id auto
+       [--windows-count M2] [--wave 25]` (prefix `PARALLEL_OS=true` whenever
+       more than one OS family is in the group) — group id auto
        `<os>-<dd-mm-yyyy-HH-MM-SS>`; resets the group's backups only,
        VMs/roots untouched
      - retry: `... run --retry <group-id> [--only-failed]`
@@ -350,6 +384,21 @@ mode keeps `summary.json` from density-e2e.sh). The agent's job is only to:
   --delete` handles this deterministically: it releases exclusive locks on
   images already confirmed orphan (no PV references) before `rbd rm`.
   NEVER run `rbd lock remove`/`rbd rm` by hand — rerun the script.
+- **Full OSDs deadlock the whole cleanup path (seen 2026-11-21).** This
+  cluster runs `mon_osd_full_ratio 0.85` (not the default 0.95). When two
+  OSDs crossed it (stacked 300/1200/1000-VM runs wrote ~56TiB to
+  `cbt-scale-pool`): ceph went `HEALTH_ERR` "2 full osd(s); 13 pool(s)
+  full", backup PVC attach stalled (`FailedAttachVolume`/`SyncVMI`
+  DeadlineExceeded storms), and — the trap — **`rbd lock remove`/`rbd rm`
+  hang indefinitely** because image headers sit on the full OSDs, so
+  `scale-pool-gc.sh` spins silently. Escape: `ceph osd set-full-ratio 0.95`
+  → deletions proceed (56TiB reclaimed, ~3k images, ~2h) → restore 0.85.
+  `scale-pool-gc.sh --delete` (since 2026-11-21) detects full OSDs and does
+  this raise/restore itself (set `NO_UNBLOCK=1` to make it refuse instead);
+  `backup-wipe.sh` orchestrates the whole sequence. Capacity planning: a
+  2000-VM full+incremental wave writes ~48TiB; the effective ceiling with
+  PG skew is ~60TiB stored on the scale pool — one run per cleanup cycle,
+  never stack runs without `backup-wipe.sh`.
 - **The registry can be stale after a manual wipe.** `artifacts/fleet.yaml`
   is regenerated by `fleet-setup`, which refuses only when VMs exist in the
   pools; `fleet-extend` dies on registry/cluster drift. Check
