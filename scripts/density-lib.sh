@@ -108,23 +108,79 @@ density_print_funnel() {
 
 # Wait until all count VMs of a pool report .status.ready == true.
 # Queries the cluster by pool label; used by density-setup.
+#
+# Repair loop (scale spin-up hardening, 2026-11-22): with hundreds of
+# concurrent boots two failure modes strand VMs in "creating":
+#   a) PausedIOError — qemu hit a transient root-disk IO error and libvirt
+#      paused the guest; a virt-launcher pod delete (hard reboot) recovers
+#      it reliably. Seen concentrated on a single node whose virt-handler
+#      had broken client-cert rotation (SyncVMI deadline storms).
+#   b) root PVC clone stuck Pending — CDI never spawned a populator pod
+#      for the DataVolume; deleting the PVC so CDI re-enqueues the clone
+#      unblocks the boot.
+# Every REPAIR_INTERVAL minutes without ready-count progress, one repair
+# pass runs, at most REPAIR_MAX_ROUNDS per wait. The wait still fails after
+# timeout; callers decide whether a partial fleet is acceptable.
+density_repair_pass() {  # $1 pool; prints acted-on VMs to stderr
+  local pool="$1" vms_json
+  vms_json="$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY=$pool" -o json 2>/dev/null || true)"
+  [[ -n "$vms_json" ]] || return 0
+  # a) paused VMs -> delete their virt-launcher pods (hard reboot)
+  oc_cmd get vmi -n "$NAMESPACE" -o json 2>/dev/null \
+    | jq -r '.items[]
+        | select((.metadata.labels["virt-cbt-lab/pool"] // "") == "'"$pool"'")
+        | select([.status.conditions[]? | select(.type == "Paused" and .status == "True")] | length > 0)
+        | .metadata.name' \
+    | while IFS= read -r vm; do
+        oc_cmd get pods -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null \
+          | { grep "^virt-launcher-${vm}-" || true; } \
+          | while IFS= read -r pod; do
+              oc_cmd delete pod "$pod" -n "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+              printf 'repair: reboot %s (PausedIOError)\n' "$vm" >&2
+            done
+      done
+  # b) not-ready VMs with Pending root PVC -> delete the PVC so CDI re-enqueues the clone
+  jq -r '.items[] | select(.status.ready != true) | .metadata.name' <<<"$vms_json" \
+    | while IFS= read -r vm; do
+        phase="$(oc_cmd get pvc "vm-disk-${vm}" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        if [[ "$phase" == "Pending" ]]; then
+          oc_cmd delete pvc "vm-disk-${vm}" -n "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
+          printf 'repair: reclone %s (root PVC Pending)\n' "$vm" >&2
+        fi
+      done
+}
+
 density_wait_for_ready() {
   local pool="$1" expected="$2" timeout_minutes="${3:-240}"
-  local deadline ready_count status_json vms_json
+  local repair_interval="${REPAIR_INTERVAL:-10}"
+  local repair_max="${REPAIR_MAX_ROUNDS:-6}"
+  local deadline ready_count status_json vms_json last_ready last_change now round
   deadline=$(( $(date +%s) + timeout_minutes * 60 ))
-  while :; do
-    vms_json="$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY=$pool" -o json 2>/dev/null || true)"
-    status_json="$(density_status_json "$pool" "$vms_json")"
-    ready_count="$(jq '[.vms[] | select(.state == "ready")] | length' <<<"$status_json")"
-    workflow_progress "created $ready_count/$expected"
-    if ((ready_count == expected)); then
-      return 0
+  last_ready=-1; last_change=$(date +%s); round=0
+   while :; do
+     vms_json="$(oc_cmd get vm -n "$NAMESPACE" -l "$RUN_LABEL_POOL_KEY=$pool" -o json 2>/dev/null || true)"
+     status_json="$(density_status_json "$pool" "$vms_json")"
+     ready_count="$(jq '[.vms[] | select(.state == "ready")] | length' <<<"$status_json")"
+     workflow_progress "created $ready_count/$expected"
+     if ((ready_count == expected)); then
+       return 0
+     fi
+    now=$(date +%s)
+    if (( ready_count != last_ready )); then
+      last_ready=$ready_count; last_change=$now
     fi
-    if (( $(date +%s) >= deadline )); then
-      printf 'Pool %s still creating after %s minutes; check make density-status POOL=%s.\n' \
-        "$pool" "$timeout_minutes" "$pool" >&2
-      return 1
+    if (( round < repair_max )) && (( now - last_change >= repair_interval * 60 )); then
+      round=$((round + 1))
+      printf 'Pool %s stalled at %s/%s for %s min; repair pass %s/%s\n' \
+        "$pool" "$ready_count" "$expected" "$repair_interval" "$round" "$repair_max" >&2
+      density_repair_pass "$pool" || true
+      last_change=$now
     fi
-    sleep 30
-  done
+     if (( $(date +%s) >= deadline )); then
+       printf 'Pool %s still creating after %s minutes; check make density-status POOL=%s.\n' \
+         "$pool" "$timeout_minutes" "$pool" >&2
+       return 1
+     fi
+     sleep 30
+   done
 }

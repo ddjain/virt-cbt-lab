@@ -74,6 +74,7 @@ create_vm_resources() {
 }
 
 if [[ -n "${EXISTING_VM:-}" ]]; then
+  check_rhel_light_workload_fits || exit 1
   adopt_existing_run_id
   workflow_step "1-3/5 Skip VM creation"
   workflow_success "Adopting existing VM $VM_NAME"

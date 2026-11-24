@@ -196,7 +196,7 @@ wait_family() {  # $1 name-prefix  $2 label  $3 timeout-s
 # ~488s, 1200 fulls >2h (run rhel9-light-20-11-2026-15-19-05 hit the old
 # 7200s default with all backups eventually Done). Scale VMs x 15s with a
 # 7200s floor; 2000 VMs -> 30000s (~8.3h). Override: FAMILY_WAIT_TIMEOUT env.
-FAMILY_WAIT_TIMEOUT="${FAMILY_WAIT_TIMEOUT:-$(( ${#GROUP_VMS[@]:-0} > 0 ? ${#GROUP_VMS[@]} * 15 : 7200 ))}"
+FAMILY_WAIT_TIMEOUT="${FAMILY_WAIT_TIMEOUT:-$(( ${#GROUP_VMS[@]} > 0 ? ${#GROUP_VMS[@]} * 15 : 7200 ))}"
 
 # ---- Phase A: baseline workload ----
 echo "=== Phase A: baseline workload ==="

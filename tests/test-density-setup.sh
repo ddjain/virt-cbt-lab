@@ -32,6 +32,11 @@ for arg in "$@"; do
     *virt-cbt-lab/pool=*) pool="${arg##*virt-cbt-lab/pool=}" ;;
   esac
 done
+# Namespace golden: its DataVolume already Succeeded (reuse path), and the
+# golden PVC capacity drives DISK_SIZE.
+if [[ "$*" == *"get dv golden-"* ]]; then printf 'Succeeded'; exit 0; fi
+if [[ "$*" == *"get pvc golden-windows"* ]]; then printf '40Gi'; exit 0; fi
+if [[ "$*" == *"get pvc golden-"* ]]; then printf '80Gi'; exit 0; fi
 out=""
 if [[ "$*" == *"get vm -n"* && -n "$pool" ]]; then
   # Cluster state is temporal: VMs exist only after kube-burner ran.
@@ -214,7 +219,7 @@ chmod +x "$FAKE_BIN/kube-burner"
   bash "$TEST_ROOT/scripts/density-setup.sh" >/dev/null 2>&1)
 jq -e '.OBJECT_TEMPLATE == "'"$TEST_ROOT"'/manifests/density/windows-vm.yaml" and
        .STORAGE_CLASS == "ocs-storagecluster-ceph-rbd-virtualization" and
-       .DISK_SIZE == "40Gi" and .MANIFEST_VARIANT == "default" and
+       .DISK_SIZE == "40Gi" and .MANIFEST_VARIANT == "large-odf" and
        .SSH_PUBLIC_KEY == ""' "$windows_userdata" >/dev/null
 # No local metadata for the Windows pool either.
 [[ ! -e "$TEST_ROOT/density" ]] || {

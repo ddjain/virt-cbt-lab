@@ -1,12 +1,47 @@
 # DENSITY RHEL 9 VM template for kube-burner (`make density-setup`), used for
-# VM_OS=rhel9 and rhel9-light (os-profile, DataSource name/namespace, and
-# disk size come from the density-setup user-data). Keep structurally in
+# VM_OS=rhel9 and rhel9-light (os-profile, golden PVC name, and disk size
+# come from the density-setup user-data). Keep structurally in
 # sync with manifests/vm-large-odf.yaml (cloud-init hard-coded for the RHEL
 # profiles: package_update false, no packages, wheel group, sshd service).
-# Namespace comes from
-# manifests/density/config.yaml, so no Namespace document here.
+# Namespace comes from manifests/density/config.yaml, so no Namespace
+# document here.
+#
+# 2026-11-22 — same-namespace PVC clone (no DataVolume/CDI): the root disk
+# is a plain PVC whose dataSource is a golden PVC copied into
+# {{ .namespace }} by scripts/density-setup.sh (CLONE_SRC_PVC). This avoids
+# CDI's cross-namespace clone bridge (per-clone expiring JWTs + tmp-pvc
+# churn + double ceph clone through one throttled CSI provisioner), which
+# wedged a 2000-VM build for hours on 2026-11-22. The VM references the PVC
+# directly; PVC Bound → VM boots. The golden PVC must not be smaller than
+# diskSize (clone floor). The golden PVC carries virt-cbt-lab/golden=true
+# and is named golden-<osProfile>; wipe tooling matches vm-disk-* /
+# persistent-state-* prefixes, so it is never deleted.
 # $rid is re-declared per document; Go-template variables do not cross
 # document boundaries.
+{{ $rid := printf "%s-%04d" .poolId (add (atoi .startIndex) (add1 .Iteration)) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vm-disk-{{ $rid }}
+  namespace: {{ .namespace }}
+  labels:
+    cbt-demo: enabled
+    {{ .managedByKey }}: {{ .managedByValue }}
+    {{ .runIdKey }}: {{ $rid }}
+    {{ .poolKey }}: {{ .poolId }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  storageClassName: {{ .storageClass }}
+  dataSource:
+    apiGroup: ""
+    kind: PersistentVolumeClaim
+    name: {{ .cloneSrcPvc }}
+  resources:
+    requests:
+      storage: {{ .diskSize }}
+---
 {{ $rid := printf "%s-%04d" .poolId (add (atoi .startIndex) (add1 .Iteration)) }}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
@@ -24,26 +59,6 @@ metadata:
     virt-cbt-lab/incremental-passes: "{{ .incrementalPasses }}"
 spec:
   runStrategy: Always
-  dataVolumeTemplates:
-    - metadata:
-        name: vm-disk-{{ $rid }}
-        labels:
-          {{ .managedByKey }}: {{ .managedByValue }}
-          {{ .runIdKey }}: {{ $rid }}
-          {{ .poolKey }}: {{ .poolId }}
-      spec:
-        sourceRef:
-          kind: DataSource
-          name: {{ .dataSourceName | default "rhel9" }}
-          namespace: {{ .dataSourceNamespace | default "openshift-virtualization-os-images" }}
-        storage:
-          accessModes:
-            - ReadWriteOnce
-          resources:
-            requests:
-              storage: {{ .diskSize }}
-          storageClassName: {{ .storageClass }}
-          volumeMode: Filesystem
   template:
     metadata:
       labels:
@@ -78,8 +93,8 @@ spec:
           pod: {}
       volumes:
         - name: rootdisk
-          dataVolume:
-            name: vm-disk-{{ $rid }}
+          persistentVolumeClaim:
+            claimName: vm-disk-{{ $rid }}
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |

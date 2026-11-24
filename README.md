@@ -416,6 +416,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 - **Guest SSH retries or times out:** inspect VM readiness, the service, and the port-forward messages. Ensure the generated private key is readable only by its owner.
 - **An incremental backup already exists:** run `make clean-all` before repeating the fixed-name workflow.
 - **Incremental type is wrong:** wait for the full checkpoint to appear in the run's `VirtualMachineBackupTracker` (`vm-tracker-<run-id>`) and inspect backup conditions and tracker status.
+- **Workers NotReady, OSDs down, pools full, or a fleet build cannot provision roots:** see [`docs/cluster-recovery-troubleshooting.md`](docs/cluster-recovery-troubleshooting.md) for the diagnosis commands, the observed kubelet/RBD/OSD deadlock, node and BMC recovery, and orphan RBD image cleanup.
 
 ## Repository structure
 
