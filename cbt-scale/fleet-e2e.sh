@@ -148,6 +148,22 @@ FLEET_REG_JQ='.metadata.labels["virt-cbt-lab/pool"] as $p
      $p, (.status.ready // false | tostring), "-"] | @tsv'
 pool_vm_count(){ oc get vm -n "$NAMESPACE" -l "virt-cbt-lab/pool=$1" --no-headers 2>/dev/null | wc -l | tr -d ' '; }
 
+# Tolerant readiness gate for a fleet family: pass when at least
+# min_frac of the requested VMs are ready (default 0.95). Logs both ways.
+fleet_gate_check(){  # $1 os-name $2 pool $3 requested $4 min_frac (0-1)
+  local os="$1" pool="$2" want="$3" frac="$4" ready min
+  ready=$(oc get vm -n "$NAMESPACE" -l "virt-cbt-lab/pool=$pool" -o json \
+    | jq -r '[.items[] | select(.status.ready == true)] | length')
+  # bash arithmetic is integer-only; do the float multiply in awk
+  min=$(awk -v w="$want" -v f="$frac" 'BEGIN{printf "%d", int(w * f)}')
+  if (( ready >= min )); then
+    log "FLEET: $os gate PASS — $ready/$want ready (>= ${min})"
+    return 0
+  fi
+  log "FLEET: $os gate FAIL — only $ready/$want ready (needed >= ${min}); see $SCALE_STATE_DIR/fleet-setup-*.log"
+  return 1
+}
+
 cmd_fleet_setup(){
   local rhel=0 light=0 win=0
   while [[ $# -gt 0 ]]; do
@@ -166,28 +182,51 @@ cmd_fleet_setup(){
   existing=$(( $(pool_vm_count fleet-rhel) + $(pool_vm_count fleet-rhl) + $(pool_vm_count fleet-win) ))
   (( existing > 0 )) && die "fleet already exists ($existing VMs) — rebuild requires explicit wipe of pools fleet-rhel/fleet-rhl/fleet-win first"
 
-  log "FLEET: creating $rhel rhel9 + $light rhel9-light + $win windows VMs (persistent pools)"
+  # Families provision in PARALLEL (a rhel failure must not block windows,
+  # seen 2026-11-21: sequential setup aborted on 20 stuck rhel VMs and the
+  # windows pool never started). A family that misses the readiness gate is
+  # tolerated at FLEET_MIN_READY_FRAC (default 0.95): the run continues
+  # with the VMs that are ready and the failure is reported loudly. The
+  # readiness wait itself has a repair loop (density_wait_for_ready,
+  # density-lib.sh) for PausedIOError boots and stuck CDI clones.
+  log "FLEET: creating $rhel rhel9 + $light rhel9-light + $win windows VMs (persistent pools, parallel families)"
   set -a; . ./.env 2>/dev/null || true; set +a
+  local min_frac="${FLEET_MIN_READY_FRAC:-0.95}" rpid=0 lpid=0 wpid=0 rc=0
   if (( rhel > 0 )); then
     # VM_OS/POOL are make ARGUMENTS: `.env` (VM_OS=rhel9) overrides env vars in make
     make density-setup VM_OS=rhel9 POOL=fleet-rhel MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$rhel" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
-      DENSITY_WAIT_MINUTES=$(( rhel / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhel.log" 2>&1 \
-      || die "rhel fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-rhel.log)"
+      DENSITY_WAIT_MINUTES=$(( rhel / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhel.log" 2>&1 &
+    rpid=$!
   fi
   if (( light > 0 )); then
     make density-setup VM_OS=rhel9-light POOL=fleet-rhl MANIFEST_VARIANT=large-odf "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$light" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
-      DENSITY_WAIT_MINUTES=$(( light / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhl.log" 2>&1 \
-      || die "rhel9-light fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-rhl.log; run 'make rhel-light-golden' once if the DataSource is missing)"
+      DENSITY_WAIT_MINUTES=$(( light / 4 + 60 )) > "$SCALE_STATE_DIR/fleet-setup-rhl.log" 2>&1 &
+    lpid=$!
   fi
   if (( win > 0 )); then
     make density-setup VM_OS=windows POOL=fleet-win GUEST_EXEC_POLL_ATTEMPTS=450 "${ROOT_SC_ARG[@]+"${ROOT_SC_ARG[@]}"}" \
       DENSITY_VM_COUNT="$win" DENSITY_INCREMENTAL_PASSES=1 DENSITY_QPS=50 \
-      DENSITY_WAIT_MINUTES=$(( win / 4 + 120 )) > "$SCALE_STATE_DIR/fleet-setup-win.log" 2>&1 \
-      || die "windows fleet setup failed (see $SCALE_STATE_DIR/fleet-setup-win.log)"
+      DENSITY_WAIT_MINUTES=$(( win / 4 + 120 )) > "$SCALE_STATE_DIR/fleet-setup-win.log" 2>&1 &
+    wpid=$!
   fi
-
+  # Tolerant gate: wait each family; a family fails the gate only when its
+  # ready count is below min_frac of requested.
+  if (( rpid > 0 )); then
+    wait "$rpid" || true
+    fleet_gate_check rhel9 fleet-rhel "$rhel" "$min_frac" || rc=1
+  fi
+  if (( lpid > 0 )); then
+    wait "$lpid" || true
+    fleet_gate_check rhel9-light fleet-rhl "$light" "$min_frac" || rc=1
+  fi
+  if (( wpid > 0 )); then
+    wait "$wpid" || true
+    fleet_gate_check windows fleet-win "$win" "$min_frac" || rc=1
+  fi
+  (( rc == 0 )) || log "FLEET: WARNING — one or more families below ${min_frac} ready; see fleet-setup-*.log (fleet usable, run with reduced counts)"
+ 
   mkdir -p "$(dirname "$FLEET")" "$GROUPS_DIR"
   { printf 'vm\tos\tpool\tready\tlast_run\n'
     oc get vm -n "$NAMESPACE" -o json | jq -r ".items[] | $FLEET_REG_JQ"
