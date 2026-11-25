@@ -72,13 +72,16 @@ seconds of the others; if not, say so in the report. Record per-phase timings
 (reset, GC, full wall, incremental wall per family, total) in the report.
 
 **Timing record (always, never needs to be requested):** every run's final
-report MUST include a UTC timestamp table: group reset start/end, GC end,
+report MUST include the UTC timing record: group reset start/end, GC end,
 drive start/end, and per family: full created→last Done, incremental
 created→last Done (min/max per-backup duration from `vmbackup`
 `creationTimestamp` → `Done` condition `lastTransitionTime`), driver stage
-walls, whole-script wall, and storage snapshot deltas. Pull them from the
-wrapper log, `<os>/summary.txt`, driver logs and the `vmbackup` objects, and
-compare against the previous comparable run when one exists.
+walls, whole-script wall, concurrency check, storage snapshot deltas and
+failure triage. **Since 2026-11-25 this is deterministic**: run
+`cbt-scale/fleet-timings.sh <group-id>` (automatic via `fleet-verify.sh` or
+`fleet-e2e.sh run --verify`), read `timings.md`, and compare against the
+previous comparable run when one exists. Do not hand-extract durations from
+`vmbackup` objects or wrapper logs anymore; only add comparison commentary.
 
 After the form: run the ONE deterministic command from Phase 1 (fleet or
 throwaway mode), then continue with Phase 2/3.
@@ -129,19 +132,24 @@ Prometheus is the fleet health oracle.
       Optional `ROOT_SC=<sc>` in the environment overrides the ROOT disk
       StorageClass. Default keeps roots on durable 3-copy ODF.
     - Run: `fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N
-      [--offset M] [--windows-count M2] [--wave 25]` — creates group
+      [--offset M] [--windows-count M2] [--wave 25] [--dry-run] [--verify]` — creates group
       `artifacts/groups/<os>-<dd-mm-yyyy-HH-MM-SS>.yaml`, resets the group's
       backup objects (vmbackups/trackers/backup PVCs+PVs — VMs and roots are
       NEVER touched), runs full+incremental backups for just the group,
       validates from live cluster state, writes per-VM results + summary.
+      `--verify` chains `fleet-verify.sh` + `fleet-timings.sh` after the run
+      (full evidence set, zero manual post-run steps). The wrapper records
+      stage timestamps to `groups/<group-id>/wrapper-timings.tsv` and WARNs
+      when other groups' backup objects still exist (capacity hint only).
       The `rhel9-light` family is driven with 12Gi full / 2Gi incremental
       backup PVCs (`RHEL_LIGHT_FULL_BACKUP_SIZE` /
       `RHEL_LIGHT_INCREMENTAL_PVC_SIZE` override); per-OS driver logs and
       evidence land in `artifacts/groups/<group-id>/{rhel,rhl,win}/`.
-    - Retry: `fleet-e2e.sh run --retry <group-id> [--only-failed]`.
+    - `--dry-run` prints the selected group, reset scope and VM list, then
+      exits without touching the cluster — safe preview before a real run.
     - Manual reset: `fleet-e2e.sh reset <group-id>`.
     Saves the full VM-provisioning cost on every run after the fleet build;
-    per-run wall ≈ backup walls + ~2min group reset.
+    per-run wall ≈ backup walls + group reset (poll-based, typically <1min).
   - `cbt-scale/density-scale-test.sh` — manual entry: asks cleanup + OS profile
     (`rhel9|windows` only — no `rhel9-light`; use density-e2e.sh/fleet-e2e.sh
     for that), creates the pool, drives the phases, snapshots storage.
@@ -181,6 +189,18 @@ Prometheus is the fleet health oracle.
     latestCheckpoint per VM) writing `verify.tsv`, runs the Prometheus sweep
     when a window is given, and writes
     `artifacts/groups/<group-id>/run-report.md`. Exit 0 = all pass.
+  - `cbt-scale/fleet-timings.sh` — **deterministic timing record + failure
+    triage** for a fleet group. `KUBECONFIG=... cbt-scale/fleet-timings.sh
+    <group-id>`: writes `artifacts/groups/<group-id>/timings.md` (+ `timings.tsv`,
+    `triage.tsv`) covering stage timestamps (from `wrapper-timings.tsv`),
+    per-family driver walls + concurrency check (full-wave apply spread ≤10s
+    = CONFIRMED), per-backup created→Done duration stats (min/max/avg per
+    family/phase), storage.csv pre/post deltas, and failure classification:
+    `pvc-full` / `guest-fsfreeze-warning` / `object-stuck` (backup service
+    reports "already executed ... completed: true" but the vmbackup object
+    never transitioned — data likely saved, object stale). Run automatically
+    by `fleet-verify.sh` and `fleet-e2e.sh run --verify`; direct invocation
+    works for groups that predate it.
   - `cbt-scale/prom-sweep.sh` — **deterministic Layer-2 Prometheus sweep**.
     `KUBECONFIG=... cbt-scale/prom-sweep.sh <start-UTC> <end-UTC> [report.md]`:
     queries thanos-querier (token via `oc create token prometheus-k8s`,
@@ -234,7 +254,7 @@ when a script covers the scenario):
        cbt-scale/fleet-e2e.sh fleet-setup --rhel N [--rhel-light K] [--windows M]`
      - per run, cheap: `KUBECONFIG=/root/mno/kubeconfig
        cbt-scale/fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N [--offset M]
-       [--windows-count M2] [--wave 25]` (prefix `PARALLEL_OS=true` whenever
+       [--windows-count M2] [--wave 25] [--dry-run]` (prefix `PARALLEL_OS=true` whenever
        more than one OS family is in the group) — group id auto
        `<os>-<dd-mm-yyyy-HH-MM-SS>`; resets the group's backups only,
        VMs/roots untouched
@@ -304,7 +324,10 @@ but ALWAYS cross-check with the deterministic script (log writes can race
 driver exit):
 
 ```sh
-KUBECONFIG=/root/mno/kubeconfig cbt-scale/fleet-verify.sh <group-id>
+KUBECONFIG=/root/mno/kubeconfig cbt-scale/fleet-verify.sh <group-id> [start-UTC end-UTC]
+# preferred: pass the run window (drive-start/drive-end from
+# groups/<group-id>/wrapper-timings.tsv) so the Prometheus table lands in the
+# report; fleet-verify also runs fleet-timings.sh (timing record + triage)
 ```
 
 It counts per-vmbackup full+incremental Done reasons and tracker
@@ -317,8 +340,8 @@ incrementals ~45MiB/VM (check `storage-snapshot.sh` rows). Measured
 PVCs 11Gi root / 12Gi full / 2Gi incr.
 
 **Layer 2 — Prometheus health sweep**: run the deterministic script over the
-run window (wrapper log lines `RUN: driving group ...` → `DONE group=...`
-give the timestamps):
+run window (`groups/<group-id>/wrapper-timings.tsv` drive-start → drive-end;
+older groups: wrapper log lines `RUN: driving group ...` → `DONE group=...`):
 
 ```sh
 KUBECONFIG=/root/mno/kubeconfig cbt-scale/prom-sweep.sh <start-UTC> <end-UTC>
@@ -344,15 +367,16 @@ passed, call it out as a resilience finding, not silence it.
 
 **Generated, not hand-written**: `fleet-verify.sh <group-id> [start end]`
 writes `artifacts/groups/<group-id>/run-report.md` (fleet mode; throwaway
-mode keeps `summary.json` from density-e2e.sh). The agent's job is only to:
-- pass the correct run window (from the wrapper log) so the Prometheus table
-  lands in the report,
+mode keeps `summary.json` from density-e2e.sh) and runs `fleet-timings.sh`
+for `timings.md` (timing record + failure triage). The agent's job is only to:
+- pass the correct run window (drive-start/drive-end from
+  `wrapper-timings.tsv`) so the Prometheus table lands in the report,
 - add anything the script cannot know: run parameters context, chaos
   scenario id / injection window / blast radius (if any), and an attempt
   history table when re-running after failures,
-- present the verdict with the evidence files: `verify.tsv`,
-  `prom-sweep.log`, driver `summary.txt`/logs, group `.yaml`/`.summary`,
-  storage snapshot rows.
+- present the verdict with the evidence files: `verify.tsv`, `timings.md`
+  (+ `timings.tsv`/`triage.tsv`), `prom-sweep.log`, driver
+  `summary.txt`/logs, group `.yaml`/`.summary`, storage snapshot rows.
 
 ## Known traps (from live runs on this cluster)
 
@@ -445,6 +469,16 @@ mode keeps `summary.json` from density-e2e.sh). The agent's job is only to:
   GROUP_FILE/GROUP_ID; if a group run suddenly reports all-missing backups,
   check for a stale checkout on cloud05 missing these fixes. The fixes
   ship in the tracked `cbt-scale/` folder of the checkout.
+- **Driver batches backup applies since 2026-11-25 — failure looks
+  different now.** Phases B/D apply all rendered manifests in ONE
+  `oc apply` (docs separated by `---`), `wait_family` fails with
+  `INCOMPLETE: X/N` when fewer objects exist than expected, and the driver
+  exits nonzero on any tally failure. `INCOMPLETE` means the batch apply
+  failed (read `phase.log` for the API error); a fast whole-group FAIL with
+  `full=missing,incr=missing` is a stale checkout missing the `---`
+  separator fix (2026-11-25, group rhel9-light-25-11-2026-09-31-29: 51 of
+  75 objects created because unseparated renders merged via YAML duplicate
+  keys). Also: `scale-status.sh` now REQUIRES the pool argument.
 - **Thanos route TLS**: the thanos-querier route cert is not in cloud05's CA
   bundles — `curl --insecure` (as `prom-sweep.sh` does) is expected; token
   auth still enforces identity. PromQL `@` modifiers must attach to the

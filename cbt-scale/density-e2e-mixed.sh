@@ -38,7 +38,7 @@ if (( existing > 0 )); then
   done
   sleep 60
   oc delete vmbackup,vmbackuptracker,vm,dv,pvc,svc -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
-  oc get pv -o json | jq -r '.items[] | select(.status.phase=="Released" or .status.phase=="Available") | .metadata.name' \
+  oc get pv -o json | jq -r '.items[] | select(.status.phase=="Released" or .status.phase=="Available") | select(.spec.claimRef.namespace=="'"$NAMESPACE"'") | .metadata.name' \
   | while read -r pv; do
     oc patch pv "$pv" --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
     oc delete pv "$pv" --wait=false >/dev/null 2>&1 || true

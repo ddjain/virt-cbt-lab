@@ -16,10 +16,11 @@
 #
 #   # 2. Per-run (cheap): new group = slice of the fleet
 #   fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N [--offset M]
-#                  [--windows-count M2] [--wave 25]
+#                  [--windows-count M2] [--wave 25] [--verify]
 #   #    retry a previous group (all, or only failed VMs):
 #   fleet-e2e.sh run --retry <group-id> [--only-failed]
-#
+#   #    show what a run would do without touching the cluster:
+#   fleet-e2e.sh run ... --dry-run
 # State:
 #   $SCALE_STATE_DIR/fleet.yaml                      — persistent fleet registry
 #   $SCALE_STATE_DIR/groups/<group-id>.yaml          — per-run group manifest with
@@ -77,22 +78,25 @@ fleet_vms_os(){   # $1 = rhel9|windows
 fleet_vms_pool(){ # $1 = pool name
   fleet_list; tail -n +2 "$FLEET" | awk -F'\t' -v p="$1" '$3==p{print $1}'
 }
-fleet_set_last_run(){  # $1 vm  $2 group-id
-  local tmp; tmp=$(mktemp)
-  { head -1 "$FLEET"; tail -n +2 "$FLEET" | awk -F'\t' -v vm="$1" -v g="$2" \
-      '{if ($1==vm) $5=g; print}' OFS='\t'; } > "$tmp" && mv "$tmp" "$FLEET"
+fleet_set_last_run(){  # $1 vms(space-sep)  $2 group-id — single rewrite of the last_run column
+  local tmp; tmp=$(mktemp "$FLEET.tmp.XXXXXX") || die "mktemp failed for $FLEET"
+  { head -1 "$FLEET"; tail -n +2 "$FLEET" | awk -F'\t' -v OFS='\t' -v g="$2" -v vms="$1" '
+      BEGIN { n = split(vms, a, " "); for (i = 1; i <= n; i++) if (a[i] != "") sel[a[i]] = 1 }
+      { if ($1 in sel) $5 = g; print }
+    '; } > "$tmp" && mv "$tmp" "$FLEET"
 }
 
 # ---------- group manifest helpers ----------
-# groups/<id>.yaml: one VM per line with tab-separated state:
+# groups/<id>.yaml: one VM per line with tab-separated state (5 columns):
 #   vm<TAB>state<TAB>full_backup<TAB>incr_backup<TAB>result
 group_file(){ echo "$GROUPS_DIR/$1.yaml"; }
 group_vms(){ tail -n +2 "$(group_file "$1")" | cut -f1; }
 
-group_set(){  # $1 group  $2 vm  $3 field-index(3=state,4=full,5=incr,6=result)  $4 value
-  local f tmp; f="$(group_file "$1")"; tmp=$(mktemp)
-  { head -1 "$f"; tail -n +2 "$f" | awk -F'\t' -v vm="$2" -v idx="$3" -v val="$4" \
-      -v OFS='\t' '{if ($1==vm) $idx=val; print}'; } > "$tmp" && mv "$tmp" "$f"
+# group_write_results <group> <rows-file>: atomically replace the manifest
+# body with pre-computed 5-column rows (one write, not one per field).
+group_write_results(){  # $1 group  $2 rows-file (vm\tstate\tfull\tincr\tresult per line)
+  local f tmp; f="$(group_file "$1")"; tmp=$(mktemp "$f.tmp.XXXXXX") || die "mktemp failed for $f"
+  { printf 'vm\tstate\tfull_backup\tincr_backup\tresult\n'; cat "$2"; } > "$tmp" && mv "$tmp" "$f"
 }
 
 # ---------- group-scoped backup reset (keeps VMs/roots) ----------
@@ -110,29 +114,56 @@ reset_group_backups(){  # $1 group  (uses vm list from manifest)
       | { grep -E "$re" || true; } \
       | xargs -r oc delete "$kind" -n "$NAMESPACE" --wait=false 2>/dev/null || true
   done
-  # finalizer force-unstick (known 4-hop chain stall)
-  sleep 45
-  oc get vmbackup -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name --no-headers 2>/dev/null \
-    | { grep -E "$re" || true; } \
-    | while read -r vb; do
+  # finalizer force-unstick (known 4-hop chain stall): poll until the group's
+  # objects are gone; escalate with finalizer removal only for survivors.
+  local deadline=$(( $(date +%s) + 90 )) vb
+  while :; do
+    local -a left=()
+    mapfile -t left < <(oc get vmbackup,vmbackuptracker,pvc -n "$NAMESPACE" -o name --no-headers 2>/dev/null \
+      | sed 's|^[^/]*/||' | { grep -E "$re" || true; })
+    (( ${#left[@]} == 0 )) && break
+    if (( $(date +%s) > deadline )); then
+      log "RESET: escalating finalizer removal for ${#left[@]} stuck group objects"
+      for vb in "${left[@]}"; do
         oc patch -n "$NAMESPACE" vmbackup "$vb" --type=json \
           -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
         oc delete -n "$NAMESPACE" vmbackup "$vb" --wait=false >/dev/null 2>&1 || true
       done
-  # purge backup PVs (Released/Available only, scoped by reclaim of deleted PVCs)
-  sleep 30
-  oc get pv -o json | jq -r '.items[]
+      break
+    fi
+    sleep 10
+  done
+  # purge backup PVs (Released/Available only, scoped to THIS group's deleted
+  # backup PVC names — never namespace-wide or cluster-wide)
+  local pvc_alt="" vm pv_re pvs pv
+  for vm in "${vms[@]}"; do
+    pvc_alt+="${pvc_alt:+|}vm-backup-pvc-$(scale_obj_id "$g" "$vm")|vm-incremental-pvc-$(scale_obj_id "$g" "$vm")-p[0-9]+"
+  done
+  pv_re="^(${pvc_alt})$"
+  mapfile -t pvs < <(oc get pv -o json | jq -r '.items[]
       | select(.status.phase=="Released" or .status.phase=="Available")
       | select(.spec.claimRef.namespace=="'"$NAMESPACE"'")
-      | .metadata.name' \
-  | { cat || true; } \
-  | while read -r pv; do
-      oc patch pv "$pv" --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
-      oc delete pv "$pv" --wait=false >/dev/null 2>&1 || true
-    done
-  sleep 15
-  local left; left=$(oc get vmbackup,vmbackuptracker -n "$NAMESPACE" -o name 2>/dev/null | grep -c "$g" || true)
-  log "RESET: done ($left group objects remain; VMs still present: $(oc get vm -n "$NAMESPACE" --no-headers | wc -l))"
+      | select(.spec.claimRef.name | test("'"$pv_re"'"))
+      | .metadata.name' 2>/dev/null || true)
+  for pv in "${pvs[@]}"; do
+    oc patch pv "$pv" --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]' >/dev/null 2>&1 || true
+    oc delete pv "$pv" --wait=false >/dev/null 2>&1 || true
+  done
+  # PV deletion is asynchronous; give the group's backup objects a bounded
+  # drain so the run does not race its own reset.
+  deadline=$(( $(date +%s) + 60 ))
+  while (( $(date +%s) < deadline )); do
+    local -a rem=()
+    mapfile -t rem < <(oc get vmbackup,vmbackuptracker,pvc -n "$NAMESPACE" -o name --no-headers 2>/dev/null \
+      | sed 's|^[^/]*/||' | { grep -E "$re" || true; })
+    (( ${#rem[@]} == 0 )) && break
+    sleep 10
+  done
+  local -a rem=()
+  mapfile -t rem < <(oc get vmbackup,vmbackuptracker,pvc -n "$NAMESPACE" -o name --no-headers 2>/dev/null \
+    | sed 's|^[^/]*/||' | { grep -E "$re" || true; })
+  (( ${#rem[@]} == 0 )) || log "WARN: RESET: ${#rem[@]} group objects still present after reset: ${rem[*]}"
+  log "RESET: done (VMs still present: $(oc get vm -n "$NAMESPACE" --no-headers | wc -l))"
 }
 
 # ---------- fleet setup ----------
@@ -295,7 +326,7 @@ select_slice(){  # $1 os(rhel9|windows) $2 count $3 offset -> vm names
 }
 
 cmd_run(){
-  local os="" count="" offset=0 win_count=0 wave="$WAVE_DEFAULT" retry="" only_failed=false
+  local os="" count="" offset=0 win_count=0 wave="$WAVE_DEFAULT" retry="" only_failed=false dry_run=false verify=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --os) os="$2"; shift 2 ;;
@@ -305,6 +336,8 @@ cmd_run(){
       --wave) wave="$2"; shift 2 ;;
       --retry) retry="$2"; shift 2 ;;
       --only-failed) only_failed=true; shift ;;
+      --dry-run) dry_run=true; shift ;;
+      --verify) verify=true; shift ;;
       *) die "run: unknown arg $1" ;;
     esac
   done
@@ -312,9 +345,14 @@ cmd_run(){
   local group_id vms=() vm
   if [[ -n "$retry" ]]; then
     [[ -f "$(group_file "$retry")" ]] || die "no such group: $retry"
-    group_id="${retry}-retry-$(ts_id)"
+    # compact retry id (<orig>-r<N>): the virt-cbt-lab/run-id label value is
+    # "<group-id>-<vm>" and must stay <= 63 bytes; a timestamped retry suffix
+    # overflows the Kubernetes label limit and every apply fails Invalid
+    local ridx=1
+    while [[ -e "$(group_file "${retry}-r${ridx}")" ]]; do ridx=$((ridx + 1)); done
+    group_id="${retry}-r${ridx}"
     if [[ "$only_failed" == true ]]; then
-      while IFS=$'\t' read -r vm state _ _ _ result; do
+      while IFS=$'\t' read -r vm state full incr result; do
         [[ "$result" == "pass" ]] || vms+=("$vm")
       done < <(tail -n +2 "$(group_file "$retry")")
     else
@@ -335,6 +373,14 @@ cmd_run(){
     log "RUN: new group $group_id (${#vms[@]} VMs, os=$os count=$count offset=$offset windows=$win_count)"
   fi
 
+  # the virt-cbt-lab/run-id label value is "<group-id>-<vm>"; Kubernetes caps
+  # label values at 63 bytes — refuse before creating anything
+  local _vm
+  for _vm in "${vms[@]}"; do
+    (( ${#group_id} + 1 + ${#_vm} <= 63 )) \
+      || die "group id '$group_id' + VM '$_vm' exceeds the 63-byte label limit (run-id label value) — use a shorter group id"
+  done
+
   # health check + write group manifest
   { printf 'vm\tstate\tfull_backup\tincr_backup\tresult\n'
     for vm in "${vms[@]}"; do
@@ -344,9 +390,35 @@ cmd_run(){
     done
   } > "$(group_file "$group_id")"
 
+
+  if "$dry_run"; then
+    printf 'DRY-RUN: group %s would run %s VMs (wave %s)\n' "$group_id" "${#vms[@]}" "$wave"
+    printf 'DRY-RUN: would reset backup objects matching group %s, then run full+incremental backups\n' "$group_id"
+    printf 'DRY-RUN: VMs:\n'
+    printf '  %s\n' "${vms[@]}"
+    rm -f "$(group_file "$group_id")"
+    exit 0
+  fi
+  # leftover backup objects from OTHER groups eat capacity invisibly (group
+  # reset is scoped to this group only) — surface them, never delete silently
+  local others
+  others=$(oc get vmbackup -n "$NAMESPACE" --no-headers 2>/dev/null \
+    | grep -v -F "$group_id" | wc -l | tr -d ' ')
+  if (( others > 0 )); then
+    log "WARN: $others vmbackup object(s) from other groups still exist (group reset is scoped);"
+    log "WARN: reclaim with 'backup-wipe.sh --yes' or 'fleet-e2e.sh reset <group-id>' when no longer needed"
+  fi
+
+  # stage timestamps for the deterministic timing record (fleet-timings.sh)
+  mkdir -p "$SCALE_STATE_DIR/groups/$group_id"
+  : > "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv"
+  stage(){ printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv"; }
+  stage reset-start
   reset_group_backups "$group_id"
+  stage reset-end
   # orphan RBD images (PV objects gone, image survived) waste raw capacity — GC them
   bash "$ROOT_DIR/cbt-scale/rbd-orphan-gc.sh" --delete 2>&1 | sed 's/^/  /' || log "WARN: rbd-orphan-gc failed (see above)"
+  stage gc-end
 
   # determine per-OS backup SCs present in this group
   # (capture lists once; `fleet_vms_os | grep -q` under pipefail SIGPIPEs the producer and misclassifies VMs)
@@ -358,8 +430,8 @@ cmd_run(){
     if grep -qx "$vm" <<<"$win_all"; then sc_win=true; fi
   done
   bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "pre-run-$group_id" 2>&1 | tail -1 || true
+  stage drive-start
 
-  mkdir -p "$SCALE_STATE_DIR/groups/$group_id"
   # per-OS sub-manifests so each driver only drives its own family
   for osf in rhel rhl win; do
     case "$osf" in rhel) os_all=$rhel_all ;; rhl) os_all=$light_all ;; win) os_all=$win_all ;; esac
@@ -404,26 +476,50 @@ cmd_run(){
   wait "${drv_pids[@]}" 2>/dev/null || true
 
   local T1=$(( $(date +%s) - T0 ))
+  stage drive-end
   validate_and_summarize "$group_id" "${#vms[@]}" "$T1"
+  # --verify: chain the deterministic post-run steps (verdict cross-check +
+  # timing record + failure triage) so nothing post-run is manual
+  if "$verify"; then
+    log "VERIFY: chaining fleet-verify + fleet-timings for $group_id"
+    local drv_s drv_e
+    drv_s=$(grep -m1 "drive-start" "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv" | cut -f1)
+    drv_e=$(grep -m1 "drive-end" "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv" | cut -f1)
+    bash "$ROOT_DIR/cbt-scale/fleet-verify.sh" "$group_id" "$drv_s" "$drv_e" || true
+    bash "$ROOT_DIR/cbt-scale/fleet-timings.sh" "$group_id" || true
+  fi
 }
-
 validate_and_summarize(){  # $1 group  $2 expected count  $3 wall
   local g="$1" n="$2" wall="$3" vm full incr cp pass fail=0
+  # one bulk fetch per kind (index by name), not N+1 per-VM oc gets
+  local vmb_json trk_json
+  vmb_json=$(oc get vmbackup -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
+  trk_json=$(oc get vmbackuptracker -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')
+  local rows; rows=$(mktemp "$SCALE_STATE_DIR/groups/$g.rows.XXXXXX") || die "mktemp failed"
+  local vms_sp=""
   for vm in $(group_vms "$g"); do
-    full=$(oc get vmbackup -n "$NAMESPACE" "$(scale_full_name "$g" "$vm")" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-    incr=$(oc get vmbackup -n "$NAMESPACE" "$(scale_incr_name "$g" "$vm" 1)" -o jsonpath='{.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)
-    cp=$(oc get vmbackuptracker -n "$NAMESPACE" "$(scale_tracker_name "$g" "$vm")" -o jsonpath='{.status.latestCheckpoint.name}' 2>/dev/null || echo missing)
+    full=$(jq -r --arg n "$(scale_full_name "$g" "$vm")" \
+      '.items[] | select(.metadata.name==$n) | .status.conditions[]? | select(.type=="Done") | .reason' \
+      <<<"$vmb_json" | head -1); [[ -n "$full" ]] || full=missing
+    incr=$(jq -r --arg n "$(scale_incr_name "$g" "$vm" 1)" \
+      '.items[] | select(.metadata.name==$n) | .status.conditions[]? | select(.type=="Done") | .reason' \
+      <<<"$vmb_json" | head -1); [[ -n "$incr" ]] || incr=missing
+    cp=$(jq -r --arg n "$(scale_tracker_name "$g" "$vm")" \
+      '.items[] | select(.metadata.name==$n) | .status.latestCheckpoint.name' \
+      <<<"$trk_json" | head -1); [[ -n "$cp" ]] || cp=missing
     if [[ "$full" == "Successfully completed VirtualMachineBackup" \
        && "$incr" == "Successfully completed VirtualMachineBackup" \
        && "$cp" == "$(scale_incr_name "$g" "$vm" 1)-"* ]]; then
-      group_set "$g" "$vm" 3 full_done; group_set "$g" "$vm" 4 "$(scale_full_name "$g" "$vm")"
-      group_set "$g" "$vm" 5 "$(scale_incr_name "$g" "$vm" 1)"; group_set "$g" "$vm" 6 pass
+      printf '%s\tfull_done\t%s\t%s\tpass\n' "$vm" "$(scale_full_name "$g" "$vm")" "$(scale_incr_name "$g" "$vm" 1)" >> "$rows"
     else
-      group_set "$g" "$vm" 6 "fail(full=$full,incr=$incr,cp=$cp)"
+      printf '%s\tfailed\t%s\t%s\tfail(full=%s,incr=%s,cp=%s)\n' \
+        "$vm" "$(scale_full_name "$g" "$vm")" "$(scale_incr_name "$g" "$vm" 1)" "$full" "$incr" "$cp" >> "$rows"
       fail=$((fail+1))
     fi
-    fleet_set_last_run "$vm" "$g"
+    vms_sp+="${vms_sp:+ }$vm"
   done
+  group_write_results "$g" "$rows"; rm -f "$rows"
+  fleet_set_last_run "$vms_sp" "$g"
   bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "post-run-$g" 2>&1 | tail -1 || true
   local verdict=PASS; (( fail > 0 )) && verdict=FAIL
   {
