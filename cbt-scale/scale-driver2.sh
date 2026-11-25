@@ -28,7 +28,7 @@ fi
 WAVE="${4:-25}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 GUEST_KEY="${GUEST_KEY:-$ROOT_DIR/keys/id_ed25519}"
-BACKUP_SC="${BACKUP_SC:-ocs-storagecluster-ceph-rbd-scale}"
+BACKUP_SC="${BACKUP_SC:-ocs-storagecluster-ceph-rbd}"
 FULL_DEST_SIZE="${FULL_DEST_SIZE:-90Gi}"
 INCR_DEST_SIZE="${INCR_DEST_SIZE:-30Gi}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-$SCALE_STATE_DIR/scale-50-$POOL}"

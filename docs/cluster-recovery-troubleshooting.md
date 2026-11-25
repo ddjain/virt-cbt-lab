@@ -146,7 +146,7 @@ and backfill onto already-full OSDs is blocked (`backfill_toofull`).
   `ceph osd set-full-ratio 0.85`, and confirm with
   `ceph osd dump | grep ^full_ratio`.
 - Orphaned RBD images are the main space reclaim. Find them (report only):
-  `cbt-scale/scale-pool-gc.sh [--pool <pool>]`. An image is an orphan when no
+  `cbt-scale/rbd-orphan-gc.sh [--pool <pool>]`. An image is an orphan when no
   PersistentVolume references it. In this recovery: the backup pool had 105
   orphans and the root pool 5,027 (about 948 GiB written), with thousands of
   ceph-csi internal images (`rf-*`, `rest-*`, `-temp`) that the script skips on
@@ -163,23 +163,13 @@ and backfill onto already-full OSDs is blocked (`backfill_toofull`).
   lower its weight. Revert any temporary reweight afterwards
   (`ceph osd reweight <id> 1.0`).
 
-### Known bug: `scale-pool-gc.sh --delete` exits 141
+### Fixed 2026-11-25: `rbd-orphan-gc.sh --delete` exited 141
 
-`scale-pool-gc.sh --delete` died with exit 141 (SIGPIPE) right after
-`releasing stale exclusive locks`, deleting nothing. The check
-`tools ceph health | grep -q 'full osd'` runs under `set -o pipefail`, and
-`grep -q` closes the pipe early. It also matches `backfillfull osd(s)`, so
-raising `full_ratio` first does not avoid it. Workaround used (repo file left
-unedited): stream a patched copy, replacing that `if` with `if false`, and
-raise/restore `full_ratio` manually:
-
-```sh
-sed "s#if tools ceph health 2>/dev/null | grep -q .full osd.; then#if false; then#" \
-  cbt-scale/scale-pool-gc.sh | bash -s -- --delete --jobs 8
-```
-
-A permanent fix is to capture the health text into a variable first
-(`health=$(tools ceph health 2>/dev/null || true)`) and grep the variable.
+The script (formerly `scale-pool-gc.sh`) died with exit 141 (SIGPIPE) because
+`tools ceph health | grep -q 'full osd'` ran under `set -o pipefail`, and the
+pattern also matched `backfillfull osd(s)`. Fixed 2026-11-25 by capturing
+`ceph health` into a variable first and matching `[0-9]+ full osd`; the same
+fix is in `backup-wipe.sh`.
 
 ### Why the OSD stayed full: huge PGs in a 32-PG pool, held by ceph-csi leftovers
 
@@ -251,8 +241,8 @@ handle uuid). Check before assuming it is a golden copy.
   golden DataVolumes Succeeded.
 - Open: the `artifacts/fleet.yaml` registry was stale (listed VMs deleted
   earlier); `fleet-setup` regenerates it from the cluster.
-- Known bug still open: `scale-pool-gc.sh --delete` exits 141 under
-  `pipefail` (see the section above); the tracked file is unfixed.
+- The `rbd-orphan-gc.sh --delete` exit-141 bug was fixed on 2026-11-25 (see
+  the section above).
 
 ## 10. After the stability gate: fleet build blocked (2026-11-24, UTC)
 
@@ -381,3 +371,13 @@ bastion.
 - Lesson for chaos runs: after any krkn network-filter scenario, check every
   node's legacy filter table (`iptables-legacy-save`), not only the pod netns
   or `nft list ruleset`.
+
+## 13. 2026-11-25 cleanup: replica-1 pool removed
+
+`cbt-scale-pool` used CRUSH rule 13 with root `default`, while every ODF pool
+uses `default~ssd`. The mgr logged `pg_autoscaler ... overlapping root ...
+skipping scaling`, `ceph osd pool autoscale-status` printed nothing, and
+`ocs-storagecluster-cephblockpool` stayed at 32 PGs holding ~13 TiB across 86
+OSDs, which pushed single OSDs past `full_ratio`. The pool and its two
+StorageClasses (`cbt-scale-pool`, `ocs-storagecluster-ceph-rbd-scale`) were
+removed; the autoscaler works again once no overlapping root remains.

@@ -48,7 +48,7 @@ was stated; never run anything mutating before the form is answered.
 | 3 | Group selection (fleet mode) | fleet mode chosen | **new slice**: OS (`rhel9`/`rhel9-light`/`windows`) + count (+ offset) / **retry group**: `<group-id>` all or only-failed / list recent groups if user unsure |
 | 4 | Cleanup previous run? | leftover objects AND not fleet-scoped | fleet runs self-clean per group (reset); throwaway mode: wipe everything (default) / keep |
 | 5 | Chaos? | not stated | **none** (default) / with chaos → **scenario ID** (from `cbt-chaos/scenarios_v2/`), **fire point** (e.g. at 50% fulls Done), **blast radius** (per-VM name-pattern vs fleet-wide). Rule 3 approval still happens before arming. |
-| 6 | Defaults OK? | always (catch-all) | wave 25 (workload SSH parallelism; 50–100 for N≥500), backup SCs (all OSes→replica-1 cbt-scale-pool, test data only; durable ODF for Windows only on request), keep VMs after verify (default: leave). If RHEL: stock `rhel9` (80Gi, heavy) vs **`rhel9-light`** (~25Gi per VM) — recommend `rhel9-light` unless the scenario needs the large disk |
+| 6 | Defaults OK? | always (catch-all) | wave 25 (workload SSH parallelism; 50–100 for N≥500), backup SCs (all OSes→durable `ocs-storagecluster-ceph-rbd`; override via `RHEL_SC`/`WIN_SC` only on request), keep VMs after verify (default: leave). If RHEL: stock `rhel9` (80Gi, heavy) vs **`rhel9-light`** (~25Gi per VM) — recommend `rhel9-light` unless the scenario needs the large disk |
 | 7 | Backup concurrency | the request spans 2+ OS families/groups and concurrency is not stated | **all at once (default, and the purpose of this skill)**: every VM's full backup fires in one wave, then every VM's incremental in one wave, across ALL OS families simultaneously (`PARALLEL_OS=true`) / sequential per OS family (only if the user explicitly asks; label timings as non-concurrent). If the user's wording is ambiguous about simultaneity, ask this at the start; never silently run families one after another. |
 
 Run/group ids are auto-generated `<os>-<dd-mm-yyyy-HH-MM-SS>` (UTC) so runs
@@ -57,8 +57,7 @@ are easy to identify by timestamp. Group state lives in
 the fleet registry is `artifacts/fleet.yaml`.
 
 Not asked (fixed defaults, never prompt): light incremental profile only,
-storage snapshots always taken, ROOT disks on durable 3-copy ODF unless the
-user explicitly asks for replica-1 roots (`ROOT_SC=cbt-scale-pool`).
+storage snapshots always taken, ROOT disks on durable 3-copy ODF.
 
 **Concurrency rule (always):** the goal is to simulate parallel backup load.
 Full backups for ALL selected VMs are triggered together, then incremental
@@ -107,7 +106,7 @@ Prometheus is the fleet health oracle.
     fleet (both pools created concurrently, all fulls/incrementals in one
     parallel wave across both OSes): `--mixed rhel9=N,windows=M [--wave 25]
     [--pool <prefix>]` (dispatches to `cbt-scale/density-e2e-mixed.sh`;
-    RHEL and Windows backups → cbt-scale-pool by default; **`rhel9-light`
+    RHEL and Windows backups → durable `ocs-storagecluster-ceph-rbd` by default; **`rhel9-light`
     is not supported in `--mixed` — use fleet mode with `--windows-count`
     for a light+Windows wave**). Both modes
     preflight the backup StorageClass, do cleanup (finalizer force-unstick +
@@ -127,10 +126,8 @@ Prometheus is the fleet health oracle.
       fleet already exists). `--rhel-light` needs the golden DataSource from
       `make rhel-light-golden` (run once on cloud05; idempotent). Grow later
       with `fleet-extend` (same flags).
-      Optional `ROOT_SC=<sc>` in the environment (e.g. `cbt-scale-pool`) puts
-      ROOT disks on the replica-1 pool too — fully 1-copy fleet, test data
-      only; cross-pool clone from both golden DataSources verified
-      2026-11-19. Default keeps roots on durable 3-copy ODF.
+      Optional `ROOT_SC=<sc>` in the environment overrides the ROOT disk
+      StorageClass. Default keeps roots on durable 3-copy ODF.
     - Run: `fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N
       [--offset M] [--windows-count M2] [--wave 25]` — creates group
       `artifacts/groups/<os>-<dd-mm-yyyy-HH-MM-SS>.yaml`, resets the group's
@@ -163,15 +160,16 @@ Prometheus is the fleet health oracle.
     (fleet-safe): `KUBECONFIG=... cbt-scale/backup-wipe.sh --yes
     [--namespace vm-cbt-demo]` deletes ALL vmbackups/trackers/backup PVCs and
     their PVs across every group (VMs, roots, persistent-state volumes,
-    Services untouched), then runs `scale-pool-gc.sh --delete`. Escalates
+    Services untouched), then runs `rbd-orphan-gc.sh --delete`. Escalates
     automatically when drains stall: strips vmbackup/PVC finalizers, forces
     Bound backup PVs whose PVC is gone, and if ceph reports full OSDs raises
     `mon_osd_full_ratio` to 0.95 for the deletion pass (restored before
     exit). Use this instead of hand-driven cleanup after stacked runs; use
     `fleet-e2e.sh reset <group-id>` for one group, `ns-wipe.sh` for full
     teardown including VMs. Refuses without `--yes`.
-  - `cbt-scale/scale-pool-gc.sh` — **orphan RBD image GC** for the replica-1
-    backup pool. `KUBECONFIG=... cbt-scale/scale-pool-gc.sh [--pool P]
+  - `cbt-scale/rbd-orphan-gc.sh` — **orphan RBD image GC** for an ODF RBD
+    pool (default `ocs-storagecluster-cephblockpool`).
+    `KUBECONFIG=... cbt-scale/rbd-orphan-gc.sh [--pool P]
     [--delete] [--jobs 8]`: lists images with no referencing PV (report
     only by default); `--delete` removes them + CSI omap keys and re-verifies.
     Called automatically by fleet-e2e/density-e2e/ns-wipe (see Known traps).
@@ -210,15 +208,15 @@ Prometheus is the fleet health oracle.
    small workload (8 files × 4–12 MiB; `.env` `GUEST_*` values do not apply),
    which fits the 10Gi root.
    windows = windows-odf profile (60Gi Block root / 70Gi full / 30Gi incr,
-   OOBE ~20–25 min, GUEST_EXEC_POLL_ATTEMPTS=450). Windows backups now
-   default to the replica-1 `cbt-scale-pool` too (test data only, user
-   decision 2026-11-18); set `WIN_SC=ocs-storagecluster-ceph-rbd` (fleet-e2e /
-   `--mixed`) or `--backup-sc` (single-OS) for durable 3-copy backups.
+   OOBE ~20–25 min, GUEST_EXEC_POLL_ATTEMPTS=450). Windows backups default
+   to durable 3-copy `ocs-storagecluster-ceph-rbd`; override with
+   `RHEL_SC`/`WIN_SC=<sc>` (fleet-e2e; `WIN_SC` also for `--mixed`) or
+   `--backup-sc` (single-OS).
 3. **Chaos gate** (from cbt-chaos-simple): never arm or fire an injection
    before the user approves the exact command, target, and blast radius.
 4. One driver instance per pool; never run two mutating drivers concurrently.
-5. Backups on the replica-1 `cbt-scale-pool` (default) have zero durability —
-   acceptable for scale testing only; never point durable workloads there.
+5. Backups default to durable 3-copy `ocs-storagecluster-ceph-rbd`; the
+   replica-1 `cbt-scale-pool` was removed 2026-11-25.
 6. Report honestly: pass/fail comes from per-vmbackup Done reasons + tracker
    checkpoints (the pipeline's own semantics), never from exit codes alone.
 
@@ -374,26 +372,26 @@ mode keeps `summary.json` from density-e2e.sh). The agent's job is only to:
   preflight with "run make rhel-light-golden". Do NOT clone the stock
   `rhel9` golden to a small root — a clone cannot be smaller than its
   source PVC (~32Gi).
-- **GC warning after a wipe is not a run failure.** `scale-pool-gc.sh` may
+- **GC warning after a wipe is not a run failure.** `rbd-orphan-gc.sh` may
   print `deleted=0 failed=N` for images that still have watchers; it leaves
   them and the run continues. Investigate only if the count grows. Common
   cause (seen 2026-11-19, 5 images after a full wipe): a dead CSI
   node-plugin session holding a stale exclusive lock on an orphan image —
   `rbd rm` fails with "image still has watchers" while no pod or
-  volumeattachment references it. As of 2026-11-19 `scale-pool-gc.sh
+  volumeattachment references it. As of 2026-11-19 `rbd-orphan-gc.sh
   --delete` handles this deterministically: it releases exclusive locks on
   images already confirmed orphan (no PV references) before `rbd rm`.
   NEVER run `rbd lock remove`/`rbd rm` by hand — rerun the script.
 - **Full OSDs deadlock the whole cleanup path (seen 2026-11-21).** This
   cluster runs `mon_osd_full_ratio 0.85` (not the default 0.95). When two
   OSDs crossed it (stacked 300/1200/1000-VM runs wrote ~56TiB to
-  `cbt-scale-pool`): ceph went `HEALTH_ERR` "2 full osd(s); 13 pool(s)
+  the then-replica-1 scale pool): ceph went `HEALTH_ERR` "2 full osd(s); 13 pool(s)
   full", backup PVC attach stalled (`FailedAttachVolume`/`SyncVMI`
   DeadlineExceeded storms), and — the trap — **`rbd lock remove`/`rbd rm`
   hang indefinitely** because image headers sit on the full OSDs, so
-  `scale-pool-gc.sh` spins silently. Escape: `ceph osd set-full-ratio 0.95`
+  `rbd-orphan-gc.sh` spins silently. Escape: `ceph osd set-full-ratio 0.95`
   → deletions proceed (56TiB reclaimed, ~3k images, ~2h) → restore 0.85.
-  `scale-pool-gc.sh --delete` (since 2026-11-21) detects full OSDs and does
+  `rbd-orphan-gc.sh --delete` (since 2026-11-21) detects full OSDs and does
   this raise/restore itself (set `NO_UNBLOCK=1` to make it refuse instead);
   `backup-wipe.sh` orchestrates the whole sequence. Capacity planning: a
   2000-VM full+incremental wave writes ~48TiB; the effective ceiling with
@@ -404,29 +402,19 @@ mode keeps `summary.json` from density-e2e.sh). The agent's job is only to:
   pools; `fleet-extend` dies on registry/cluster drift. Check
   `oc get vm -n vm-cbt-demo -l virt-cbt-lab/pool=...` against the registry
   after any cleanup outside fleet-e2e.
-- **Backup StorageClass can vanish when the ceph pool is recreated**. The
-  `cbt-scale-pool` SC was deleted when its CephBlockPool was recreated
-  (2026-11-18): backups stalled ~25min in `Initializing — PVC being attached
-  to VMI` with `hp-volume-*` pods Pending and only PVC
-  `ProvisioningFailed: storageclass not found` events. The live pool's
-  companion SC is `ocs-storagecluster-ceph-rbd-scale` (same
-  `pool=cbt-scale-pool`); fix by recreating the `cbt-scale-pool` SC as an
-  alias (see the fix hint printed by `density-e2e.sh` preflight). Stalled
-  PVCs recover automatically once the SC exists. `density-e2e.sh` preflights
-  SC existence and fails fast instead of stalling.
-- **Orphan RBD images in `cbt-scale-pool`** (found 2026-11-18: 585 images /
+- **Orphan RBD images** (found 2026-11-18: 585 images /
   ~22 TiB written, no PV/PVC behind them, from a wipe that force-stripped PV
   finalizers). They eat raw capacity and are invisible to Kubernetes.
-  `cbt-scale/scale-pool-gc.sh` detects them (image with no PV referencing
-  its `imageName`; VM roots live in `ocs-storagecluster-cephblockpool` and
-  are never in scope) and `--delete` removes them plus their CSI omap
+  `cbt-scale/rbd-orphan-gc.sh` detects them (image with no PV referencing
+  its `imageName` in the ODF block pool `ocs-storagecluster-cephblockpool`)
+  and `--delete` removes them plus their CSI omap
   entries. It runs automatically in `fleet-e2e.sh run` (after group reset),
   `density-e2e.sh` (single + mixed, after cleanup) and `ns-wipe.sh`. **Rule:
   whenever any deterministic script reports `GC: ... orphans=N` with N>0,
-  let it delete them (it refuses while a PVC is Pending); if it fails or
-  orphans remain, run `scale-pool-gc.sh` manually and report the count/GiB
+  let it delete them (it refuses while any PVC is Pending); if it fails or
+  orphans remain, run `rbd-orphan-gc.sh` manually and report the count/GiB
   reclaimed. Never `rbd rm` by hand or touch images a PV references.**
-  Report-only: `KUBECONFIG=... cbt-scale/scale-pool-gc.sh`.
+  Report-only: `KUBECONFIG=... cbt-scale/rbd-orphan-gc.sh`.
 - **ODF capacity layout (2026-11-18)**: 28 workers carry 83 OSDs (3 disks
   each, 162 TiB raw); control-plane node `d38-h09-000-r660` was added with
   3 OSDs (+5.8 TiB) via a second storageDeviceSet

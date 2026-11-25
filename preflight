@@ -308,7 +308,7 @@ check_cluster_capabilities() {
       rhel9_ds_name="${RHEL_LIGHT_DATA_SOURCE_NAME:-rhel9-light}"
       rhel9_ds_ns="${RHEL_LIGHT_DATA_SOURCE_NAMESPACE:-vm-cbt-images}"
     else
-      rhel9_ds_name=rhel9
+      rhel9_ds_name="${VM_DATA_SOURCE_NAME:-rhel9}"
       rhel9_ds_ns=openshift-virtualization-os-images
     fi
     if rhel9_source_pvc="$(oc get datasource "$rhel9_ds_name" -n "$rhel9_ds_ns" -o 'jsonpath={.spec.source.pvc.name}' 2>"$TMP_DIR/oc-error")" &&

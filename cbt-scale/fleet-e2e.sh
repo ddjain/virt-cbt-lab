@@ -47,14 +47,9 @@ cd "$ROOT_DIR"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 FLEET="$SCALE_STATE_DIR/fleet.yaml"
 GROUPS_DIR="$SCALE_STATE_DIR/groups"
-# both OSes back up to the replica-1 scale pool (test data only); set
-# WIN_SC=ocs-storagecluster-ceph-rbd for durable (3-copy) windows backups
-RHEL_SC="cbt-scale-pool"; WIN_SC="${WIN_SC:-cbt-scale-pool}"
-# ROOT_SC: StorageClass for VM ROOT disks at fleet-setup/extend time.
-# Default keeps the durable profile (roots on 3-copy ODF). Set
-# ROOT_SC=cbt-scale-pool for fully replica-1 fleets (test data only, zero
-# durability). Verified 2026-11-19: cross-pool clone from both the
-# rhel9-light and windows-server-2022 golden DataSources works.
+# backup StorageClasses: durable 3-copy ODF by default; override with RHEL_SC / WIN_SC
+RHEL_SC="${RHEL_SC:-ocs-storagecluster-ceph-rbd}"; WIN_SC="${WIN_SC:-ocs-storagecluster-ceph-rbd}"
+# ROOT_SC: optional StorageClass override for VM ROOT disks at fleet-setup/extend time (default: durable 3-copy ODF).
 ROOT_SC="${ROOT_SC:-}"
 ROOT_SC_ARG=()
 [[ -n "$ROOT_SC" ]] && ROOT_SC_ARG=(ROOT_SC="$ROOT_SC")
@@ -78,6 +73,9 @@ fleet_vms(){      # all vm names
 }
 fleet_vms_os(){   # $1 = rhel9|windows
   fleet_list; tail -n +2 "$FLEET" | awk -F'\t' -v os="$1" '$2==os{print $1}'
+}
+fleet_vms_pool(){ # $1 = pool name
+  fleet_list; tail -n +2 "$FLEET" | awk -F'\t' -v p="$1" '$3==p{print $1}'
 }
 fleet_set_last_run(){  # $1 vm  $2 group-id
   local tmp; tmp=$(mktemp)
@@ -254,8 +252,8 @@ cmd_fleet_extend(){
   rstart=$(pool_vm_count fleet-rhel)
   lstart=$(pool_vm_count fleet-rhl)
   wstart=$(pool_vm_count fleet-win)
-  (( rstart == $(fleet_vms_os rhel9 | wc -l) && lstart == $(fleet_vms_os rhel9-light | wc -l) && wstart == $(fleet_vms_os windows | wc -l) )) \
-    || die "registry ($(fleet_vms_os rhel9 | wc -l)+$(fleet_vms_os rhel9-light | wc -l)+$(fleet_vms_os windows | wc -l)) != cluster ($rstart+$lstart+$wstart) — resolve drift first"
+  (( rstart == $(fleet_vms_pool fleet-rhel | wc -l) && lstart == $(fleet_vms_pool fleet-rhl | wc -l) && wstart == $(fleet_vms_pool fleet-win | wc -l) )) \
+    || die "registry pools fleet-rhel+fleet-rhl+fleet-win ($(fleet_vms_pool fleet-rhel | wc -l)+$(fleet_vms_pool fleet-rhl | wc -l)+$(fleet_vms_pool fleet-win | wc -l)) != cluster ($rstart+$lstart+$wstart) — resolve drift first"
 
   log "FLEET-EXTEND: +$rhel rhel9 (from $rstart), +$light rhel9-light (from $lstart) and +$win windows (from $wstart), in parallel"
   if (( rhel > 0 )); then
@@ -348,7 +346,7 @@ cmd_run(){
 
   reset_group_backups "$group_id"
   # orphan RBD images (PV objects gone, image survived) waste raw capacity — GC them
-  bash "$ROOT_DIR/cbt-scale/scale-pool-gc.sh" --delete 2>&1 | sed 's/^/  /' || log "WARN: scale-pool-gc failed (see above)"
+  bash "$ROOT_DIR/cbt-scale/rbd-orphan-gc.sh" --delete 2>&1 | sed 's/^/  /' || log "WARN: rbd-orphan-gc failed (see above)"
 
   # determine per-OS backup SCs present in this group
   # (capture lists once; `fleet_vms_os | grep -q` under pipefail SIGPIPEs the producer and misclassifies VMs)
