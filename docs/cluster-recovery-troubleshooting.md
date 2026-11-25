@@ -381,3 +381,19 @@ skipping scaling`, `ceph osd pool autoscale-status` printed nothing, and
 OSDs, which pushed single OSDs past `full_ratio`. The pool and its two
 StorageClasses (`cbt-scale-pool`, `ocs-storagecluster-ceph-rbd-scale`) were
 removed; the autoscaler works again once no overlapping root remains.
+
+### Cleanup procedure used on 2026-11-25
+
+- Raise `full_ratio` only for the duration of a wipe (`ceph osd set-full-ratio 0.90`),
+  then restore 0.85. Rook may reset it on OSD restarts.
+- Delete a Rook-owned StorageClass by first removing its entry from
+  `storageconsumer/internal` `.spec.storageClasses` in `openshift-storage`;
+  otherwise ocs-operator re-creates it. Delete the CephBlockPool only after no
+  StorageClass or PV references it.
+- After removing the pool, confirm `ceph osd pool autoscale-status` lists all
+  pools and the mgr log has no `overlapping root` lines.
+- ODF operator upgrades (`ocs-operator`, `odf-operator`) are gated on CephCluster
+  health, including muted `AUTH_INSECURE_*` warnings and unarchived crashes
+  (`ceph crash archive-all`). Setting those subscriptions to `Manual` and
+  deleting the Pending CSV stops the upgrade; operators already upgraded in the
+  same InstallPlan cannot be rolled back.

@@ -186,6 +186,7 @@ make density-setup VM_OS=rhel9-light DENSITY_VM_COUNT=10
 ```
 
 Sizes and the golden build are tunable with the `RHEL_LIGHT_*` variables in `.env.example`; the profile ignores `INCREMENTAL_PVC_SIZE` and uses `RHEL_LIGHT_INCREMENTAL_PVC_SIZE` instead. About 7GiB of the root is usable by the guest, so keep `GUEST_*_FILE_COUNT` and the file-size range small enough for every planned pass; the golden's storage class follows `MANIFEST_VARIANT` (RBD for the ODF variants), so switching backend needs a different `RHEL_LIGHT_DATA_SOURCE_NAME` or a rebuilt golden.
+On clusters where the default virt class is RBD, the stock `rhel9` DataSource is snapshot-backed (no source PVC), so RHEL 9 runs need `VM_DATA_SOURCE_NAME=rhel9-rbd`; `rhel9-light` runs need small `GUEST_*` workload sizes or `vm-setup` refuses the plan.
 
 ### Small Debian ODF variant
 
@@ -412,7 +413,7 @@ For an environment with the prerequisites and cluster resources, run `make e2e`,
 - **Kubeconfig is not readable:** set `KUBECONFIG_PATH` to a readable file or unset it and configure `KUBECONFIG`/the standard `oc` context.
 - **Debian golden image import stuck or failing:** check `oc get dv debian-golden -n vm-cbt-images` and its importer pod logs; confirm cluster CDI importers can reach `cloud.debian.org`. Force a re-import with `oc delete namespace vm-cbt-images`.
 - **CBT is not enabled:** verify the `IncrementalBackup` feature gate, the VM's `cbt-demo=enabled` label, and the cluster's CBT selector configuration for the installed KubeVirt version.
-- **PVC remains pending:** verify that `cbt-demo-hpp` exists and can provision local demo volumes.
+- **PVC remains pending:** verify that the StorageClass named in the manifest exists and can provision (`ocs-storagecluster-ceph-rbd` for the default ODF profiles; `cbt-demo-hpp` only for the HPP variants).
 - **Guest SSH retries or times out:** inspect VM readiness, the service, and the port-forward messages. Ensure the generated private key is readable only by its owner.
 - **An incremental backup already exists:** run `make clean-all` before repeating the fixed-name workflow.
 - **Incremental type is wrong:** wait for the full checkpoint to appear in the run's `VirtualMachineBackupTracker` (`vm-tracker-<run-id>`) and inspect backup conditions and tracker status.

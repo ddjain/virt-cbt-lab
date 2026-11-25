@@ -155,7 +155,8 @@ Prometheus is the fleet health oracle.
     namespace-scoped Released/Available PVs until zero, exits nonzero if PVs
     remain. NEVER use it for fleet group reset (that is fleet-e2e's
     group-scoped reset); it exists for pre-fleet-build wipes and throwaway
-    cleanup. Refuses without `--yes`.
+    cleanup. PVCs labeled `virt-cbt-lab/golden=true` are skipped (CDI
+    recreates them; they would never drain). Refuses without `--yes`.
   - `cbt-scale/backup-wipe.sh` — **deterministic backup-objects-only cleanup**
     (fleet-safe): `KUBECONFIG=... cbt-scale/backup-wipe.sh --yes
     [--namespace vm-cbt-demo]` deletes ALL vmbackups/trackers/backup PVCs and

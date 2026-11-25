@@ -31,7 +31,7 @@ for `rhel9-light`).
 | `storage-snapshot.sh <label>` | append a ceph/PVC usage row to `storage.csv` |
 | `scale-status.sh [pool] [interval]` | live read-only backup fleet status |
 | `rbd-orphan-gc.sh [--pool P] [--delete]` | orphan RBD image report / GC for an ODF pool (default `ocs-storagecluster-cephblockpool`; destructive with `--delete`); image list from `rbd ls`, sizes from best-effort `rbd du` (a dangling-parent image makes `rbd du` exit 2); refuses while any PVC is Pending cluster-wide |
-| `ns-wipe.sh --yes` | destructive namespace wipe; refuses without `--yes` |
+| `ns-wipe.sh --yes` | destructive namespace wipe; refuses without `--yes`; skips PVCs labeled `virt-cbt-lab/golden=true` (CDI recreates them) |
 | `backup-wipe.sh --yes` | fleet-safe backup-objects-only cleanup (all groups' vmbackups/trackers/backup PVCs+PVs, GC, finalizer escalation, full-OSD unblock); VMs/roots untouched; refuses without `--yes` |
 | `lib-naming.sh` | sourced; the only place fleet group object names are built (`scale_full_name`, `scale_incr_name`, `scale_tracker_name`, `scale_group_object_regex`) |
 
