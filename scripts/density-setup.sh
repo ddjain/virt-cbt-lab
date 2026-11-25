@@ -79,8 +79,7 @@ if [[ "$VM_OS" == rhel9 || "$VM_OS" == rhel9-light ]]; then
     odf|large-odf) STORAGE_CLASS="ocs-storagecluster-ceph-rbd" ;;
     *) STORAGE_CLASS="cbt-demo-hpp" ;;
   esac
-  # ROOT_SC: optional override for the root-disk StorageClass (e.g. replica-1
-  # cbt-scale-pool for scale-test fleets; test data only, zero durability).
+  # ROOT_SC: optional override for the root-disk StorageClass.
   STORAGE_CLASS="${ROOT_SC:-$STORAGE_CLASS}"
 else
   # shellcheck source=scripts/windows-oobe-secret.sh

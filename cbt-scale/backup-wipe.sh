@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # backup-wipe.sh — fleet-wide backup-objects-only cleanup.
 # Deletes every vmbackup / vmbackuptracker / backup PVC (vm-*-pvc-*) and the
-# PVs behind them in the namespace, then runs scale-pool-gc.sh --delete.
+# PVs behind them in the namespace, then runs rbd-orphan-gc.sh --delete.
 # VMs, root disks (vm-disk-*), persistent-state volumes (persistent-state-for-*)
-# and Services are NEVER touched. Use this to reclaim scale-pool capacity after
+# and Services are NEVER touched. Use this to reclaim backup capacity after
 # runs when the fleet must survive; use ns-wipe.sh for a full teardown.
 #
 # Motivation (2026-11-21, cloud05): stacked 300/1200/1000-VM runs filled the
@@ -93,7 +93,8 @@ trap restore_full_ratio EXIT
 TB=$(oc get pod -n openshift-storage -l app=rook-ceph-tools -o name | head -1)
 tools(){ oc exec -n openshift-storage "$TB" -- "$@"; }
 if [[ -n "$TB" ]]; then
-  if tools ceph health 2>/dev/null | grep -q 'full osd'; then
+  health=$(tools ceph health 2>/dev/null || true)
+  if grep -qE '[0-9]+ full osd' <<<"$health"; then
     SAVED_RATIO=$(tools ceph osd dump 2>/dev/null | awk '/^full_ratio/ {print $2; exit}')
     if [[ -n "${SAVED_RATIO:-}" ]]; then
       log "ceph reports full OSDs — raising mon_osd_full_ratio $SAVED_RATIO -> 0.95 so rbd ops can proceed (restored on exit)"
@@ -117,8 +118,8 @@ done
 
 # --- phase 4: orphan image GC (full_ratio raise makes its lock removals work) ---
 restore_full_ratio
-log "running scale-pool-gc.sh --delete"
-bash "$(dirname "$0")/scale-pool-gc.sh" --delete --namespace "$NS" || log "WARNING: scale-pool-gc left orphans (rerun it)"
+log "running rbd-orphan-gc.sh --delete"
+bash "$(dirname "$0")/rbd-orphan-gc.sh" --delete || log "WARNING: rbd-orphan-gc left orphans (rerun it)"
 
 # --- phase 5: verdict ---
 VB=$(count_kind vmbackup); VT=$(count_kind vmbackuptracker)

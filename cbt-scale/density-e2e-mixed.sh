@@ -46,7 +46,7 @@ if (( existing > 0 )); then
   sleep 30
 fi
 # orphan RBD images (PV objects gone, image survived) waste raw capacity — GC them
-bash "$ROOT_DIR/cbt-scale/scale-pool-gc.sh" --delete 2>&1 | tee -a "$LOG" || log "WARN: scale-pool-gc failed (see above)"
+bash "$ROOT_DIR/cbt-scale/rbd-orphan-gc.sh" --delete 2>&1 | tee -a "$LOG" || log "WARN: rbd-orphan-gc failed (see above)"
 bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "pre-setup-mixed" 2>&1 | tail -1 | tee -a "$LOG"
 
 # ---- Phase 1: both pools concurrently ----

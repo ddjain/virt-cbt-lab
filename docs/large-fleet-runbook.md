@@ -202,8 +202,8 @@ PARALLEL_OS=true FAMILY_WAIT_TIMEOUT=43200 KUBECONFIG=/root/mno/kubeconfig \
   drives families sequentially).
 - After the run, confirm concurrency: every family's "all full backup
   requests applied" timestamp must be within seconds of the others.
-- Capacity: a 2000-VM full+incremental wave writes ~48 TiB to
-  `cbt-scale-pool` (effective ceiling ~60 TiB with PG skew). One run per
+- Capacity: a 2000-VM full+incremental wave writes ~48 TiB of backups (x3 raw
+  on the durable pool); check `ceph df` MAX AVAIL before a run. One run per
   cleanup cycle; run `cbt-scale/backup-wipe.sh --yes` between stacked runs.
 - Monitor during the run: per-family vmbackup Done counts, ceph pool
   utilization (pause if >80%), `hp-volume-*` Pending pods (attach-storm

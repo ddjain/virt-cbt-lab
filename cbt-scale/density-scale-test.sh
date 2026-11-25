@@ -19,9 +19,7 @@ set -euo pipefail
 #   --keep               do NOT clean up previous run's objects first
 #   --skip-setup         pool already exists and is ready; skip density-setup
 #   --backup-sc <sc>     backup destination storage class
-#                        (default: ocs-storagecluster-ceph-rbd-scale, the
-#                        replica-1 scale pool; use ocs-storagecluster-ceph-rbd
-#                        for durable replica-3 backups)
+#                        (default: ocs-storagecluster-ceph-rbd, durable 3-copy)
 #   --wave <n>           SSH workload wave size (default 25)
 #   --full-timeout <s>   full-phase poll timeout (default 5400s)
 #
@@ -47,7 +45,7 @@ VM_OS=""
 POOL=""
 KEEP=false
 SKIP_SETUP=false
-BACKUP_SC="ocs-storagecluster-ceph-rbd-scale"
+BACKUP_SC="ocs-storagecluster-ceph-rbd"
 WAVE=25
 FULL_TIMEOUT=5400
 
@@ -108,13 +106,6 @@ if [[ -z "$VM_OS" ]]; then
 fi
 printf 'OS profile: %s (%s)\n' "$VM_OS" "$(os_profile_note "$VM_OS")"
 
-# windows + the scale-pool/backup-sc override combination is untested: the
-# windows manifests hardcode ocs-storagecluster-ceph-rbd; keep the driver on
-# the durable class for windows until validated.
-if [[ "$VM_OS" == windows && "$BACKUP_SC" == "ocs-storagecluster-ceph-rbd-scale" ]]; then
-  printf 'NOTE: windows + scale pool not yet validated together; forcing durable backup SC.\n' >&2
-  BACKUP_SC="ocs-storagecluster-ceph-rbd"
-fi
 
 # ---- 3. cleanup gate: always ask (unless --keep) ----
 if [[ "$KEEP" != true ]]; then

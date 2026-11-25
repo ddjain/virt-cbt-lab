@@ -17,8 +17,8 @@ cat > "$TEST_TMP/bin/oc" <<'EOF'
 printf '%s\n' "$*" >> "$FAKE_OC_LOG"
 case "$*" in
   *"get pod"*) printf 'rook-ceph-tools-fake' ;;
-  *rsh*) printf '%s' '{"stats":{"total_bytes":4294967296,"total_used_raw_bytes":1073741824},"pools":[{"name":"cbt-scale-pool","stats":{"stored":2147483648,"bytes_used":2147483648}},{"name":"ocs-storagecluster-cephblockpool","stats":{"stored":1073741824,"bytes_used":1073741824}}]}' ;;
-  *"get pvc"*) printf '%s' '{"items":[{"spec":{"storageClassName":"ocs-storagecluster-ceph-rbd-scale","resources":{"requests":{"storage":"2Gi"}}}}]}' ;;
+  *rsh*) printf '%s' '{"stats":{"total_bytes":4294967296,"total_used_raw_bytes":1073741824},"pools":[{"name":"ocs-storagecluster-cephblockpool","stats":{"stored":1073741824,"bytes_used":1073741824}}]}' ;;
+  *"get pvc"*) printf '%s' '{"items":[{"spec":{"storageClassName":"ocs-storagecluster-ceph-rbd","resources":{"requests":{"storage":"2Gi"}}}},{"spec":{"storageClassName":"ocs-storagecluster-ceph-rbd-virtualization","resources":{"requests":{"storage":"3Gi"}}}}]}' ;;
 esac
 EOF
 chmod +x "$TEST_TMP/bin/oc"
@@ -29,9 +29,9 @@ export PATH="$TEST_TMP/bin:$PATH" FAKE_OC_LOG="$TEST_TMP/oc.log" KUBECONFIG=/non
 state="$TEST_TMP/state"
 out="$(SCALE_STATE_DIR="$state" bash "$SCALE/storage-snapshot.sh" smoke)"
 [[ "$out" == snapshot\[smoke\]* ]] || fail "snapshot output: $out"
-[[ -f "$state/storage-200b.csv" ]] || fail "csv not written under SCALE_STATE_DIR"
-row="$(tail -n 1 "$state/storage-200b.csv")"
-[[ "$row" == *,smoke,4,1,2,2,1,1,1,2,0,0 ]] || fail "csv row: $row"
+[[ -f "$state/storage.csv" ]] || fail "csv not written under SCALE_STATE_DIR"
+row="$(tail -n 1 "$state/storage.csv")"
+[[ "$row" == *,smoke,4,1,1,1,1,2,1,3 ]] || fail "csv row: $row"
 
 # 2. ns-wipe refuses without --yes, exit 2, before touching the cluster.
 : > "$FAKE_OC_LOG"

@@ -9,17 +9,15 @@
 #                  [--keep]          # skip cleanup gate (NOT allowed by skill
 #                                   # unless pool is a fresh id)
 #                  [--pool <id>]     # default: auto <os-prefix>-<timestamp>
-#                  [--backup-sc <sc>]# default: cbt-scale-pool (rhel and windows,
-#                                   # replica-1, test data only)
+#                  [--backup-sc <sc>]# default: ocs-storagecluster-ceph-rbd (durable 3-copy)
 #                  [--incr-profile light]  # light is the only tested profile
 #
 # Usage (mixed fleet — both pools created and both drivers run concurrently,
 # all fulls in one parallel wave, all incrementals in one parallel wave):
 #   density-e2e.sh --mixed rhel9=5,windows=5 [--wave 25] [--pool <prefix>]
 #     Pool ids become <prefix>-rhel / <prefix>-win (default prefix: mix-<ts>).
-#     Backup SCs: rhel and windows both default to cbt-scale-pool (replica-1
-#     scale pool, test data only). Override windows with env
-#     WIN_SC=ocs-storagecluster-ceph-rbd for durable (3-copy) backups.
+#     Backup SCs default to ocs-storagecluster-ceph-rbd; override windows with
+#     env WIN_SC=<sc>.
 #
 # Phases: preflight (SC existence check) -> cleanup -> pool create ->
 #         snapshots -> driver A-D -> live-cluster validation ->
@@ -59,10 +57,7 @@ NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 check_sc_exists(){  # $1 = storageclass name; hard-fail with fix hint
   if ! oc get sc "$1" >/dev/null 2>&1; then
     echo "PREFLIGHT: StorageClass '$1' NOT FOUND — backup PVCs would sit Pending" >&2
-    echo "  (2026-11-18 incident: cbt-scale-pool SC was deleted when the pool was" >&2
-    echo "   recreated; backups stalled ~25min in Initializing with only PVC" >&2
-    echo "   ProvisioningFailed events.) Fix — recreate the SC aliasing the live pool:" >&2
-    echo "   oc get sc ocs-storagecluster-ceph-rbd-scale -o json | jq 'del(.metadata.uid,.metadata.resourceVersion,.metadata.creationTimestamp,.metadata.ownerReferences,.metadata.managedFields,.metadata.annotations,.metadata.labels) | .metadata.name=\"$1\"' | oc apply -f -" >&2
+    echo "  Create it, or pass --backup-sc <existing StorageClass>." >&2
     exit 2
   fi
 }
@@ -72,7 +67,7 @@ if [[ -n "$MIXED" ]]; then
   RHEL_N="${MIXED%%,*}"; RHEL_N="${RHEL_N#rhel9=}"
   WIN_N="${MIXED##*,}"; WIN_N="${WIN_N#windows=}"
   [[ "$RHEL_N" =~ ^[0-9]+$ && "$WIN_N" =~ ^[0-9]+$ ]] || { echo "--mixed rhel9=N,windows=N required" >&2; exit 2; }
-  RHEL_SC="cbt-scale-pool"; WIN_SC="${WIN_SC:-cbt-scale-pool}"
+  RHEL_SC="ocs-storagecluster-ceph-rbd"; WIN_SC="${WIN_SC:-ocs-storagecluster-ceph-rbd}"
   check_sc_exists "$RHEL_SC"; check_sc_exists "$WIN_SC"
   MIX_PREFIX="${POOL:-mix-$(date -u +%m%d%H%M%S)}"
   export RHEL_POOL="$MIX_PREFIX-rhel" WIN_POOL="$MIX_PREFIX-win" \
@@ -82,22 +77,22 @@ fi
 
 [[ "$OS" == "rhel9" || "$OS" == "rhel9-light" || "$OS" == "windows" ]] || { echo "--os rhel9|rhel9-light|windows (or --mixed) required" >&2; exit 2; }
 [[ "$COUNT" =~ ^[0-9]+$ ]] || { echo "--count N required" >&2; exit 2; }
-check_sc_exists "${BACKUP_SC:-cbt-scale-pool}"
+check_sc_exists "${BACKUP_SC:-ocs-storagecluster-ceph-rbd}"
 
 if [[ "$OS" == "rhel9" ]]; then
   PREFIX="rhel"; MANIFEST_ARGS=(MANIFEST_VARIANT=large-odf)
-  : "${BACKUP_SC:=cbt-scale-pool}"
+  : "${BACKUP_SC:=ocs-storagecluster-ceph-rbd}"
 elif [[ "$OS" == "rhel9-light" ]]; then
   # right-sized RHEL 9 (10Gi root; needs `make rhel-light-golden` once);
   # backup PVCs are sized to match in the driver (see Phase 2)
   PREFIX="rhl"; MANIFEST_ARGS=(MANIFEST_VARIANT=large-odf)
-  : "${BACKUP_SC:=cbt-scale-pool}"
+  : "${BACKUP_SC:=ocs-storagecluster-ceph-rbd}"
 else
   PREFIX="win"; MANIFEST_ARGS=()
   # (windows root disk SC is unaffected; only the backup target changes)
-  # windows backups default to the replica-1 scale pool too (test data only);
-  # override with --backup-sc ocs-storagecluster-ceph-rbd for durable backups
-  : "${BACKUP_SC:=cbt-scale-pool}"
+  # windows backups default to the same durable class; override with
+  # --backup-sc <sc>
+  : "${BACKUP_SC:=ocs-storagecluster-ceph-rbd}"
 fi
 [[ -n "$POOL" ]] || POOL="$PREFIX-$(date -u +%m%d%H%M%S)"
 EVIDENCE="$SCALE_STATE_DIR/density-scale-$POOL"
@@ -134,7 +129,7 @@ fi
 stale=$(oc get pv --no-headers 2>/dev/null | grep -cE 'Released|Available' || true)
 (( stale == 0 )) || log "WARN: $stale stale PVs remain (deletion async)"
 # orphan RBD images (PV objects gone, image survived) waste raw capacity — GC them
-bash "$ROOT_DIR/cbt-scale/scale-pool-gc.sh" --delete 2>&1 | tee -a "$LOG" || log "WARN: scale-pool-gc failed (see above)"
+bash "$ROOT_DIR/cbt-scale/rbd-orphan-gc.sh" --delete 2>&1 | tee -a "$LOG" || log "WARN: rbd-orphan-gc failed (see above)"
 bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "pre-setup-$POOL" 2>&1 | tail -1 | tee -a "$LOG"
 
 # ---- Phase 1: pool creation ----

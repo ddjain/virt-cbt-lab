@@ -1,32 +1,31 @@
 #!/usr/bin/env bash
-# scale-pool-gc.sh — find (and optionally delete) orphaned RBD images in the
-# replica-1 backup pool. An image is an orphan when no PersistentVolume in the
-# cluster references it (imageName). Orphans appear when a wipe force-strips PV
-# finalizers / deletes PV objects while the backing RBD image survives; they
-# consume raw Ceph capacity but are unreachable from Kubernetes.
+# rbd-orphan-gc.sh — find (and optionally delete) orphaned RBD images in an
+# ODF RBD pool (default ocs-storagecluster-cephblockpool). An image is an
+# orphan when no PersistentVolume in the cluster references it (imageName).
+# Orphans appear when a wipe force-strips PV finalizers / deletes PV objects
+# while the backing RBD image survives; they consume raw Ceph capacity but
+# are unreachable from Kubernetes. Golden DataSource images are PV-referenced
+# and therefore never orphans.
 # Only plain csi-vol-<uuid> images count; ceph-csi internal clone parents
 # (rf-*, rest-*, csi-vol-<uuid>-temp) are reported as skipped, never deleted.
 #
-# Usage: KUBECONFIG=... cbt-scale/scale-pool-gc.sh [--pool cbt-scale-pool]
-#                                                  [--namespace vm-cbt-demo]
+# Usage: KUBECONFIG=... cbt-scale/rbd-orphan-gc.sh [--pool ocs-storagecluster-cephblockpool]
 #                                                  [--delete] [--jobs 8]
 #   (default)  report only: prints orphan count / written GiB, exit 0
 #   --delete   rbd rm each orphan + its CSI omap entries, then re-verify
 # Exit: 0 clean/deleted, 1 orphans remain after --delete or deletes failed,
 #       2 usage/safety refusal.
 # Safety:
-#   * Only images in --pool are considered; VM roots live in
-#     ocs-storagecluster-cephblockpool and are never listed.
-#   * Refuses to delete while any PVC in the namespace is Pending (an image
+#   * Only images in --pool are considered.
+#   * Refuses to delete while any PVC in the cluster is Pending (an image
 #     may exist before its PV object is created).
 #   * The PV set is re-read right before deletion.
 set -euo pipefail
 : "${KUBECONFIG:?export KUBECONFIG}"
-POOL="cbt-scale-pool"; NS="${NAMESPACE:-vm-cbt-demo}"; DELETE=0; JOBS=8
+POOL="ocs-storagecluster-cephblockpool"; DELETE=0; JOBS=8
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pool) POOL="$2"; shift 2 ;;
-    --namespace) NS="$2"; shift 2 ;;
     --delete) DELETE=1; shift ;;
     --jobs) JOBS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -79,9 +78,9 @@ if (( ! DELETE )); then
   exit 0
 fi
 
-pending=$(oc get pvc -n "$NS" --no-headers 2>/dev/null | awk '$2=="Pending"' | wc -l | tr -d ' ')
+pending=$(oc get pvc -A --no-headers 2>/dev/null | awk '$3=="Pending"' | wc -l | tr -d ' ')
 if (( pending > 0 )); then
-  echo "refusing: $pending PVC(s) Pending in $NS (provisioning in flight)" >&2; exit 2
+  echo "refusing: $pending PVC(s) Pending cluster-wide (provisioning in flight)" >&2; exit 2
 fi
 find_orphans   # re-read PV set immediately before deleting
 (( N_ORPH == 0 )) && { log "no orphans after re-check"; exit 0; }
@@ -122,7 +121,8 @@ restore_full_ratio(){
   RAISED=0
 }
 trap restore_full_ratio EXIT
-if tools ceph health 2>/dev/null | grep -q 'full osd'; then
+health=$(tools ceph health 2>/dev/null || true)
+if grep -qE '[0-9]+ full osd' <<<"$health"; then
   if [[ -n "${NO_UNBLOCK:-}" ]]; then
     echo "refusing: ceph reports full OSDs and NO_UNBLOCK set (rbd ops would hang)" >&2; exit 2
   fi

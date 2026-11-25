@@ -167,7 +167,7 @@ The CBT backup API is preview/alpha. Confirm compatibility with the OpenShift Vi
 | `DENSITY_QPS` | No | `10` | kube-burner client rate limit (qps=burst). |
 | `DENSITY_START_INDEX` | No | `0` | Extend an existing `POOL`: new VMs are numbered `START+1..START+COUNT`; must equal the pool's current VM count. `0` requires an unused pool. |
 | `DENSITY_WAIT_MINUTES` | No | `240` | Bound on density-setup's VM readiness poll. |
-| `ROOT_SC` | No | Unset (durable ODF) | Root-disk StorageClass override for density/fleet pools (`make density-setup`, `cbt-scale/fleet-e2e.sh` `fleet-setup`/`fleet-extend`). Set to a replica-1 pool like `cbt-scale-pool` for fully 1-copy scale-test fleets — test data only, zero durability. Cross-pool clone from the `rhel9-light`/`windows-server-2022` golden DataSources verified 2026-11-19. |
+| `ROOT_SC` | No | Unset (durable ODF) | Root-disk StorageClass override for density/fleet pools (`make density-setup`, `cbt-scale/fleet-e2e.sh` `fleet-setup`/`fleet-extend`). Default is durable 3-copy ODF (`ocs-storagecluster-ceph-rbd`; Windows `ocs-storagecluster-ceph-rbd-virtualization`). |
 
 `Unset` means the variable has no fixed value; documented fallbacks or generated run IDs still apply. `.env.example` uses placeholders for `REMOTE_HOST`, `REMOTE_DIR`, and `RESTORE_HELPER_IMAGE`; replace them before use.
 
