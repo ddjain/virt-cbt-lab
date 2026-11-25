@@ -6,7 +6,7 @@
 #
 # Usage: KUBECONFIG=... cbt-scale/fleet-verify.sh <group-id> [start-UTC] [end-UTC]
 #   start/end (optional): run window for the Prometheus sweep + report timeline.
-# Exit: 0 = all VMs pass, 1 = failures, 2 = usage/missing state.
+#   Also runs fleet-timings.sh (timing record + failure triage) for the group.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Code lives in cbt-scale/ (tracked); runtime state and evidence live in
@@ -79,4 +79,8 @@ else
   printf '\nPrometheus sweep: window not provided — skipped\n' >> "$OUT/run-report.md"
 fi
 echo "report: $OUT/run-report.md"
+# timing record + failure triage are deterministic post-run steps too — run
+# them here so `fleet-verify.sh <group>` alone produces the full evidence set
+bash "$ROOT_DIR/cbt-scale/fleet-timings.sh" "$GID" \
+  || echo "WARN: fleet-timings failed (non-fatal; run it directly for the timing record)" >&2
 (( fail == 0 )) || exit 1

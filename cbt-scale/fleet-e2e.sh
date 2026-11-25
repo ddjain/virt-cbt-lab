@@ -16,7 +16,7 @@
 #
 #   # 2. Per-run (cheap): new group = slice of the fleet
 #   fleet-e2e.sh run --os rhel9|rhel9-light|windows --count N [--offset M]
-#                  [--windows-count M2] [--wave 25]
+#                  [--windows-count M2] [--wave 25] [--verify]
 #   #    retry a previous group (all, or only failed VMs):
 #   fleet-e2e.sh run --retry <group-id> [--only-failed]
 #   #    show what a run would do without touching the cluster:
@@ -326,7 +326,7 @@ select_slice(){  # $1 os(rhel9|windows) $2 count $3 offset -> vm names
 }
 
 cmd_run(){
-  local os="" count="" offset=0 win_count=0 wave="$WAVE_DEFAULT" retry="" only_failed=false dry_run=false
+  local os="" count="" offset=0 win_count=0 wave="$WAVE_DEFAULT" retry="" only_failed=false dry_run=false verify=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --os) os="$2"; shift 2 ;;
@@ -337,6 +337,7 @@ cmd_run(){
       --retry) retry="$2"; shift 2 ;;
       --only-failed) only_failed=true; shift ;;
       --dry-run) dry_run=true; shift ;;
+      --verify) verify=true; shift ;;
       *) die "run: unknown arg $1" ;;
     esac
   done
@@ -398,9 +399,26 @@ cmd_run(){
     rm -f "$(group_file "$group_id")"
     exit 0
   fi
+  # leftover backup objects from OTHER groups eat capacity invisibly (group
+  # reset is scoped to this group only) — surface them, never delete silently
+  local others
+  others=$(oc get vmbackup -n "$NAMESPACE" --no-headers 2>/dev/null \
+    | grep -v -F "$group_id" | wc -l | tr -d ' ')
+  if (( others > 0 )); then
+    log "WARN: $others vmbackup object(s) from other groups still exist (group reset is scoped);"
+    log "WARN: reclaim with 'backup-wipe.sh --yes' or 'fleet-e2e.sh reset <group-id>' when no longer needed"
+  fi
+
+  # stage timestamps for the deterministic timing record (fleet-timings.sh)
+  mkdir -p "$SCALE_STATE_DIR/groups/$group_id"
+  : > "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv"
+  stage(){ printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv"; }
+  stage reset-start
   reset_group_backups "$group_id"
+  stage reset-end
   # orphan RBD images (PV objects gone, image survived) waste raw capacity — GC them
   bash "$ROOT_DIR/cbt-scale/rbd-orphan-gc.sh" --delete 2>&1 | sed 's/^/  /' || log "WARN: rbd-orphan-gc failed (see above)"
+  stage gc-end
 
   # determine per-OS backup SCs present in this group
   # (capture lists once; `fleet_vms_os | grep -q` under pipefail SIGPIPEs the producer and misclassifies VMs)
@@ -412,8 +430,8 @@ cmd_run(){
     if grep -qx "$vm" <<<"$win_all"; then sc_win=true; fi
   done
   bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "pre-run-$group_id" 2>&1 | tail -1 || true
+  stage drive-start
 
-  mkdir -p "$SCALE_STATE_DIR/groups/$group_id"
   # per-OS sub-manifests so each driver only drives its own family
   for osf in rhel rhl win; do
     case "$osf" in rhel) os_all=$rhel_all ;; rhl) os_all=$light_all ;; win) os_all=$win_all ;; esac
@@ -458,9 +476,19 @@ cmd_run(){
   wait "${drv_pids[@]}" 2>/dev/null || true
 
   local T1=$(( $(date +%s) - T0 ))
+  stage drive-end
   validate_and_summarize "$group_id" "${#vms[@]}" "$T1"
+  # --verify: chain the deterministic post-run steps (verdict cross-check +
+  # timing record + failure triage) so nothing post-run is manual
+  if "$verify"; then
+    log "VERIFY: chaining fleet-verify + fleet-timings for $group_id"
+    local drv_s drv_e
+    drv_s=$(grep -m1 "drive-start" "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv" | cut -f1)
+    drv_e=$(grep -m1 "drive-end" "$SCALE_STATE_DIR/groups/$group_id/wrapper-timings.tsv" | cut -f1)
+    bash "$ROOT_DIR/cbt-scale/fleet-verify.sh" "$group_id" "$drv_s" "$drv_e" || true
+    bash "$ROOT_DIR/cbt-scale/fleet-timings.sh" "$group_id" || true
+  fi
 }
-
 validate_and_summarize(){  # $1 group  $2 expected count  $3 wall
   local g="$1" n="$2" wall="$3" vm full incr cp pass fail=0
   # one bulk fetch per kind (index by name), not N+1 per-VM oc gets

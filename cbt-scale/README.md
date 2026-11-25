@@ -24,16 +24,19 @@ export KUBECONFIG=/path/to/kubeconfig   # direct cbt-scale scripts need this
 set -a; . ./.env; set +a               # repo-root .env (see .env.example)
 
 cbt-scale/fleet-e2e.sh run --os rhel9 --count 5 --dry-run   # preview first
-cbt-scale/fleet-e2e.sh run --os rhel9 --count 5             # then run it
+cbt-scale/fleet-e2e.sh run --os rhel9 --count 5 --verify    # then run it
+                                       # (--verify chains fleet-verify +
+                                       #  fleet-timings automatically;
+                                       #  equivalent to running them by hand
+                                       #  after a plain run)
 cbt-scale/fleet-verify.sh <group-id>                         # post-run report
-```
 
 ## Entry points
 
 | Script | Purpose |
 |---|---|
-| `fleet-e2e.sh fleet-setup\|extend\|run\|reset` | persistent mixed-OS fleet (`--rhel N --rhel-light K --windows M`); `run` supports `--dry-run`; skill entry point |
-| `fleet-verify.sh <group-id> [start-UTC] [end-UTC]` | Layer-1 verification + `run-report.md` for a group run |
+| `fleet-e2e.sh fleet-setup\|extend\|run\|reset` | persistent mixed-OS fleet (`--rhel N --rhel-light K --windows M`); `run` supports `--dry-run` and `--verify` (chains verification + timing record); warns when other groups' backup objects still exist; skill entry point |
+| `fleet-timings.sh <group-id>` | deterministic timing record + failure triage: stage timestamps (`wrapper-timings.tsv`), per-family driver walls + concurrency check, per-backup created→Done durations, storage deltas, failure classification (`pvc-full` / `guest-fsfreeze-warning` / `object-stuck`); writes `timings.md` + `timings.tsv` + `triage.tsv` |
 | `density-e2e.sh --os rhel9\|rhel9-light\|windows --count N` | throwaway single-OS pool wave (also `--mixed`) |
 | `density-e2e-mixed.sh` | throwaway rhel9+windows wave (dispatched by `density-e2e.sh --mixed`) |
 | `density-scale-test.sh [N] [VM_OS]` | interactive wrapper (asks before cleaning) |
