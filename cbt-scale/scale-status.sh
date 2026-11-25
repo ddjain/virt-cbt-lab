@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Simple poller: VM backup fleet status for the scale run. Read-only.
-# Usage: scale-status.sh [pool-id] [interval-seconds]
-#   pool-id defaults to rhel-1117152349; interval defaults to 10s.
+# Usage: scale-status.sh <pool-id> [interval-seconds]
 
-POOL="${1:-rhel-1117152349}"
+if [[ $# -lt 1 ]]; then
+  printf 'usage: %s <pool-id> [interval-seconds]\n' "$0" >&2
+  exit 2
+fi
+POOL="${1:?}"
 INTERVAL="${2:-10}"
 NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 : "${KUBECONFIG:?export KUBECONFIG first}"
@@ -19,7 +23,7 @@ while :; do
     [ fam(\"vm-backup-$POOL-\") + fam(\"vm-incremental-$POOL-\") ] | flatten | join(\" \")")"
 
   if [[ -z "$stats" ]]; then
-    echo "$(date +%H:%M:%S) oc/jq failed"; sleep "$INTERVAL"; continue
+    printf '%s oc/jq failed\n' "$(date +%H:%M:%S)"; sleep "$INTERVAL"; continue
   fi
   read -r f_tot f_done f_prog f_fail i_tot i_done i_prog i_fail <<<"$stats"
 
@@ -37,7 +41,7 @@ while :; do
     "${vm_ready:-?}" "${vm_total:-?}"
 
   if (( f_tot > 0 && i_tot > 0 )) && (( f_done + f_fail >= f_tot && i_done + i_fail >= i_tot )); then
-    echo "ALL TERMINAL — full: $f_done ok / $f_fail failed, incr: $i_done ok / $i_fail failed"
+    printf 'ALL TERMINAL — full: %s ok / %s failed, incr: %s ok / %s failed\n' "$f_done" "$f_fail" "$i_done" "$i_fail"
     break
   fi
   sleep "$INTERVAL"

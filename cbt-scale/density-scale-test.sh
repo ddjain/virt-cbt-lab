@@ -68,6 +68,8 @@ done
 
 : "${KUBECONFIG:?export KUBECONFIG first}"
 
+export NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
+
 ask() { # $1 question, $2 default (y/n)
   local d="${2:-y}" reply
   read -r -p "$1 [$d] " reply || true
@@ -109,28 +111,29 @@ printf 'OS profile: %s (%s)\n' "$VM_OS" "$(os_profile_note "$VM_OS")"
 
 # ---- 3. cleanup gate: always ask (unless --keep) ----
 if [[ "$KEEP" != true ]]; then
-  existing=$(oc get vm,vmbackup,vmbackuptracker,pvc -n "${NAMESPACE:-vm-cbt-demo}" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  existing=$(oc get vm,vmbackup,vmbackuptracker,pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if (( existing > 0 )); then
     printf 'Found %s existing VMs/backups/PVCs in the namespace from previous runs.\n' "$existing"
-    if ask 'Clean up ALL previous VMs, backups, trackers and PVCs first? This is destructive'; then
+    if ask 'Clean up ALL previous VMs, backups, trackers and PVCs first? This is destructive' n; then
       printf 'Cleaning previous run objects...\n'
-      oc delete vmbackup -n vm-cbt-demo --all --wait=false >/dev/null 2>&1 || true
-      oc delete vmbackuptracker -n vm-cbt-demo --all --wait=false >/dev/null 2>&1 || true
-      oc delete vm -n vm-cbt-demo --all --wait=false >/dev/null 2>&1 || true
-      oc delete pvc -n vm-cbt-demo --all --wait=false >/dev/null 2>&1 || true
-      oc delete svc -n vm-cbt-demo --all --wait=false >/dev/null 2>&1 || true
+      oc delete vmbackup -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
+      oc delete vmbackuptracker -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
+      oc delete vm -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
+      # PVCs labeled virt-cbt-lab/golden=true are CDI-managed golden images; never delete
+      oc delete pvc -n "$NAMESPACE" -l '!virt-cbt-lab/golden' --wait=false >/dev/null 2>&1 || true
+      oc delete svc -n "$NAMESPACE" --all --wait=false >/dev/null 2>&1 || true
       for i in $(seq 1 60); do
-        v=$(oc get vm,vmi,vmbackup,vmbackuptracker,pvc,svc -n vm-cbt-demo --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        p=$(oc get pods -n vm-cbt-demo --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        v=$(oc get vm,vmi,vmbackup,vmbackuptracker,pvc,svc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        p=$(oc get pods -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
         (( v == 0 && p == 0 )) && break
         sleep 15
       done
-      # purge Released/Available PVs so storage returns to baseline
+      # purge Released/Available PVs (this namespace's claims) so storage returns to baseline
       for round in $(seq 1 10); do
-        oc get pv -o json 2>/dev/null | jq -r '.items[] | select(.status.phase=="Released" or .status.phase=="Available") | .metadata.name' \
+        oc get pv -o json 2>/dev/null | jq -r '.items[] | select(.status.phase=="Released" or .status.phase=="Available") | select(.spec.claimRef.namespace=="'"$NAMESPACE"'") | .metadata.name' \
           | xargs -r -n 20 -I{} oc delete pv {} --wait=false >/dev/null 2>&1 || true
         sleep 20
-        left=$(oc get pv -o json 2>/dev/null | jq '[.items[] | select(.status.phase=="Released" or .status.phase=="Available")] | length')
+        left=$(oc get pv -o json 2>/dev/null | jq '[.items[] | select(.status.phase=="Released" or .status.phase=="Available") | select(.spec.claimRef.namespace=="'"$NAMESPACE"'")] | length')
         (( left == 0 )) && break
       done
       printf 'Previous run cleaned.\n'
@@ -162,7 +165,7 @@ fi
 
 # wait for readiness (works for both paths)
 while :; do
-  ready=$(oc get vm -n vm-cbt-demo -l "virt-cbt-lab/pool=$POOL" -o json \
+  ready=$(oc get vm -n "$NAMESPACE" -l "virt-cbt-lab/pool=$POOL" -o json \
     | jq '[.items[] | .status.ready // false] | map(select(.)) | length' 2>/dev/null || echo 0)
   printf '\rready %s/%s' "$ready" "$N"
   (( ready >= N )) 2>/dev/null && break
@@ -173,12 +176,11 @@ bash "$SNAPSHOT" "${POOL}-post-setup" >/dev/null 2>&1 || true
 
 # ---- 5. run the driver ----
 printf 'Running parallel backup driver (full + 1 incremental, all-at-once waves)...\n'
-export NAMESPACE="${NAMESPACE:-vm-cbt-demo}"
 # driver2 hardcodes scale-50 evidence dir; point evidence at a per-run dir
 EVID="$EVIDENCE_ROOT/density-scale-$POOL"
 mkdir -p "$EVID"
-# driver2 honours BACKUP_SC via env (sed rule); fall back to its default
-export BACKUP_SC
+# driver2 honours BACKUP_SC and FAMILY_WAIT_TIMEOUT via env; fall back to its defaults
+export BACKUP_SC FAMILY_WAIT_TIMEOUT="$FULL_TIMEOUT"
 if [[ "$VM_OS" == "rhel9-light" ]]; then
   export FULL_DEST_SIZE="${RHEL_LIGHT_FULL_BACKUP_SIZE:-12Gi}" INCR_DEST_SIZE="${RHEL_LIGHT_INCREMENTAL_PVC_SIZE:-2Gi}"
 fi
@@ -191,6 +193,8 @@ SUM="$EVID/summary.txt"
 cp "$SCALE_STATE_DIR/scale-50-$POOL/summary.txt" "$SUM" 2>/dev/null || true
 printf '\n===== RUN SUMMARY (%s, %s VMs) =====\n' "$POOL" "$N"
 cat "$SUM" 2>/dev/null || printf 'summary missing; check %s/driver.log\n' "$EVID"
-printf '\nStorage snapshots:\n'
-grep "$POOL" "$SCALE_STATE_DIR/storage-200b.csv" 2>/dev/null || true
+if [[ -f "$SCALE_STATE_DIR/storage.csv" ]]; then
+  printf '\nStorage snapshots:\n'
+  grep "$POOL" "$SCALE_STATE_DIR/storage.csv" || true
+fi
 printf '\nEvidence: %s\n' "$EVID"

@@ -8,7 +8,7 @@ scripts resolve the repo root themselves.
 **Code vs state:** code lives here (tracked). Runtime state and evidence go to
 `SCALE_STATE_DIR` (default `<repo>/artifacts`, gitignored): `fleet.yaml`,
 `groups/<group-id>/`, `density-scale-<pool>/`, `fleet-setup|extend-*.log`,
-`storage-200b.csv`. Never commit state.
+`storage.csv`. Never commit state.
 
 ## Prerequisites
 
@@ -16,11 +16,23 @@ scripts resolve the repo root themselves.
 (see `.env.example`), and a golden image per OS (`make rhel-light-golden` once
 for `rhel9-light`).
 
+## Quickstart
+
+```sh
+export KUBECONFIG=/path/to/kubeconfig   # direct cbt-scale scripts need this
+                                       # exported in the shell, not just .env
+set -a; . ./.env; set +a               # repo-root .env (see .env.example)
+
+cbt-scale/fleet-e2e.sh run --os rhel9 --count 5 --dry-run   # preview first
+cbt-scale/fleet-e2e.sh run --os rhel9 --count 5             # then run it
+cbt-scale/fleet-verify.sh <group-id>                         # post-run report
+```
+
 ## Entry points
 
 | Script | Purpose |
 |---|---|
-| `fleet-e2e.sh fleet-setup\|extend\|run\|reset` | persistent mixed-OS fleet (`--rhel N --rhel-light K --windows M`); skill entry point |
+| `fleet-e2e.sh fleet-setup\|extend\|run\|reset` | persistent mixed-OS fleet (`--rhel N --rhel-light K --windows M`); `run` supports `--dry-run`; skill entry point |
 | `fleet-verify.sh <group-id> [start-UTC] [end-UTC]` | Layer-1 verification + `run-report.md` for a group run |
 | `density-e2e.sh --os rhel9\|rhel9-light\|windows --count N` | throwaway single-OS pool wave (also `--mixed`) |
 | `density-e2e-mixed.sh` | throwaway rhel9+windows wave (dispatched by `density-e2e.sh --mixed`) |
@@ -29,7 +41,7 @@ for `rhel9-light`).
 | `win-workload-agent.sh` | sourced by `scale-driver2.sh`; Windows guest mutation via qemu-guest-agent (no SSH in the image) |
 | `prom-sweep.sh <start-UTC> <end-UTC> [report.md]` | Layer-2 Prometheus sweep |
 | `storage-snapshot.sh <label>` | append a ceph/PVC usage row to `storage.csv` |
-| `scale-status.sh [pool] [interval]` | live read-only backup fleet status |
+| `scale-status.sh <pool-id> [interval]` | live read-only backup fleet status (pool required) |
 | `rbd-orphan-gc.sh [--pool P] [--delete]` | orphan RBD image report / GC for an ODF pool (default `ocs-storagecluster-cephblockpool`; destructive with `--delete`); image list from `rbd ls`, sizes from best-effort `rbd du` (a dangling-parent image makes `rbd du` exit 2); refuses while any PVC is Pending cluster-wide |
 | `ns-wipe.sh --yes` | destructive namespace wipe; refuses without `--yes`; skips PVCs labeled `virt-cbt-lab/golden=true` (CDI recreates them) |
 | `backup-wipe.sh --yes` | fleet-safe backup-objects-only cleanup (all groups' vmbackups/trackers/backup PVCs+PVs, GC, finalizer escalation, full-OSD unblock); VMs/roots untouched; refuses without `--yes` |

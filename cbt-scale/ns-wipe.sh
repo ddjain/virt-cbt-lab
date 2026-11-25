@@ -11,13 +11,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${KUBECONFIG:?export KUBECONFIG}"
 NS="vm-cbt-demo"; CONFIRMED=0
-for a in "$@"; do
-  case "$a" in
-    --yes) CONFIRMED=1 ;;
-    --namespace) : ;; # consumed below via shift pairs
-    *) [[ "${PREV:-}" == "--namespace" ]] && NS="$a" || { echo "unknown arg: $a" >&2; exit 2; } ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --yes) CONFIRMED=1; shift ;;
+    --namespace) [[ $# -ge 2 ]] || { echo "--namespace requires a value" >&2; exit 2; }; NS="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
-  PREV="$a"
 done
 (( CONFIRMED )) || { echo "refusing to wipe without --yes" >&2; exit 2; }
 log(){ printf "%s %s\n" "$(date -u +%H:%M:%S)" "$*"; }

@@ -112,7 +112,8 @@ log "releasing stale exclusive locks on orphan images"
 # osd.19/41 at 85.09% vs full_ratio 0.85 — every removal call blocked, GC
 # spun silently for an hour). If ceph reports full OSDs, raise
 # mon_osd_full_ratio to 0.95 so the removals complete, and restore it
-# before exit. --no-unblock refuses instead of touching the threshold.
+# before exit. NO_UNBLOCK=1 in the environment refuses instead of touching
+# the threshold.
 RAISED=0; SAVED_RATIO=""
 restore_full_ratio(){
   (( RAISED )) || return 0

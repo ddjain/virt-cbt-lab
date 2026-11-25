@@ -4,7 +4,7 @@ set -euo pipefail
 # Phases: A baseline workload (SSH waves) → B all full backups at once (poll-wait)
 #         → C incremental workload → D all incremental backups (poll-wait) + tracker check.
 # Fully restartable: every phase skips work already done (idempotent markers in logs).
-#
+# Exits nonzero if any VM fails the final tally — callers can rely on exit status.
 # Usage: scale-driver2.sh <pool-id> <start-N> <end-N> [ssh-wave]
 # Requires: KUBECONFIG, GUEST_KEY, NAMESPACE, manifests in the repo checkout.
 
@@ -59,7 +59,6 @@ each_vm() {  # emits "rid<TAB>logname" per VM
 }
 # object id for a rid: group mode scopes it to the group (lib-naming.sh)
 obj_for() { if [[ -n "${GROUP_FILE:-}" ]]; then scale_obj_id "$GROUP_ID" "$1"; else echo "$1"; fi; }
-family_prefix() { if [[ -n "${GROUP_FILE:-}" ]]; then echo "${GROUP_ID}-"; else echo "$POOL-"; fi; }
 
 file_size_bytes() {
   local path="$1" digest hash_word value span size_mib
@@ -176,19 +175,25 @@ render_incr_g() {
 }
 
 # ---- poll-based wait for a whole family of backups ----
-wait_family() {  # $1 name-prefix  $2 label  $3 timeout-s
-  local prefix="$1" timeout_s="${3:-$FAMILY_WAIT_TIMEOUT}" t0 d tot fail
+wait_family() {  # $1 object-names file (exact names, one per line)  $2 timeout-s
+  # exact names, not prefixes: in mixed groups several families share the
+  # "<group>-" prefix, so a prefix count would span families
+  local names_file="$1" timeout_s="${2:-$FAMILY_WAIT_TIMEOUT}" t0 d tot fail
   t0=$(date +%s)
   while :; do
-    st="$(oc get vmbackup -n "$NAMESPACE" -o json | jq -r --arg p "$prefix" "
-      [.items[] | select(.metadata.name | test(\"^\" + \$p))] |
+    st="$(oc get vmbackup -n "$NAMESPACE" -o json \
+      | jq -r --slurpfile nf <(jq -R -s 'split("\n") | map(select(length > 0))' "$names_file") "
+      [.items[] | select(.metadata.name as \$n | \$nf[0] | index(\$n))] |
       {done: [.[] | .status.conditions[]? | select(.type==\"Done\" and .status==\"True\")] | length,
        total: length,
        failed: [.[] | .status.conditions[]? | select(.reason | startswith(\"Backup has failed\"))] | length}")"
     d=$(jq -r .done <<<"$st"); tot=$(jq -r .total <<<"$st"); fail=$(jq -r .failed <<<"$st")
-    if (( fail > 0 )); then echo "$(date -u +%H:%M:%S) FAILURES: $fail ($prefix)"; return 1; fi
-    if (( d >= tot )) && (( tot > 0 )); then echo "$(date -u +%H:%M:%S) all $tot $prefix done"; return 0; fi
-    if (( $(date +%s) - t0 > timeout_s )); then echo "$(date -u +%H:%M:%S) TIMEOUT waiting for $prefix ($d/$tot)"; return 2; fi
+    if (( fail > 0 )); then echo "$(date -u +%H:%M:%S) FAILURES: $fail"; return 1; fi
+    if (( tot < $(wc -l < "$names_file" | tr -d ' ') )); then
+      echo "$(date -u +%H:%M:%S) INCOMPLETE: $tot/$(wc -l < "$names_file" | tr -d ' ') expected backups exist (apply failed?)"; return 1
+    fi
+    if (( d >= tot )) && (( tot > 0 )); then echo "$(date -u +%H:%M:%S) all $tot done"; return 0; fi
+    if (( $(date +%s) - t0 > timeout_s )); then echo "$(date -u +%H:%M:%S) TIMEOUT ($d/$tot done)"; return 2; fi
     sleep 30
   done
 }
@@ -196,7 +201,8 @@ wait_family() {  # $1 name-prefix  $2 label  $3 timeout-s
 # ~488s, 1200 fulls >2h (run rhel9-light-20-11-2026-15-19-05 hit the old
 # 7200s default with all backups eventually Done). Scale VMs x 15s with a
 # 7200s floor; 2000 VMs -> 30000s (~8.3h). Override: FAMILY_WAIT_TIMEOUT env.
-FAMILY_WAIT_TIMEOUT="${FAMILY_WAIT_TIMEOUT:-$(( ${#GROUP_VMS[@]} > 0 ? ${#GROUP_VMS[@]} * 15 : 7200 ))}"
+(( ${#GROUP_VMS[@]} * 15 > 7200 )) && _fwt=$(( ${#GROUP_VMS[@]} * 15 )) || _fwt=7200
+FAMILY_WAIT_TIMEOUT="${FAMILY_WAIT_TIMEOUT:-$_fwt}"
 
 # ---- Phase A: baseline workload ----
 echo "=== Phase A: baseline workload ==="
@@ -220,21 +226,35 @@ wait || true
 # ---- Phase B: all full backups at once (apply all, then poll) ----
 echo "=== Phase B: all full backups at once ==="
 T0=$(date +%s)
+# batch existence check (one oc get) instead of one per VM
+existing_full="$(oc get vmbackup -n "$NAMESPACE" -o name --no-headers 2>/dev/null || true)"
+full_names="$(mktemp "$EVIDENCE_DIR/full-names.XXXXXX")"
+# render all pending manifests into one multi-doc stream, single oc apply
+batch="$(mktemp "$EVIDENCE_DIR/full-batch.XXXXXX")"
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
-  if oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
-  if [[ -n "${GROUP_FILE:-}" ]]; then render_full_g "vm-$rid" "$obj"; else render_full "$rid"; fi \
-    | oc apply -f - >>"$log" 2>&1 || note "RESULT full_apply FAILED" "$log"
+  obj="$(obj_for "$rid")"
+  printf 'vm-backup-%s\n' "$obj" >> "$full_names"
+  grep -qE "/vm-backup-$obj$" <<<"$existing_full" && continue
+  { printf -- '---\n'; if [[ -n "${GROUP_FILE:-}" ]]; then render_full_g "vm-$rid" "$obj"; else render_full "$rid"; fi; } >> "$batch"
 done < <(each_vm)
+if [[ -s "$batch" ]]; then
+  oc apply -f "$batch" >> "$LOG_DIR/phase.log" 2>&1 \
+    || { echo "full apply batch FAILED (see phase.log)" >&2; note "RESULT full_apply FAILED" "$LOG_DIR/phase.log"; }
+fi
+rm -f "$batch"
 note "all full backup requests applied" "$LOG_DIR/phase.log"
-wait_family "vm-backup-$(family_prefix)"
+wait_family "$full_names" \
+  || note "RESULT full_wait FAILED" "$LOG_DIR/phase.log"
 T1=$(date +%s)
 echo "full phase wall: $((T1-T0))s" | tee -a "$LOG_DIR/phase.log"
 
-# per-VM full validation
+# per-VM full validation (single bulk fetch, indexed by name)
+full_status_json="$(oc get vmbackup -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')"
 while IFS=$'\t' read -r rid logname; do
   obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
-  reason="$(oc get vmbackup "vm-backup-$obj" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
+  reason="$(jq -r --arg n "vm-backup-$obj" '.items[] | select(.metadata.name==$n)
+      | .status.conditions[]? | select(.type=="Done") | .reason' <<<"$full_status_json" | head -1)"
+  [[ -n "$reason" ]] || reason=missing
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT full_backup FAILED reason=$reason" "$log"
   else
@@ -264,27 +284,43 @@ wait || true
 # ---- Phase D: all incremental backups at once ----
 echo "=== Phase D: all incremental backups at once ==="
 T2=$(date +%s)
+# batch existence check (one oc get), then single oc apply of all renders
+existing_incr="$(oc get vmbackup -n "$NAMESPACE" -o name --no-headers 2>/dev/null || true)"
+incr_names="$(mktemp "$EVIDENCE_DIR/incr-names.XXXXXX")"
+batch="$(mktemp "$EVIDENCE_DIR/incr-batch.XXXXXX")"
 while IFS=$'\t' read -r rid logname; do
-  obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
-  if oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" >/dev/null 2>&1; then continue; fi
-  if [[ -n "${GROUP_FILE:-}" ]]; then render_incr_g "vm-$rid" "$obj"; else render_incr "$rid"; fi \
-    | oc apply -f - >>"$log" 2>&1 || note "RESULT incr_apply FAILED" "$log"
+  obj="$(obj_for "$rid")"
+  printf 'vm-incremental-%s-p01\n' "$obj" >> "$incr_names"
+  grep -qE "/vm-incremental-$obj-p01$" <<<"$existing_incr" && continue
+  { printf -- '---\n'; if [[ -n "${GROUP_FILE:-}" ]]; then render_incr_g "vm-$rid" "$obj"; else render_incr "$rid"; fi; } >> "$batch"
 done < <(each_vm)
+if [[ -s "$batch" ]]; then
+  oc apply -f "$batch" >> "$LOG_DIR/phase.log" 2>&1 \
+    || { echo "incr apply batch FAILED (see phase.log)" >&2; note "RESULT incr_apply FAILED" "$LOG_DIR/phase.log"; }
+fi
+rm -f "$batch"
 note "all incremental backup requests applied" "$LOG_DIR/phase.log"
-wait_family "vm-incremental-$(family_prefix)"
+wait_family "$incr_names" \
+  || note "RESULT incr_wait FAILED" "$LOG_DIR/phase.log"
 T3=$(date +%s)
 echo "incr phase wall: $((T3-T2))s" | tee -a "$LOG_DIR/phase.log"
 
-# per-VM incremental validation + tracker
+# per-VM incremental validation + tracker (single bulk fetch per kind)
+incr_status_json="$(oc get vmbackup -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')"
+tracker_json="$(oc get vmbackuptracker -n "$NAMESPACE" -o json 2>/dev/null || echo '{"items":[]}')"
 while IFS=$'\t' read -r rid logname; do
   obj="$(obj_for "$rid")"; log="$(logf "${logname:-$rid}")"
-  reason="$(oc get vmbackup "vm-incremental-$obj-p01" -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Done")].reason}' 2>/dev/null || echo missing)"
+  reason="$(jq -r --arg n "vm-incremental-$obj-p01" '.items[] | select(.metadata.name==$n)
+      | .status.conditions[]? | select(.type=="Done") | .reason' <<<"$incr_status_json" | head -1)"
+  [[ -n "$reason" ]] || reason=missing
   if reason_is_failure "$reason" || [[ "$reason" == missing ]]; then
     note "RESULT incr_backup FAILED reason=$reason" "$log"
   else
     note "incr backup done reason=$reason" "$log"
   fi
-  cp="$(oc get vmbackuptracker "vm-tracker-$obj" -n "$NAMESPACE" -o 'jsonpath={.status.latestCheckpoint.name}' 2>/dev/null || true)"
+  cp="$(jq -r --arg n "vm-tracker-$obj" '.items[] | select(.metadata.name==$n)
+      | .status.latestCheckpoint.name' <<<"$tracker_json" | head -1)"
+  [[ -n "$cp" ]] || cp=missing
   if [[ "$cp" != "vm-incremental-$obj-p01-"* ]]; then
     note "RESULT tracker_check FAILED checkpoint=$cp" "$log"
   else
@@ -313,3 +349,4 @@ done < <(each_vm)
   fi
   cat "$LOG_DIR/phase.log" 2>/dev/null
 } | tee "$EVIDENCE_DIR/summary.txt"
+(( fail == 0 )) || exit 1

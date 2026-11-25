@@ -47,15 +47,9 @@ echo "verify: $pass/$total pass, $fail fail (live cluster state)"
 # storage snapshot row for the report
 snap="$(bash "$ROOT_DIR/cbt-scale/storage-snapshot.sh" "post-verify-$GID" 2>/dev/null | tail -1 || true)"
 
-# Prometheus sweep if window given
+# report (written before the Prometheus sweep so its appended findings table
+# is not overwritten by this block)
 PROM_NOTE="(window not provided — skipped)"
-if [[ -n "$S_EPOCH" && -n "$E_EPOCH" ]]; then
-  if bash "$ROOT_DIR/cbt-scale/prom-sweep.sh" "$S_EPOCH" "$E_EPOCH" "$OUT/run-report.md" \
-     > "$OUT/prom-sweep.log" 2>&1; then PROM_NOTE="sweep PASS (see prom-sweep.log)"; \
-  else PROM_NOTE="sweep reported findings (see prom-sweep.log)"; fi
-fi
-
-# report
 {
   echo "# Fleet scale run report — group $GID"
   echo ""
@@ -63,7 +57,7 @@ fi
   echo "- PASS $pass/$total"$( ((fail>0)) && echo ", FAIL $fail" || true )
   echo "- Per-VM evidence: verify.tsv (full/incr Done reasons + tracker checkpoint)"
   [[ -n "$snap" ]] && echo "- Storage: $snap"
-  echo "- Prometheus (Layer 2): $PROM_NOTE"
+  echo "- Prometheus (Layer 2): see the section appended below by the sweep"
   echo ""
   if ((fail>0)); then
     echo "## Failures (verbatim)"
@@ -75,5 +69,14 @@ fi
   echo "- $OUT/rhel/summary.txt, $OUT/rhl/summary.txt, $OUT/win/summary.txt, driver logs in those dirs"
   echo "- Wrapper log: grep the fleet-e2e.sh invocation that created this group"
 } > "$OUT/run-report.md"
+
+# Prometheus sweep if window given (appends its findings table to the report)
+if [[ -n "$S_EPOCH" && -n "$E_EPOCH" ]]; then
+  if bash "$ROOT_DIR/cbt-scale/prom-sweep.sh" "$S_EPOCH" "$E_EPOCH" "$OUT/run-report.md" \
+     > "$OUT/prom-sweep.log" 2>&1; then printf '\nPrometheus sweep: PASS (see prom-sweep.log)\n' >> "$OUT/run-report.md"; \
+  else printf '\nPrometheus sweep: reported findings (see prom-sweep.log)\n' >> "$OUT/run-report.md"; fi
+else
+  printf '\nPrometheus sweep: window not provided — skipped\n' >> "$OUT/run-report.md"
+fi
 echo "report: $OUT/run-report.md"
 (( fail == 0 )) || exit 1
